@@ -125,6 +125,22 @@ export interface SessionStatus {
 const BACKPRESSURE_THRESHOLD = 1024 * 1024; // 1MB
 const SCROLLBACK_BUFFER_LIMIT = 200 * 1024; // 200KB of output history
 
+// IPC history limits
+const IPC_HISTORY_MAX_ENTRIES = 50;
+const IPC_HISTORY_MAX_BYTES = 512 * 1024;
+const IPC_RESPONSE_MAX_BYTES = 32 * 1024;
+
+export interface IpcHistoryEntry {
+  turnId: string;
+  prompt: string;
+  response: string;
+  sourceSessionId?: string;
+  startedAt: number;
+  completedAt?: number;
+  status: 'pending' | 'complete';
+  truncated?: boolean;
+}
+
 interface PtySession {
   pty: pty.IPty;
   ws: WebSocket | null;
@@ -141,6 +157,8 @@ interface PtySession {
 export class PtyManager {
   private sessions = new Map<string, PtySession>();
   private nameIndex = new Map<string, string>(); // name → sessionId
+  private links = new Map<string, Set<string>>(); // sessionId → Set<linkedSessionIds>
+  private ipcHistory = new Map<string, IpcHistoryEntry[]>();
   private serverPort: number;
   private binDir: string;
 
@@ -225,6 +243,12 @@ export class PtyManager {
         session.ws.send('\x00' + JSON.stringify(msg));
         session.ws.close();
       }
+      if (session.name) {
+        this.nameIndex.delete(session.name);
+      }
+      this.cleanupLinks(sessionId);
+      this.cleanupHistory(sessionId);
+      session.headlessTerm.dispose();
       session.onDataDisposable?.dispose();
       session.onExitDisposable?.dispose();
       this.sessions.delete(sessionId);
@@ -316,6 +340,8 @@ export class PtyManager {
       if (session.name) {
         this.nameIndex.delete(session.name);
       }
+      this.cleanupLinks(sessionId);
+      this.cleanupHistory(sessionId);
       session.onDataDisposable?.dispose();
       session.onExitDisposable?.dispose();
       session.headlessTerm.dispose();
@@ -617,6 +643,62 @@ export class PtyManager {
     return output;
   }
 
+  // ── Link registry (peer routing) ──────────────────────────────────
+
+  addLink(sourceId: string, targetId: string): void {
+    if (sourceId === targetId) return;
+    if (!this.links.has(sourceId)) this.links.set(sourceId, new Set());
+    if (!this.links.has(targetId)) this.links.set(targetId, new Set());
+    this.links.get(sourceId)!.add(targetId);
+    this.links.get(targetId)!.add(sourceId);
+  }
+
+  removeLink(sourceId: string, targetId: string): void {
+    this.links.get(sourceId)?.delete(targetId);
+    this.links.get(targetId)?.delete(sourceId);
+  }
+
+  getPeers(sessionId: string): { sessionId: string; shortId: string; name?: string }[] {
+    const peerIds = this.links.get(sessionId);
+    if (!peerIds) return [];
+    const peers: { sessionId: string; shortId: string; name?: string }[] = [];
+    for (const peerId of peerIds) {
+      if (this.sessions.has(peerId)) {
+        peers.push({
+          sessionId: peerId,
+          shortId: peerId.slice(0, 8),
+          name: this.sessions.get(peerId)?.name,
+        });
+      }
+    }
+    return peers;
+  }
+
+  getAllLinks(): { sourceId: string; targetId: string }[] {
+    const seen = new Set<string>();
+    const result: { sourceId: string; targetId: string }[] = [];
+    for (const [sourceId, targets] of this.links) {
+      for (const targetId of targets) {
+        const key = [sourceId, targetId].sort().join(':');
+        if (!seen.has(key)) {
+          seen.add(key);
+          result.push({ sourceId, targetId });
+        }
+      }
+    }
+    return result;
+  }
+
+  private cleanupLinks(sessionId: string): void {
+    const peers = this.links.get(sessionId);
+    if (peers) {
+      for (const peerId of peers) {
+        this.links.get(peerId)?.delete(sessionId);
+      }
+      this.links.delete(sessionId);
+    }
+  }
+
   /** Legacy: get buffer content since offset (for non-IPC use) */
   getBufferSince(sessionId: string, offset: number, clean: boolean = true): { output: string; offset: number } | null {
     const session = this.sessions.get(sessionId);
@@ -630,5 +712,82 @@ export class PtyManager {
     }
 
     return { output, offset: newOffset };
+  }
+
+  // ── IPC History ────────────────────────────────────────────────────
+
+  /** Create a pending turn entry. Returns the generated turnId. */
+  createPendingTurn(targetSessionId: string, prompt: string, sourceSessionId?: string): string {
+    const turnId = randomBytes(8).toString('hex');
+    if (!this.ipcHistory.has(targetSessionId)) {
+      this.ipcHistory.set(targetSessionId, []);
+    }
+    const entries = this.ipcHistory.get(targetSessionId)!;
+    entries.push({
+      turnId,
+      prompt,
+      response: '',
+      sourceSessionId,
+      startedAt: Date.now(),
+      status: 'pending',
+    });
+    this.enforceHistoryLimits(targetSessionId);
+    return turnId;
+  }
+
+  /** Idempotently finalize a pending turn with the response. Returns true if updated. */
+  finalizeTurn(targetSessionId: string, turnId: string, response: string): boolean {
+    const entries = this.ipcHistory.get(targetSessionId);
+    if (!entries) return false;
+    const entry = entries.find(e => e.turnId === turnId);
+    if (!entry || entry.status === 'complete') return false;
+
+    let truncated = false;
+    let finalResponse = response;
+    if (Buffer.byteLength(finalResponse, 'utf-8') > IPC_RESPONSE_MAX_BYTES) {
+      // Truncate to fit within limit
+      const buf = Buffer.from(finalResponse, 'utf-8');
+      finalResponse = buf.subarray(0, IPC_RESPONSE_MAX_BYTES).toString('utf-8');
+      truncated = true;
+    }
+
+    entry.response = finalResponse;
+    entry.completedAt = Date.now();
+    entry.status = 'complete';
+    if (truncated) entry.truncated = true;
+
+    this.enforceHistoryLimits(targetSessionId);
+    return true;
+  }
+
+  /** Get IPC history entries for a session. */
+  getIpcHistory(sessionId: string): IpcHistoryEntry[] {
+    return this.ipcHistory.get(sessionId) || [];
+  }
+
+  /** Enforce FIFO limits: max entries and max total bytes. */
+  private enforceHistoryLimits(sessionId: string): void {
+    const entries = this.ipcHistory.get(sessionId);
+    if (!entries) return;
+
+    // Entry count limit
+    while (entries.length > IPC_HISTORY_MAX_ENTRIES) {
+      entries.shift();
+    }
+
+    // Size limit
+    let totalBytes = 0;
+    for (const e of entries) {
+      totalBytes += Buffer.byteLength(e.prompt, 'utf-8') + Buffer.byteLength(e.response, 'utf-8');
+    }
+    while (totalBytes > IPC_HISTORY_MAX_BYTES && entries.length > 0) {
+      const removed = entries.shift()!;
+      totalBytes -= Buffer.byteLength(removed.prompt, 'utf-8') + Buffer.byteLength(removed.response, 'utf-8');
+    }
+  }
+
+  /** Remove all IPC history for a session. */
+  private cleanupHistory(sessionId: string): void {
+    this.ipcHistory.delete(sessionId);
   }
 }

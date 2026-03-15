@@ -120,11 +120,52 @@ app.post('/api/upload', (req, res) => {
   }
 });
 
+// ── Links: Peer routing registry ─────────────────────────────────────
+
+// Register a link (bidirectional)
+app.post('/api/links', (req, res) => {
+  const { sourceId, targetId } = req.body || {};
+  if (!sourceId || !targetId) {
+    res.status(400).json({ error: 'sourceId and targetId are required' });
+    return;
+  }
+  ptyManager.addLink(sourceId, targetId);
+  res.json({ ok: true });
+});
+
+// Remove a link
+app.delete('/api/links', (req, res) => {
+  const { sourceId, targetId } = req.body || {};
+  if (!sourceId || !targetId) {
+    res.status(400).json({ error: 'sourceId and targetId are required' });
+    return;
+  }
+  ptyManager.removeLink(sourceId, targetId);
+  res.json({ ok: true });
+});
+
+// Get peers for a session
+app.get('/api/links/peers/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const peers = ptyManager.getPeers(resolved);
+  res.json({ peers, sessionId: resolved });
+});
+
+// Get all links (for client restore)
+app.get('/api/links', (_req, res) => {
+  const links = ptyManager.getAllLinks();
+  res.json({ links });
+});
+
 // ── IPC: Agent-to-agent communication ────────────────────────────────
 
 // Send a message to another terminal's PTY (auto-appends CR for Enter)
 app.post('/api/ipc/send', (req, res) => {
-  const { target, message } = req.body || {};
+  const { target, message, sourceSessionId } = req.body || {};
   if (!target || typeof message !== 'string') {
     res.status(400).json({ error: 'target and message (string) are required' });
     return;
@@ -135,10 +176,13 @@ app.post('/api/ipc/send', (req, res) => {
     return;
   }
 
+  // Create pending history turn
+  const turnId = ptyManager.createPendingTurn(resolved, message, sourceSessionId || undefined);
+
   // Write message + carriage return to submit
   ptyManager.write(resolved, message + '\r');
 
-  res.json({ ok: true, sessionId: resolved, message });
+  res.json({ ok: true, sessionId: resolved, message, turnId });
 });
 
 // Poll for IPC response — extracts rendered response by matching the sent message's echo
@@ -149,6 +193,7 @@ app.get('/api/ipc/response/:sessionId', (req, res) => {
     return;
   }
   const message = req.query.message as string;
+  const turnId = req.query.turnId as string;
   if (!message) {
     res.status(400).json({ error: 'message query param required (the sent message to match)' });
     return;
@@ -158,6 +203,11 @@ app.get('/api/ipc/response/:sessionId', (req, res) => {
   if (!result) {
     res.status(404).json({ error: 'Session not found' });
     return;
+  }
+
+  // Idempotently finalize the turn when processing is done and we have output
+  if (turnId && !result.isProcessing && result.output) {
+    ptyManager.finalizeTurn(resolved, turnId, result.output);
   }
 
   const status = ptyManager.getSessionStatus(resolved);
@@ -187,6 +237,17 @@ app.get('/api/ipc/last/:sessionId', (req, res) => {
     isProcessing: result.isProcessing,
     foregroundProcess: status?.foregroundProcess ?? 'unknown',
   });
+});
+
+// Get IPC conversation history for a session
+app.get('/api/ipc/history/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const entries = ptyManager.getIpcHistory(resolved);
+  res.json({ sessionId: resolved, entries });
 });
 
 // Get rendered terminal content (via headless xterm, no animation artifacts)

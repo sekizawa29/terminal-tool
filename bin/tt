@@ -4,10 +4,37 @@
 // Inter-terminal communication tool for use within terminal-board sessions.
 // Environment: TBOARD_URL (server URL), TBOARD_SESSION (own session ID)
 
-const BASE = process.env.TBOARD_URL || 'http://127.0.0.1:3001';
+let BASE = process.env.TBOARD_URL || '';
 const SELF = process.env.TBOARD_SESSION || '';
 
+// Auto-detect server URL if not set (scan common ports)
+async function detectBase() {
+  if (BASE) return;
+  // Check PORT env as explicit override
+  if (process.env.PORT) {
+    BASE = `http://127.0.0.1:${process.env.PORT}`;
+    return;
+  }
+  // Try default port first, then scan dev server range
+  const candidates = [3001];
+  for (let p = 51700; p <= 51800; p++) candidates.push(p);
+  for (const port of candidates) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/terminals/status`, { signal: AbortSignal.timeout(200) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.statuses) {
+          BASE = `http://127.0.0.1:${port}`;
+          return;
+        }
+      }
+    } catch {}
+  }
+  BASE = 'http://127.0.0.1:3001';
+}
+
 async function main() {
+  await detectBase();
   const [,, cmd, ...args] = process.argv;
 
   switch (cmd) {
@@ -24,10 +51,16 @@ async function main() {
       return setName(args[0], args[1]);
     case 'ipc':
       return ipcSendAndWait(args);
+    case 'history':
+      return showHistory(args[0]);
     case 'last':
       return readLast(args[0]);
     case 'poll':
       return pollResponse(args[0], args[1]);
+    case 'peers':
+      return listPeers();
+    case 'peer':
+      return peerCommand(args);
     case 'self':
       return showSelf();
     case 'status':
@@ -46,13 +79,25 @@ async function listTerminals() {
     return;
   }
 
+  // Fetch peers for current session
+  let peerIds = new Set();
+  if (SELF) {
+    try {
+      const peerRes = await fetch(`${BASE}/api/links/peers/${SELF}`);
+      const peerData = await peerRes.json();
+      peerIds = new Set((peerData.peers || []).map((p) => p.sessionId));
+    } catch {}
+  }
+
   // Header
   console.log(pad('ID', 10) + pad('NAME', 12) + pad('PROCESS', 14) + 'CWD');
   console.log('-'.repeat(60));
 
   for (const s of statuses) {
     const shortId = s.sessionId.slice(0, 8);
-    const marker = s.sessionId === SELF ? '*' : ' ';
+    const isSelf = s.sessionId === SELF;
+    const isPeer = peerIds.has(s.sessionId);
+    const marker = isSelf ? '*' : isPeer ? '+' : ' ';
     const name = s.name || '-';
     const proc = s.foregroundProcess || 'shell';
     console.log(
@@ -61,7 +106,7 @@ async function listTerminals() {
   }
 
   if (SELF) {
-    console.log(`\n* = this terminal`);
+    console.log(`\n* = this terminal` + (peerIds.size > 0 ? ', + = linked peer' : ''));
   }
 }
 
@@ -144,11 +189,11 @@ async function ipcSendAndWait(args) {
   }
   const message = msgParts.join(' ');
 
-  // Send via IPC endpoint
+  // Send via IPC endpoint with sourceSessionId for history tracking
   const sendRes = await fetch(`${BASE}/api/ipc/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target, message }),
+    body: JSON.stringify({ target, message, sourceSessionId: SELF || undefined }),
   });
   const sendResult = await sendRes.json();
   if (sendResult.error) {
@@ -157,7 +202,9 @@ async function ipcSendAndWait(args) {
   }
 
   const sessionId = sendResult.sessionId;
+  const turnId = sendResult.turnId;
   const encodedMsg = encodeURIComponent(message);
+  const encodedTurnId = turnId ? `&turnId=${encodeURIComponent(turnId)}` : '';
   const deadline = Date.now() + timeout * 1000;
 
   process.stderr.write(`Sent to ${target}. Waiting for response (timeout: ${timeout}s)...\n`);
@@ -168,7 +215,7 @@ async function ipcSendAndWait(args) {
   while (Date.now() < deadline) {
     await sleep(1500);
     const pollRes = await fetch(
-      `${BASE}/api/ipc/response/${sessionId}?message=${encodedMsg}`
+      `${BASE}/api/ipc/response/${sessionId}?message=${encodedMsg}${encodedTurnId}`
     );
     const poll = await pollRes.json();
     lastOutput = poll.output || '';
@@ -233,6 +280,45 @@ async function readLast(target) {
   }
 }
 
+async function showHistory(target) {
+  if (!target) {
+    console.error('Usage: tt history <id|name>');
+    process.exit(1);
+  }
+
+  const res = await fetch(
+    `${BASE}/api/ipc/history/${encodeURIComponent(target)}`
+  );
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  const entries = result.entries || [];
+  if (entries.length === 0) {
+    console.log('No IPC history for this session.');
+    return;
+  }
+
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const time = new Date(e.startedAt).toLocaleTimeString();
+    const status = e.status === 'pending' ? ' (pending)' : '';
+    const truncMark = e.truncated ? ' [truncated]' : '';
+    const source = e.sourceSessionId ? ` from:${e.sourceSessionId.slice(0, 8)}` : '';
+
+    console.log(`--- #${i + 1} [${time}]${source}${status}${truncMark} ---`);
+    console.log(`> ${e.prompt}`);
+    if (e.response) {
+      console.log(e.response);
+    }
+    console.log('');
+  }
+
+  console.log(`${entries.length} entries total.`);
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -293,30 +379,149 @@ async function showStatus(target) {
   console.log(JSON.stringify(resolved, null, 2));
 }
 
+async function listPeers() {
+  if (!SELF) {
+    console.error('Not running inside a terminal-board session.');
+    process.exit(1);
+  }
+
+  const res = await fetch(`${BASE}/api/links/peers/${SELF}`);
+  const { peers } = await res.json();
+
+  if (!peers || peers.length === 0) {
+    console.log('No linked peers. Drag a link line to connect terminals.');
+    return;
+  }
+
+  console.log(pad('ID', 10) + 'NAME');
+  console.log('-'.repeat(30));
+  for (const p of peers) {
+    console.log(pad(p.shortId, 10) + (p.name || '-'));
+  }
+}
+
+async function peerCommand(args) {
+  if (!SELF) {
+    console.error('Not running inside a terminal-board session.');
+    process.exit(1);
+  }
+
+  const subCmd = args[0];
+  if (!subCmd) {
+    console.error('Usage: tt peer <send|ipc|read|last|history> [args...]');
+    process.exit(1);
+  }
+
+  // Get peer — if only one peer, use it automatically; otherwise require name/id
+  const peers = await getPeers();
+  if (peers.length === 0) {
+    console.error('No linked peers. Drag a link line to connect terminals.');
+    process.exit(1);
+  }
+
+  switch (subCmd) {
+    case 'send': {
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      if (rest.length === 0) {
+        console.error('Usage: tt peer send [id|name] <command...>');
+        process.exit(1);
+      }
+      return sendCommand([target, ...rest]);
+    }
+    case 'ipc': {
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      if (rest.length === 0) {
+        console.error('Usage: tt peer ipc [id|name] <message...>');
+        process.exit(1);
+      }
+      return ipcSendAndWait([target, ...rest]);
+    }
+    case 'read': {
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      return readOutput(target, rest[0]);
+    }
+    case 'last': {
+      const { target } = resolvePeerTarget(peers, args.slice(1));
+      return readLast(target);
+    }
+    case 'history': {
+      const { target } = resolvePeerTarget(peers, args.slice(1));
+      return showHistory(target);
+    }
+    default:
+      console.error(`Unknown peer subcommand: ${subCmd}`);
+      console.error('Available: send, ipc, read, last, history');
+      process.exit(1);
+  }
+}
+
+async function getPeers() {
+  const res = await fetch(`${BASE}/api/links/peers/${SELF}`);
+  const { peers } = await res.json();
+  return peers || [];
+}
+
+/**
+ * Resolve the peer target. If only one peer, use it automatically.
+ * Otherwise, the first arg must be a peer id/name.
+ */
+function resolvePeerTarget(peers, args) {
+  if (peers.length === 1) {
+    // Single peer — use it, all args are the command/message
+    const target = peers[0].name || peers[0].shortId;
+    return { target, rest: args };
+  }
+
+  // Multiple peers — first arg must identify the peer
+  if (args.length === 0) {
+    console.error('Multiple peers linked. Specify which one:');
+    for (const p of peers) {
+      console.error(`  ${p.shortId}  ${p.name || ''}`);
+    }
+    process.exit(1);
+  }
+
+  return { target: args[0], rest: args.slice(1) };
+}
+
 function printHelp() {
   console.log(`tt - Terminal Board CLI
 
 Usage:
-  tt ls                              List all terminals
+  tt ls                              List all terminals (* = self, + = peer)
   tt send <id|name> <command>        Send command (auto-appends Enter)
   tt send <id|name> --raw <text>     Send text without Enter
   tt ipc <id|name> <message>         Send message & wait for response
   tt ipc <id|name> <msg> --timeout=N Set wait timeout (default: 60s)
   tt last <id|name>                  Read the last response from an agent
+  tt history <id|name>               Show IPC conversation history
   tt poll <id|name> <message>        Read response for a sent message
   tt read <id|name> [lines]          Read terminal output (last N lines)
   tt name <id|name> <new-name>       Name a terminal for easy reference
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
 
+Peer commands (linked terminals):
+  tt peers                           List linked peers
+  tt peer send [id|name] <command>   Send command to peer
+  tt peer ipc [id|name] <message>    Send IPC message to peer & wait
+  tt peer read [id|name] [lines]     Read peer's terminal output
+  tt peer last [id|name]             Read peer's last response
+  tt peer history [id|name]          Show peer's IPC conversation history
+
 <id> can be: full session ID, short prefix (4+ chars), or name.
-In "tt ls" output, * marks the current terminal.
+With one peer linked, "tt peer" commands auto-target it (no id needed).
 
 Examples:
   tt ls                              See all terminals
   tt send sub-1 "npm test"           Run npm test in sub-1
   tt ipc sub-1 "run the tests"       Send to Claude agent & get response
   tt read sub-1 50                   Read last 50 lines from sub-1
+  tt history sub-1                   See IPC conversation history
+  tt peers                           See linked peers
+  tt peer ipc "run the tests"        Send to linked peer (single peer)
+  tt peer read 50                    Read 50 lines from linked peer
+  tt peer history                    See peer's IPC history
 `);
 }
 
