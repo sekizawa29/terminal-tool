@@ -186,7 +186,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
+              width: 12,
             }}
           >
             <button
@@ -226,25 +226,6 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
                 </svg>
               )}
             </button>
-            {/* Decorative dots */}
-            <div
-              style={{
-                width: 12,
-                height: 12,
-                borderRadius: '50%',
-                background: isActive ? 'rgba(224, 175, 104, 0.25)' : 'var(--border-default)',
-                transition: 'background var(--duration-normal)',
-              }}
-            />
-            <div
-              style={{
-                width: 12,
-                height: 12,
-                borderRadius: '50%',
-                background: isActive ? 'rgba(158, 206, 106, 0.25)' : 'var(--border-default)',
-                transition: 'background var(--duration-normal)',
-              }}
-            />
           </div>
 
           {/* Title */}
@@ -265,8 +246,8 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
             {tw.title}
           </span>
 
-          {/* Right spacer to balance the traffic lights */}
-          <div style={{ width: 54 }} />
+          {/* Right spacer to balance the close button */}
+          <div style={{ width: 12 }} />
         </div>
 
         {/* Terminal content */}

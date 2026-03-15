@@ -143,6 +143,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
     // Auto-name the target terminal on the server
     const target = state.terminals.get(targetId);
+    const source = state.terminals.get(sourceId);
     if (target) {
       const subCount = newLinks.filter((l) => l.sourceId === sourceId).length;
       fetch(`/api/terminals/${target.sessionId}/name`, {
@@ -152,12 +153,37 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       }).catch(() => {});
     }
 
+    // Register link on server for peer routing
+    if (source && target) {
+      fetch('/api/links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId }),
+      }).catch(() => {});
+    }
+
     get().saveLinks();
   },
 
   removeLink: (linkId) => {
-    set((state) => ({
-      links: state.links.filter((l) => l.id !== linkId),
+    const state = get();
+    const link = state.links.find((l) => l.id === linkId);
+
+    // Unregister link on server
+    if (link) {
+      const source = state.terminals.get(link.sourceId);
+      const target = state.terminals.get(link.targetId);
+      if (source && target) {
+        fetch('/api/links', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId }),
+        }).catch(() => {});
+      }
+    }
+
+    set((s) => ({
+      links: s.links.filter((l) => l.id !== linkId),
     }));
     get().saveLinks();
   },

@@ -130,6 +130,40 @@ export default function App() {
     }, 500);
   }, [token, addTerminal, canvas]);
 
+  const codexTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
+    if (!token) return;
+
+    const sessionId = await createTerminalSession(80, 24, cwd || undefined);
+    const width = 700;
+    const height = 450;
+
+    terminalCounter++;
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId,
+      x: nearX,
+      y: nearY,
+      width,
+      height,
+      zIndex: 0,
+      title: `Terminal ${terminalCounter}`,
+    };
+
+    addTerminal(tw);
+    canvas.focusOn(tw.x, tw.y, tw.width, tw.height);
+    useTerminalStore.getState().saveLayout();
+
+    setTimeout(async () => {
+      const tokenVal = useTerminalStore.getState().token;
+      if (!tokenVal) return;
+      await fetch(`/api/terminals/${sessionId}/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: 'codex\n' }),
+      });
+    }, 500);
+  }, [token, addTerminal, canvas]);
+
   // Restore sessions on mount (with StrictMode guard)
   const restoredRef = useRef(false);
   useEffect(() => {
@@ -267,6 +301,7 @@ export default function App() {
         onAddTerminal={addNewTerminal}
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
+        onCodexTerminal={codexTerminal}
         onFocusTerminal={canvas.focusOn}
         onZoomToFit={handleZoomToFit}
         onAutoLayout={handleAutoLayout}
