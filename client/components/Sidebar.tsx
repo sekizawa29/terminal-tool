@@ -339,19 +339,6 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
                     if (!isActive) e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  {isActive && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        top: 5,
-                        bottom: 5,
-                        width: 2,
-                        background: 'var(--accent-blue)',
-                        borderRadius: 1,
-                      }}
-                    />
-                  )}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                     <div
                       style={{
