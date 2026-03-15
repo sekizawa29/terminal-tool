@@ -1,0 +1,205 @@
+#!/usr/bin/env node
+
+// tt - Terminal Board CLI
+// Inter-terminal communication tool for use within terminal-board sessions.
+// Environment: TBOARD_URL (server URL), TBOARD_SESSION (own session ID)
+
+const BASE = process.env.TBOARD_URL || 'http://127.0.0.1:3001';
+const SELF = process.env.TBOARD_SESSION || '';
+
+async function main() {
+  const [,, cmd, ...args] = process.argv;
+
+  switch (cmd) {
+    case 'ls':
+    case 'list':
+      return listTerminals();
+    case 'send':
+    case 'write':
+      return sendCommand(args);
+    case 'read':
+    case 'output':
+      return readOutput(args[0], args[1]);
+    case 'name':
+      return setName(args[0], args[1]);
+    case 'self':
+      return showSelf();
+    case 'status':
+      return showStatus(args[0]);
+    default:
+      printHelp();
+  }
+}
+
+async function listTerminals() {
+  const res = await fetch(`${BASE}/api/terminals/status`);
+  const { statuses } = await res.json();
+
+  if (statuses.length === 0) {
+    console.log('No active terminals.');
+    return;
+  }
+
+  // Header
+  console.log(pad('ID', 10) + pad('NAME', 12) + pad('PROCESS', 14) + 'CWD');
+  console.log('-'.repeat(60));
+
+  for (const s of statuses) {
+    const shortId = s.sessionId.slice(0, 8);
+    const marker = s.sessionId === SELF ? '*' : ' ';
+    const name = s.name || '-';
+    const proc = s.foregroundProcess || 'shell';
+    console.log(
+      marker + pad(shortId, 9) + pad(name, 12) + pad(proc, 14) + (s.cwdShort || s.cwd)
+    );
+  }
+
+  if (SELF) {
+    console.log(`\n* = this terminal`);
+  }
+}
+
+async function sendCommand(args) {
+  if (args.length < 2) {
+    console.error('Usage: tt send <id|name> <command...>');
+    process.exit(1);
+  }
+
+  const target = args[0];
+  let noNewline = false;
+  let commandArgs = args.slice(1);
+
+  if (commandArgs[0] === '--raw') {
+    noNewline = true;
+    commandArgs = commandArgs.slice(1);
+  }
+
+  const command = commandArgs.join(' ');
+  const data = noNewline ? command : command + '\n';
+
+  const res = await fetch(`${BASE}/api/terminals/${encodeURIComponent(target)}/write`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  });
+
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+  console.log(`Sent to ${target}.`);
+}
+
+async function readOutput(target, linesArg) {
+  if (!target) {
+    console.error('Usage: tt read <id|name> [lines]');
+    process.exit(1);
+  }
+
+  const lines = parseInt(linesArg) || 100;
+  const res = await fetch(
+    `${BASE}/api/terminals/${encodeURIComponent(target)}/buffer?lines=${lines}`
+  );
+
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  process.stdout.write(result.output || '');
+  // Ensure trailing newline
+  if (result.output && !result.output.endsWith('\n')) {
+    process.stdout.write('\n');
+  }
+}
+
+async function setName(target, name) {
+  if (!target || !name) {
+    console.error('Usage: tt name <id|name> <new-name>');
+    process.exit(1);
+  }
+
+  const res = await fetch(`${BASE}/api/terminals/${encodeURIComponent(target)}/name`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+  console.log(`Terminal ${target} named "${name}".`);
+}
+
+async function showSelf() {
+  if (!SELF) {
+    console.log('Not running inside a terminal-board session.');
+    process.exit(1);
+  }
+  console.log(SELF);
+}
+
+async function showStatus(target) {
+  if (!target) {
+    // Show own status
+    if (!SELF) {
+      console.error('Not running inside a terminal-board session. Specify a target.');
+      process.exit(1);
+    }
+    target = SELF;
+  }
+
+  const res = await fetch(`${BASE}/api/terminals/status`);
+  const { statuses } = await res.json();
+
+  const resolved = statuses.find(
+    (s) =>
+      s.sessionId === target ||
+      s.sessionId.startsWith(target) ||
+      s.name === target
+  );
+
+  if (!resolved) {
+    console.error(`Terminal not found: ${target}`);
+    process.exit(1);
+  }
+
+  console.log(JSON.stringify(resolved, null, 2));
+}
+
+function printHelp() {
+  console.log(`tt - Terminal Board CLI
+
+Usage:
+  tt ls                         List all terminals
+  tt send <id|name> <command>   Send command to a terminal (auto-appends newline)
+  tt send <id|name> --raw <text>  Send text without newline
+  tt read <id|name> [lines]     Read terminal output (default: 100 lines)
+  tt name <id|name> <new-name>  Name a terminal for easy reference
+  tt status [id|name]           Show terminal status as JSON
+  tt self                       Show this terminal's session ID
+
+<id> can be: full session ID, short prefix (4+ chars), or name.
+In "tt ls" output, * marks the current terminal.
+
+Examples:
+  tt name $(tt self) main       Name this terminal "main"
+  tt ls                         See all terminals
+  tt send sub "npm test"        Run npm test in terminal named "sub"
+  tt read sub 50                Read last 50 lines from "sub"
+`);
+}
+
+function pad(str, width) {
+  if (str.length >= width) return str.slice(0, width - 1) + ' ';
+  return str + ' '.repeat(width - str.length);
+}
+
+main().catch((e) => {
+  console.error(e.message);
+  process.exit(1);
+});

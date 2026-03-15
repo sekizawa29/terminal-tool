@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120" width="600" height="120">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600&amp;display=swap');
+    </style>
+  </defs>
+  <!-- Terminal icon box -->
+  <rect x="8" y="8" width="104" height="104" rx="20" ry="20"
+        fill="none" stroke="#7B9FE5" stroke-width="10"/>
+  <!-- > chevron -->
+  <polyline points="32,38 62,60 32,82"
+            fill="none" stroke="#7B9FE5" stroke-width="10"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- _ underscore -->
+  <line x1="66" y1="82" x2="90" y2="82"
+        stroke="#7B9FE5" stroke-width="10" stroke-linecap="round"/>
+  <!-- tboard text -->
+  <text x="135" y="88" font-family="'Poppins', sans-serif" font-weight="600"
+        font-size="85" fill="#7B9FE5" letter-spacing="2">tboard</text>
+</svg>
