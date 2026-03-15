@@ -2,10 +2,15 @@ import * as pty from 'node-pty';
 import { randomBytes } from 'crypto';
 import { readFileSync, readlinkSync } from 'fs';
 import { execSync } from 'child_process';
+import { createRequire } from 'module';
 import { platform } from 'os';
 import { basename } from 'path';
 import type { WebSocket } from 'ws';
 import type { ExitMessage, ResizeMessage } from './types.js';
+
+// @xterm/headless is CJS — use createRequire for ESM compat
+const require = createRequire(import.meta.url);
+const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 
 const currentPlatform = platform();
 
@@ -17,6 +22,78 @@ function stripAnsiCodes(str: string): string {
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
+/**
+ * Strip agent TUI chrome from rendered terminal text.
+ * With @xterm/headless handling animation rendering correctly,
+ * this only needs to remove static TUI elements (prompts, separators, status lines).
+ */
+function stripAgentNoise(text: string): string {
+  const lines = text.split('\n');
+  const cleaned: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Blank line — keep at most one consecutive
+    if (!trimmed) {
+      if (cleaned.length > 0 && cleaned[cleaned.length - 1] !== '') {
+        cleaned.push('');
+      }
+      continue;
+    }
+
+    // Status bar: "esc to interrupt", combined variants
+    if (/esctointerrupt/i.test(trimmed) || /auto\s*mode\s*temporarily\s*unavailable/i.test(trimmed)) continue;
+    if (/^esc\s+to\s+interrupt/i.test(trimmed)) continue;
+
+    // Spinner/loading: "✶ Nebulizing…", "*Tomfoolering…"
+    if (/^[✶✻✽✢✹✷✸✺✼✾✿❀●○⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏*·]+\s*[A-Z][a-z]+.*…/.test(trimmed)) continue;
+    if (/^[A-Z][a-z]+ing…?\s*$/.test(trimmed)) continue;
+
+    // Horizontal separators
+    if (/^[─━═]{5,}$/.test(trimmed)) continue;
+
+    // Prompt chrome
+    if (/^❯/.test(trimmed)) continue;
+    if (/\?\s+(for shortcuts|for help)/i.test(trimmed)) continue;
+    if (/^●\s*(high|medium|low)\s*·\s*\//.test(trimmed)) continue;
+
+    // Single decorative symbol
+    if (trimmed.length === 1 && /[✶✻✽✢✹✷✸✺✼✾✿❀●○·*⎿⎡⎤⎣⎦╭╮╰╯│]/.test(trimmed)) continue;
+
+    // Tool-call chrome: "● ToolName(args)" → "[ToolName] args"
+    const toolCallMatch = trimmed.match(/^●\s*(\w+)\((.+)\)\s*$/);
+    if (toolCallMatch) {
+      cleaned.push(`[${toolCallMatch[1]}] ${toolCallMatch[2]}`);
+      continue;
+    }
+    // "●content" (bare result)
+    const bareResult = trimmed.match(/^●\s*(.+)$/);
+    if (bareResult && !bareResult[1].includes('(')) {
+      cleaned.push(bareResult[1]);
+      continue;
+    }
+    // "⎿  result" decorator
+    const resultPrefix = trimmed.match(/^⎿\s+(.+)$/);
+    if (resultPrefix) {
+      cleaned.push(resultPrefix[1]);
+      continue;
+    }
+
+    // Status badges & hook output
+    if (/^\(ctrl\+[a-z] to \w+\)$/.test(trimmed)) continue;
+    if (/^Running…$/.test(trimmed)) continue;
+    if (/\(running \w+ hook\)/i.test(trimmed)) continue;
+    if (/^…\s*\+\d+ lines/.test(trimmed)) continue;
+
+    cleaned.push(line);
+  }
+
+  let result = cleaned.join('\n');
+  result = result.replace(/\n{3,}/g, '\n\n');
+  return result.trim();
 }
 
 function getHomeDir(): string {
@@ -58,6 +135,7 @@ interface PtySession {
   name?: string; // user-assigned label
   onDataDisposable: pty.IDisposable | null;
   onExitDisposable: pty.IDisposable | null;
+  headlessTerm: InstanceType<typeof HeadlessTerminal>; // for IPC: renders PTY output properly
 }
 
 export class PtyManager {
@@ -94,6 +172,9 @@ export class PtyManager {
       env,
     });
 
+    // Headless terminal for IPC: properly renders cursor movements, overwrites, etc.
+    const headlessTerm = new HeadlessTerminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+
     const session: PtySession = {
       pty: p,
       ws: null,
@@ -103,6 +184,7 @@ export class PtyManager {
       shellName,
       onDataDisposable: null,
       onExitDisposable: null,
+      headlessTerm,
     };
 
     // Always buffer all output (for replay on reconnect)
@@ -114,6 +196,9 @@ export class PtyManager {
       if (session.buffer.length > SCROLLBACK_BUFFER_LIMIT) {
         session.buffer = session.buffer.slice(-SCROLLBACK_BUFFER_LIMIT);
       }
+
+      // Feed into headless terminal for proper rendering
+      session.headlessTerm.write(data);
 
       // Send to WebSocket if connected
       if (session.ws && session.ws.readyState === session.ws.OPEN) {
@@ -211,7 +296,10 @@ export class PtyManager {
   resize(sessionId: string, cols: number, rows: number): void {
     const session = this.sessions.get(sessionId);
     if (session) {
-      session.pty.resize(Math.max(1, cols), Math.max(1, rows));
+      const c = Math.max(1, cols);
+      const r = Math.max(1, rows);
+      session.pty.resize(c, r);
+      session.headlessTerm.resize(c, r);
     }
   }
 
@@ -230,6 +318,7 @@ export class PtyManager {
       }
       session.onDataDisposable?.dispose();
       session.onExitDisposable?.dispose();
+      session.headlessTerm.dispose();
       try {
         session.pty.kill();
       } catch {
@@ -402,5 +491,144 @@ export class PtyManager {
     }
 
     return output;
+  }
+
+  /** Get current buffer length (raw) for offset tracking */
+  getBufferLength(sessionId: string): number {
+    return this.sessions.get(sessionId)?.buffer.length ?? 0;
+  }
+
+  /** Read all rendered lines from headless terminal */
+  private getRenderedLines(sessionId: string): string[] {
+    const session = this.sessions.get(sessionId);
+    if (!session) return [];
+    const buf = session.headlessTerm.buffer.active;
+    const totalLines = buf.baseY + buf.cursorY + 1;
+    const lines: string[] = [];
+    for (let y = 0; y < totalLines; y++) {
+      const line = buf.getLine(y);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines;
+  }
+
+  /**
+   * Extract the IPC response for a given sent message.
+   * Finds the last prompt echo (❯ message) in the rendered buffer,
+   * then extracts the response content between that echo and the next prompt/status bar.
+   */
+  getIpcResponse(sessionId: string, sentMessage: string): { output: string; isProcessing: boolean } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const status = this.getSessionStatus(sessionId);
+    const isProcessing = status?.isProcessing ?? false;
+
+    const lines = this.getRenderedLines(sessionId);
+
+    // Find the last occurrence of the prompt echo for this message
+    const needle = sentMessage.slice(0, 60); // match prefix to handle truncation
+    let echoLine = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith('❯') && trimmed.includes(needle)) {
+        echoLine = i;
+        break;
+      }
+    }
+
+    if (echoLine < 0) {
+      // Message echo not found yet — still being typed or not processed
+      return { output: '', isProcessing };
+    }
+
+    // Extract response lines: everything after echo until status bar / next prompt
+    const responseLines: string[] = [];
+    for (let i = echoLine + 1; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      // Stop at status bar separator or next prompt
+      if (/^[─━═]{5,}$/.test(trimmed)) break;
+      if (/^❯/.test(trimmed)) break;
+      responseLines.push(lines[i]);
+    }
+
+    let output = stripAgentNoise(responseLines.join('\n'));
+    return { output, isProcessing };
+  }
+
+  /**
+   * Get the last agent response — finds the most recent ❯ prompt
+   * and extracts everything between it and the status bar.
+   */
+  getLastResponse(sessionId: string): { prompt: string; output: string; isProcessing: boolean } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const status = this.getSessionStatus(sessionId);
+    const isProcessing = status?.isProcessing ?? false;
+    const lines = this.getRenderedLines(sessionId);
+
+    // Find the last ❯ prompt line
+    let promptLine = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const trimmed = lines[i].trim();
+      if (/^❯\s+\S/.test(trimmed)) {
+        promptLine = i;
+        break;
+      }
+    }
+
+    if (promptLine < 0) {
+      return { prompt: '', output: '', isProcessing };
+    }
+
+    const prompt = lines[promptLine].trim().replace(/^❯\s*/, '').trim();
+
+    const responseLines: string[] = [];
+    for (let i = promptLine + 1; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (/^[─━═]{5,}$/.test(trimmed)) break;
+      if (/^❯/.test(trimmed)) break;
+      responseLines.push(lines[i]);
+    }
+
+    const output = stripAgentNoise(responseLines.join('\n'));
+    return { prompt, output, isProcessing };
+  }
+
+  /**
+   * Get rendered terminal screen content (via headless terminal).
+   * Returns properly rendered text, free of animation artifacts.
+   */
+  getRenderedBuffer(sessionId: string, lastLines?: number, clean: boolean = true): string | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    let lines = this.getRenderedLines(sessionId);
+
+    if (lastLines && lastLines > 0) {
+      lines = lines.slice(-lastLines);
+    }
+
+    let output = lines.join('\n');
+    if (clean) {
+      output = stripAgentNoise(output);
+    }
+    return output;
+  }
+
+  /** Legacy: get buffer content since offset (for non-IPC use) */
+  getBufferSince(sessionId: string, offset: number, clean: boolean = true): { output: string; offset: number } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const rawOutput = session.buffer.slice(offset);
+    const newOffset = session.buffer.length;
+    let output = stripAnsiCodes(rawOutput);
+    if (clean) {
+      output = stripAgentNoise(output);
+    }
+
+    return { output, offset: newOffset };
   }
 }

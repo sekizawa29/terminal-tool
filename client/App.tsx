@@ -177,6 +177,21 @@ export default function App() {
       }
 
       useTerminalStore.getState().saveLayout();
+
+      // Restore links
+      const savedLinks = useTerminalStore.getState().loadLinks();
+      const restoredTerminals = useTerminalStore.getState().terminals;
+      for (const sl of savedLinks) {
+        let sourceId: string | null = null;
+        let targetId: string | null = null;
+        for (const [id, tw] of restoredTerminals) {
+          if (tw.sessionId === sl.sourceSessionId) sourceId = id;
+          if (tw.sessionId === sl.targetSessionId) targetId = id;
+        }
+        if (sourceId && targetId) {
+          useTerminalStore.getState().addLink(sourceId, targetId);
+        }
+      }
     })();
   }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -192,13 +207,21 @@ export default function App() {
 
     const cols = Math.ceil(Math.sqrt(n));
     const gap = 30;
+
+    // Use max dimensions so no panels overlap
+    let maxW = 0, maxH = 0;
+    for (const tw of terminals.values()) {
+      if (tw.width > maxW) maxW = tw.width;
+      if (tw.height > maxH) maxH = tw.height;
+    }
+
     let i = 0;
     for (const tw of terminals.values()) {
       const col = i % cols;
       const row = Math.floor(i / cols);
       updateTerminal(tw.id, {
-        x: col * (tw.width + gap),
-        y: row * (tw.height + gap),
+        x: col * (maxW + gap),
+        y: row * (maxH + gap),
       });
       i++;
     }

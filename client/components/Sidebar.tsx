@@ -96,6 +96,22 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
     [bringToFront, setActive, onFocusTerminal]
   );
 
+  // Figma-style icon button base
+  const iconBtn: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 28,
+    height: 28,
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-tertiary)',
+    cursor: 'pointer',
+    flexShrink: 0,
+    borderRadius: 6,
+    transition: 'background 120ms, color 120ms',
+  };
+
   return (
     <div
       style={{
@@ -104,30 +120,31 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
         left: 12,
         zIndex: 10000,
         userSelect: 'none',
-        animation: 'scaleIn 0.3s var(--ease-out) both',
+        animation: 'scaleIn 0.25s var(--ease-out) both',
       }}
     >
-      {/* Floating card */}
+      {/* Floating toolbar */}
       <div
         style={{
-          background: 'var(--glass-bg)',
-          backdropFilter: 'blur(var(--glass-blur))',
-          WebkitBackdropFilter: 'blur(var(--glass-blur))',
-          border: '1px solid var(--border-default)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: 'var(--shadow-lg)',
+          background: 'rgba(22, 22, 30, 0.88)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: 10,
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.15)',
           overflow: 'hidden',
-          width: expanded ? 280 : undefined,
-          transition: 'box-shadow var(--duration-normal)',
+          minWidth: expanded ? 260 : undefined,
+          transition: 'min-width 200ms var(--ease-out), box-shadow 200ms',
         }}
       >
-        {/* Collapsed bar */}
+        {/* Toolbar row */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            height: 40,
-            gap: 0,
+            height: 36,
+            padding: '0 4px',
+            gap: 1,
           }}
         >
           {/* Logo */}
@@ -135,61 +152,67 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
             style={{
               display: 'flex',
               alignItems: 'center',
-              padding: '0 10px',
+              padding: '0 6px 0 6px',
               cursor: 'default',
+              flexShrink: 0,
             }}
           >
             <img
               src="/logo.svg"
               alt="tboard"
-              style={{ height: 18, flexShrink: 0 }}
+              style={{ height: 16, flexShrink: 0, opacity: 0.9 }}
             />
           </div>
 
-          {/* Divider */}
-          <div style={{ width: 1, height: 18, background: 'var(--border-default)', flexShrink: 0 }} />
+          {/* Separator */}
+          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 2px' }} />
 
-          {/* Session count — toggle expand */}
+          {/* Session toggle */}
           <button
             onClick={() => setExpanded((p) => !p)}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 5,
-              padding: '0 10px',
-              height: '100%',
-              background: 'none',
+              padding: '0 8px',
+              height: 28,
+              background: expanded ? 'rgba(255, 255, 255, 0.06)' : 'none',
               border: 'none',
               color: 'var(--text-secondary)',
               cursor: 'pointer',
-              fontSize: 11.5,
+              fontSize: 11,
               fontWeight: 500,
               whiteSpace: 'nowrap',
+              borderRadius: 6,
+              transition: 'background 120ms, color 120ms',
+              letterSpacing: '-0.01em',
             }}
             title="Toggle sessions"
+            onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'; }}
+            onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.background = 'none'; }}
           >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.7 }}>
-              <rect x="4" y="4" width="10" height="8" rx="2" stroke="currentColor" strokeWidth="1.3" fill="none"/>
-              <path d="M12 4V3a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.6 }}>
+              <rect x="4" y="4" width="10" height="8" rx="2" stroke="currentColor" strokeWidth="1.4" fill="none"/>
+              <path d="M12 4V3a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1" stroke="currentColor" strokeWidth="1.4" fill="none"/>
             </svg>
             <span style={{ fontVariantNumeric: 'tabular-nums' }}>{terminals.size}</span>
             <svg
-              width="8"
-              height="8"
+              width="7"
+              height="7"
               viewBox="0 0 8 8"
               fill="none"
               style={{
                 transform: expanded ? 'rotate(180deg)' : 'rotate(0)',
-                transition: 'transform var(--duration-normal) var(--ease-out)',
-                opacity: 0.45,
+                transition: 'transform 200ms var(--ease-out)',
+                opacity: 0.4,
               }}
             >
-              <path d="M1.5 3L4 5.5L6.5 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M1.5 3L4 5.5L6.5 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </button>
 
-          {/* Divider */}
-          <div style={{ width: 1, height: 18, background: 'var(--border-default)', flexShrink: 0 }} />
+          {/* Separator */}
+          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 2px' }} />
 
           {/* Zoom */}
           <span
@@ -197,9 +220,10 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
               fontSize: 11,
               fontWeight: 500,
               color: 'var(--text-tertiary)',
-              padding: '0 8px',
+              padding: '0 6px',
               fontVariantNumeric: 'tabular-nums',
               whiteSpace: 'nowrap',
+              letterSpacing: '-0.01em',
             }}
           >
             {zoomPercent}%
@@ -209,21 +233,12 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
           <button
             onClick={onZoomToFit}
             title="Zoom to Fit"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 32,
-              height: '100%',
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
+            style={iconBtn}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </button>
 
@@ -231,64 +246,44 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
           <button
             onClick={onAutoLayout}
             title="Auto Layout"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 32,
-              height: '100%',
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
+            style={iconBtn}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
-              <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
-              <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
-              <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.4" fill="none"/>
+              <rect x="9" y="1" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.4" fill="none"/>
+              <rect x="1" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.4" fill="none"/>
+              <rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.4" fill="none"/>
             </svg>
           </button>
 
-          {/* Divider */}
-          <div style={{ width: 1, height: 18, background: 'var(--border-default)', flexShrink: 0 }} />
+          {/* Separator */}
+          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 2px' }} />
 
-          {/* Add terminal button */}
+          {/* Add terminal */}
           <button
             onClick={onAddTerminal}
             title="New Terminal (Ctrl+Shift+N)"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 36,
-              height: '100%',
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontSize: 16,
-              fontWeight: 400,
-              flexShrink: 0,
-            }}
+            style={iconBtn}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(122, 162, 247, 0.12)'; e.currentTarget.style.color = 'var(--accent-blue)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+              <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
             </svg>
           </button>
         </div>
 
-        {/* Expanded session list */}
+        {/* Session list (Figma layers panel style) */}
         {expanded && (
           <div
             style={{
-              borderTop: '1px solid var(--border-default)',
-              maxHeight: 320,
+              borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+              maxHeight: 300,
               overflowY: 'auto',
-              padding: '4px',
-              animation: 'slideInUp 0.2s var(--ease-out) both',
+              padding: 3,
+              animation: 'slideInUp 0.15s var(--ease-out) both',
             }}
           >
             {Array.from(terminals.values()).map((tw) => {
@@ -330,25 +325,38 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
                   className="sidebar-terminal-row"
                   onClick={() => handleClick(tw.id)}
                   style={{
-                    padding: '7px 8px',
-                    borderRadius: 'var(--radius-md)',
+                    padding: '6px 8px',
+                    borderRadius: 6,
                     cursor: 'pointer',
-                    background: isActive ? 'var(--bg-hover)' : 'transparent',
-                    borderLeft: isActive ? '2px solid var(--accent-blue)' : '2px solid transparent',
-                    transition: 'background var(--duration-fast) var(--ease-out)',
+                    background: isActive ? 'rgba(122, 162, 247, 0.1)' : 'transparent',
+                    position: 'relative',
+                    transition: 'background 100ms',
                   }}
                   onMouseEnter={(e) => {
-                    if (!isActive) e.currentTarget.style.background = 'rgba(30, 31, 46, 0.6)';
+                    if (!isActive) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
                   }}
                   onMouseLeave={(e) => {
                     if (!isActive) e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {isActive && (
                     <div
                       style={{
-                        width: 7,
-                        height: 7,
+                        position: 'absolute',
+                        left: 0,
+                        top: 5,
+                        bottom: 5,
+                        width: 2,
+                        background: 'var(--accent-blue)',
+                        borderRadius: 1,
+                      }}
+                    />
+                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <div
+                      style={{
+                        width: 6,
+                        height: 6,
                         borderRadius: '50%',
                         background: dotColor,
                         boxShadow: dotGlow,
@@ -358,17 +366,42 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
                     />
                     <span
                       style={{
-                        fontSize: 12,
-                        fontWeight: isActive ? 600 : 500,
+                        fontSize: 11.5,
+                        fontWeight: 600,
                         color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                         flex: 1,
+                        letterSpacing: '-0.01em',
                       }}
                     >
                       {displayName}
                     </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClaudeTerminal(status?.cwd || '', tw.x + 40, tw.y + 40);
+                      }}
+                      title="Open Claude here"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: 3,
+                        lineHeight: 1,
+                        flexShrink: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        opacity: 0.4,
+                        transition: 'opacity 100ms, background 100ms',
+                        borderRadius: 4,
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.4'; e.currentTarget.style.background = 'none'; }}
+                    >
+                      <ClaudeIcon />
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -381,69 +414,20 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
                         border: 'none',
                         color: 'var(--text-tertiary)',
                         cursor: 'pointer',
-                        padding: '2px 3px',
+                        padding: 3,
                         lineHeight: 1,
                         flexShrink: 0,
-                        opacity: 0.35,
-                        transition: 'opacity var(--duration-fast)',
-                        borderRadius: 'var(--radius-sm)',
+                        opacity: 0.4,
+                        transition: 'opacity 100ms, background 100ms',
+                        borderRadius: 4,
                       }}
-                      onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.35'; }}
+                      onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.4'; e.currentTarget.style.background = 'none'; }}
                     >
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                      <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
                         <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="1.5" fill="none"/>
                         <path d="M11 5V3a2 2 0 0 0-2-2H3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" stroke="currentColor" strokeWidth="1.5" fill="none"/>
                       </svg>
-                    </button>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      marginTop: 2,
-                      paddingLeft: 15,
-                      gap: 6,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 500,
-                        color: processColor,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        flex: 1,
-                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                        letterSpacing: '-0.2px',
-                      }}
-                    >
-                      {processName}
-                    </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onClaudeTerminal(status?.cwd || '', tw.x + 40, tw.y + 40);
-                      }}
-                      title="Open Claude here"
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: '2px 3px',
-                        lineHeight: 1,
-                        flexShrink: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        opacity: 0.35,
-                        transition: 'opacity var(--duration-fast)',
-                        borderRadius: 'var(--radius-sm)',
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.35'; }}
-                    >
-                      <ClaudeIcon />
                     </button>
                   </div>
                 </div>

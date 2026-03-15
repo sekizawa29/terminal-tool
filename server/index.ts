@@ -120,6 +120,92 @@ app.post('/api/upload', (req, res) => {
   }
 });
 
+// ── IPC: Agent-to-agent communication ────────────────────────────────
+
+// Send a message to another terminal's PTY (auto-appends CR for Enter)
+app.post('/api/ipc/send', (req, res) => {
+  const { target, message } = req.body || {};
+  if (!target || typeof message !== 'string') {
+    res.status(400).json({ error: 'target and message (string) are required' });
+    return;
+  }
+  const resolved = resolveSession(target);
+  if (!resolved) {
+    res.status(404).json({ error: `Target session not found: ${target}` });
+    return;
+  }
+
+  // Write message + carriage return to submit
+  ptyManager.write(resolved, message + '\r');
+
+  res.json({ ok: true, sessionId: resolved, message });
+});
+
+// Poll for IPC response — extracts rendered response by matching the sent message's echo
+app.get('/api/ipc/response/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const message = req.query.message as string;
+  if (!message) {
+    res.status(400).json({ error: 'message query param required (the sent message to match)' });
+    return;
+  }
+
+  const result = ptyManager.getIpcResponse(resolved, message);
+  if (!result) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const status = ptyManager.getSessionStatus(resolved);
+  res.json({
+    output: result.output,
+    isProcessing: result.isProcessing,
+    foregroundProcess: status?.foregroundProcess ?? 'unknown',
+  });
+});
+
+// Get the last agent response (most recent ❯ prompt → response)
+app.get('/api/ipc/last/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const result = ptyManager.getLastResponse(resolved);
+  if (!result) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const status = ptyManager.getSessionStatus(resolved);
+  res.json({
+    prompt: result.prompt,
+    output: result.output,
+    isProcessing: result.isProcessing,
+    foregroundProcess: status?.foregroundProcess ?? 'unknown',
+  });
+});
+
+// Get rendered terminal content (via headless xterm, no animation artifacts)
+app.get('/api/terminals/:sessionId/rendered', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const lines = parseInt(req.query.lines as string) || 0;
+  const clean = req.query.clean !== 'false';
+  const output = ptyManager.getRenderedBuffer(resolved, lines || undefined, clean);
+  if (output === null) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({ output, sessionId: resolved });
+});
+
 // Kill a specific terminal (supports short ID / name resolution)
 app.delete('/api/terminals/:sessionId', (req, res) => {
   const resolved = resolveSession(req.params.sessionId);

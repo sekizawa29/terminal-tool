@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import type { TerminalWindow } from '../types.js';
+import type { TerminalWindow, TerminalLink } from '../types.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
+const LINKS_KEY = 'terminal-board-links';
 
 interface SavedLayout {
   sessionId: string;
@@ -12,11 +13,25 @@ interface SavedLayout {
   title: string;
 }
 
+interface SavedLink {
+  sourceSessionId: string;
+  targetSessionId: string;
+}
+
+interface LinkDrag {
+  active: boolean;
+  sourceId: string | null;
+  mouseX: number;
+  mouseY: number;
+}
+
 interface TerminalState {
   terminals: Map<string, TerminalWindow>;
   activeTerminalId: string | null;
   nextZIndex: number;
   token: string | null;
+  links: TerminalLink[];
+  linkDrag: LinkDrag;
 
   setToken: (token: string) => void;
   addTerminal: (tw: TerminalWindow) => void;
@@ -26,6 +41,14 @@ interface TerminalState {
   setActive: (id: string | null) => void;
   saveLayout: () => void;
   loadLayout: () => SavedLayout[];
+
+  addLink: (sourceId: string, targetId: string) => void;
+  removeLink: (linkId: string) => void;
+  startLinkDrag: (sourceId: string) => void;
+  updateLinkDrag: (mouseX: number, mouseY: number) => void;
+  endLinkDrag: () => void;
+  saveLinks: () => void;
+  loadLinks: () => SavedLink[];
 }
 
 export const useTerminalStore = create<TerminalState>((set, get) => ({
@@ -33,6 +56,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   activeTerminalId: null,
   nextZIndex: 1,
   token: null,
+  links: [],
+  linkDrag: { active: false, sourceId: null, mouseX: 0, mouseY: 0 },
 
   setToken: (token) => set({ token }),
 
@@ -48,8 +73,9 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     set((state) => {
       const terminals = new Map(state.terminals);
       terminals.delete(id);
+      const links = state.links.filter((l) => l.sourceId !== id && l.targetId !== id);
       const activeTerminalId = state.activeTerminalId === id ? null : state.activeTerminalId;
-      return { terminals, activeTerminalId };
+      return { terminals, activeTerminalId, links };
     }),
 
   updateTerminal: (id, updates) =>
@@ -90,6 +116,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     } catch {
       // quota exceeded
     }
+    get().saveLinks();
   },
 
   loadLayout: () => {
@@ -99,6 +126,79 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     } catch {
       // corrupted
     }
+    return [];
+  },
+
+  addLink: (sourceId, targetId) => {
+    const state = get();
+    if (sourceId === targetId) return;
+    const exists = state.links.some(
+      (l) => l.sourceId === sourceId && l.targetId === targetId
+    );
+    if (exists) return;
+
+    const id = crypto.randomUUID();
+    const newLinks = [...state.links, { id, sourceId, targetId }];
+    set({ links: newLinks });
+
+    // Auto-name the target terminal on the server
+    const target = state.terminals.get(targetId);
+    if (target) {
+      const subCount = newLinks.filter((l) => l.sourceId === sourceId).length;
+      fetch(`/api/terminals/${target.sessionId}/name`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `sub-${subCount}` }),
+      }).catch(() => {});
+    }
+
+    get().saveLinks();
+  },
+
+  removeLink: (linkId) => {
+    set((state) => ({
+      links: state.links.filter((l) => l.id !== linkId),
+    }));
+    get().saveLinks();
+  },
+
+  startLinkDrag: (sourceId) => {
+    set({ linkDrag: { active: true, sourceId, mouseX: 0, mouseY: 0 } });
+  },
+
+  updateLinkDrag: (mouseX, mouseY) => {
+    set((state) => ({
+      linkDrag: { ...state.linkDrag, mouseX, mouseY },
+    }));
+  },
+
+  endLinkDrag: () => {
+    set({ linkDrag: { active: false, sourceId: null, mouseX: 0, mouseY: 0 } });
+  },
+
+  saveLinks: () => {
+    const { links, terminals } = get();
+    const saved: SavedLink[] = [];
+    for (const l of links) {
+      const source = terminals.get(l.sourceId);
+      const target = terminals.get(l.targetId);
+      if (source && target) {
+        saved.push({
+          sourceSessionId: source.sessionId,
+          targetSessionId: target.sessionId,
+        });
+      }
+    }
+    try {
+      localStorage.setItem(LINKS_KEY, JSON.stringify(saved));
+    } catch {}
+  },
+
+  loadLinks: () => {
+    try {
+      const raw = localStorage.getItem(LINKS_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
     return [];
   },
 }));

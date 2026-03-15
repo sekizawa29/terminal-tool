@@ -18,10 +18,21 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
   const { updateTerminal, removeTerminal, bringToFront, setActive, activeTerminalId, saveLayout } =
     useTerminalStore();
 
+  // Subscribe to only the fields we need (avoid re-render on every mousemove)
+  const linkDragActive = useTerminalStore((s) => s.linkDrag.active);
+  const linkDragSourceId = useTerminalStore((s) => s.linkDrag.sourceId);
+  const startLinkDrag = useTerminalStore((s) => s.startLinkDrag);
+  const addLink = useTerminalStore((s) => s.addLink);
+  const endLinkDrag = useTerminalStore((s) => s.endLinkDrag);
+
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const [isHovered, setIsHovered] = useState(false);
   const [closeHovered, setCloseHovered] = useState(false);
+  const [connectorHovered, setConnectorHovered] = useState(false);
+
+  const isActive = activeTerminalId === tw.id;
+  const isDropTarget = linkDragActive && linkDragSourceId !== tw.id;
 
   const onTitleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -76,13 +87,34 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
   }, [tw.id, bringToFront, setActive]);
 
   const onClose = useCallback(() => {
-    // Kill PTY on server
     fetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     removeTerminal(tw.id);
     saveLayout();
   }, [tw.id, tw.sessionId, removeTerminal, saveLayout]);
 
-  const isActive = activeTerminalId === tw.id;
+  // Link connector: start drag
+  const onStartConnector = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      bringToFront(tw.id);
+      setActive(tw.id);
+      startLinkDrag(tw.id);
+    },
+    [tw.id, bringToFront, setActive, startLinkDrag]
+  );
+
+  // Link drop target: complete link on mouseUp
+  const onDropLink = useCallback(
+    (e: React.MouseEvent) => {
+      if (linkDragActive && linkDragSourceId && linkDragSourceId !== tw.id) {
+        e.stopPropagation();
+        addLink(linkDragSourceId, tw.id);
+        endLinkDrag();
+      }
+    },
+    [linkDragActive, linkDragSourceId, tw.id, addLink, endLinkDrag]
+  );
 
   return (
     <div
@@ -90,6 +122,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
       onMouseDown={onWindowClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onMouseUp={onDropLink}
       style={{
         position: 'absolute',
         left: tw.x,
@@ -97,136 +130,204 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
         width: tw.width,
         height: tw.height,
         zIndex: tw.zIndex,
-        display: 'flex',
-        flexDirection: 'column',
-        borderRadius: 'var(--radius-lg)',
-        overflow: 'hidden',
-        border: isActive
-          ? '1px solid rgba(122, 162, 247, 0.5)'
-          : isHovered
-          ? '1px solid var(--border-strong)'
-          : '1px solid var(--border-subtle)',
-        boxShadow: isActive
-          ? 'var(--shadow-glow)'
-          : isHovered
-          ? 'var(--shadow-lg)'
-          : 'var(--shadow-window)',
-        transition: 'border-color var(--duration-normal) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out)',
+        overflow: 'visible',
       }}
     >
-      {/* Title bar — macOS-inspired */}
+      {/* Inner window container — rendered FIRST so connectors are on top */}
       <div
-        onMouseDown={onTitleMouseDown}
         style={{
-          height: 36,
-          background: isActive
-            ? 'linear-gradient(180deg, #1f2033 0%, #1a1b2a 100%)'
-            : 'linear-gradient(180deg, #1a1b28 0%, #16171f 100%)',
+          width: '100%',
+          height: '100%',
           display: 'flex',
-          alignItems: 'center',
-          padding: '0 12px',
-          cursor: 'grab',
-          userSelect: 'none',
-          flexShrink: 0,
-          gap: 10,
-          borderBottom: '1px solid rgba(0, 0, 0, 0.3)',
-          transition: 'background var(--duration-normal)',
+          flexDirection: 'column',
+          borderRadius: 'var(--radius-lg)',
+          overflow: 'hidden',
+          position: 'relative',
+          zIndex: 1,
+          border: isDropTarget
+            ? '1px solid rgba(187, 154, 247, 0.6)'
+            : isActive
+            ? '1px solid rgba(122, 162, 247, 0.5)'
+            : isHovered
+            ? '1px solid var(--border-strong)'
+            : '1px solid var(--border-subtle)',
+          boxShadow: isDropTarget
+            ? '0 0 24px rgba(187, 154, 247, 0.15), var(--shadow-window)'
+            : isActive
+            ? 'var(--shadow-glow)'
+            : isHovered
+            ? 'var(--shadow-lg)'
+            : 'var(--shadow-window)',
+          transition:
+            'border-color var(--duration-normal) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out)',
         }}
       >
-        {/* Traffic light — close button */}
+        {/* Title bar — macOS-inspired */}
         <div
+          onMouseDown={onTitleMouseDown}
           style={{
+            height: 36,
+            background: isActive
+              ? 'linear-gradient(180deg, #1f2033 0%, #1a1b2a 100%)'
+              : 'linear-gradient(180deg, #1a1b28 0%, #16171f 100%)',
             display: 'flex',
             alignItems: 'center',
-            gap: 6,
+            padding: '0 12px',
+            cursor: 'grab',
+            userSelect: 'none',
+            flexShrink: 0,
+            gap: 10,
+            borderBottom: '1px solid rgba(0, 0, 0, 0.3)',
+            transition: 'background var(--duration-normal)',
           }}
         >
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-            onMouseEnter={() => setCloseHovered(true)}
-            onMouseLeave={() => setCloseHovered(false)}
+          {/* Traffic light — close button */}
+          <div
             style={{
-              width: 12,
-              height: 12,
-              borderRadius: '50%',
-              border: 'none',
-              background: closeHovered
-                ? 'var(--accent-red)'
-                : isActive
-                ? 'rgba(247, 118, 142, 0.4)'
-                : 'var(--border-default)',
-              cursor: 'pointer',
-              padding: 0,
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all var(--duration-fast) var(--ease-out)',
-              boxShadow: closeHovered ? '0 0 6px rgba(247, 118, 142, 0.4)' : 'none',
+              gap: 6,
             }}
           >
-            {closeHovered && (
-              <svg width="6" height="6" viewBox="0 0 6 6" fill="none">
-                <path d="M1 1l4 4M5 1l-4 4" stroke="#1a1b26" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-            )}
-          </button>
-          {/* Decorative dots */}
-          <div
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
+              onMouseEnter={() => setCloseHovered(true)}
+              onMouseLeave={() => setCloseHovered(false)}
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                border: 'none',
+                background: closeHovered
+                  ? 'var(--accent-red)'
+                  : isActive
+                  ? 'rgba(247, 118, 142, 0.4)'
+                  : 'var(--border-default)',
+                cursor: 'pointer',
+                padding: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all var(--duration-fast) var(--ease-out)',
+                boxShadow: closeHovered ? '0 0 6px rgba(247, 118, 142, 0.4)' : 'none',
+              }}
+            >
+              {closeHovered && (
+                <svg width="6" height="6" viewBox="0 0 6 6" fill="none">
+                  <path
+                    d="M1 1l4 4M5 1l-4 4"
+                    stroke="#1a1b26"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              )}
+            </button>
+            {/* Decorative dots */}
+            <div
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                background: isActive ? 'rgba(224, 175, 104, 0.25)' : 'var(--border-default)',
+                transition: 'background var(--duration-normal)',
+              }}
+            />
+            <div
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                background: isActive ? 'rgba(158, 206, 106, 0.25)' : 'var(--border-default)',
+                transition: 'background var(--duration-normal)',
+              }}
+            />
+          </div>
+
+          {/* Title */}
+          <span
             style={{
-              width: 12,
-              height: 12,
-              borderRadius: '50%',
-              background: isActive ? 'rgba(224, 175, 104, 0.25)' : 'var(--border-default)',
-              transition: 'background var(--duration-normal)',
+              flex: 1,
+              fontSize: 11.5,
+              fontWeight: 500,
+              color: isActive ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+              textAlign: 'center',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              letterSpacing: '0.2px',
+              transition: 'color var(--duration-normal)',
             }}
-          />
-          <div
-            style={{
-              width: 12,
-              height: 12,
-              borderRadius: '50%',
-              background: isActive ? 'rgba(158, 206, 106, 0.25)' : 'var(--border-default)',
-              transition: 'background var(--duration-normal)',
-            }}
-          />
+          >
+            {tw.title}
+          </span>
+
+          {/* Right spacer to balance the traffic lights */}
+          <div style={{ width: 54 }} />
         </div>
 
-        {/* Title */}
-        <span
+        {/* Terminal content */}
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+          <TerminalContent
+            sessionId={tw.sessionId}
+            token={token}
+            isActive={isActive}
+            onZoom={onZoom}
+            onExit={onClose}
+          />
+          <ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} scale={scale} />
+        </div>
+      </div>
+
+      {/* Right connector — drag source (rendered AFTER inner div = on top) */}
+      <div
+        onMouseDown={onStartConnector}
+        onMouseEnter={() => setConnectorHovered(true)}
+        onMouseLeave={() => setConnectorHovered(false)}
+        style={{
+          position: 'absolute',
+          right: -7,
+          top: '50%',
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          background: connectorHovered ? '#7dcfff' : 'rgba(125, 207, 255, 0.5)',
+          border: '2px solid var(--bg-base)',
+          cursor: 'crosshair',
+          zIndex: 20,
+          opacity: isHovered || linkDragActive ? 1 : 0,
+          transition: 'opacity 0.2s, background 0.15s',
+          transform: connectorHovered
+            ? 'translateY(-50%) scale(1.3)'
+            : 'translateY(-50%)',
+          boxShadow: connectorHovered
+            ? '0 0 10px rgba(125, 207, 255, 0.5)'
+            : '0 0 4px rgba(125, 207, 255, 0.2)',
+        }}
+      />
+
+      {/* Left connector — target indicator during link drag */}
+      {isDropTarget && (
+        <div
           style={{
-            flex: 1,
-            fontSize: 11.5,
-            fontWeight: 500,
-            color: isActive ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-            textAlign: 'center',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            letterSpacing: '0.2px',
-            transition: 'color var(--duration-normal)',
+            position: 'absolute',
+            left: -7,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: 14,
+            height: 14,
+            borderRadius: '50%',
+            background: 'rgba(187, 154, 247, 0.6)',
+            border: '2px solid var(--bg-base)',
+            zIndex: 20,
+            boxShadow: '0 0 8px rgba(187, 154, 247, 0.4)',
+            animation: 'breathe 1.5s ease-in-out infinite',
           }}
-        >
-          {tw.title}
-        </span>
-
-        {/* Right spacer to balance the traffic lights */}
-        <div style={{ width: 54 }} />
-      </div>
-
-      {/* Terminal content */}
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <TerminalContent
-          sessionId={tw.sessionId}
-          token={token}
-          isActive={isActive}
-          onZoom={onZoom}
-          onExit={onClose}
         />
-        <ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} scale={scale} />
-      </div>
+      )}
     </div>
   );
 }

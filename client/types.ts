@@ -9,6 +9,12 @@ export interface TerminalWindow {
   title: string;
 }
 
+export interface TerminalLink {
+  id: string;
+  sourceId: string;
+  targetId: string;
+}
+
 export interface CanvasState {
   offsetX: number;
   offsetY: number;

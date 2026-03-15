@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import TerminalWindow from './TerminalWindow.js';
+import LinkLines from './LinkLines.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import type { CanvasTransform } from '../hooks/useCanvas.js';
 
@@ -26,7 +27,10 @@ export default function Canvas({
 }: CanvasProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const token = useTerminalStore((s) => s.token);
+  const linkDragActive = useTerminalStore((s) => s.linkDrag.active);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
 
   // Space key tracking
   useEffect(() => {
@@ -111,6 +115,29 @@ export default function Canvas({
     return () => window.removeEventListener('mousedown', handler);
   }, []);
 
+  // Global handlers for link drag (track mouse position + cancel on mouseUp)
+  useEffect(() => {
+    if (!linkDragActive) return;
+
+    const onMove = (e: MouseEvent) => {
+      const t = transformRef.current;
+      const canvasX = (e.clientX - t.offsetX) / t.scale;
+      const canvasY = (e.clientY - t.offsetY) / t.scale;
+      useTerminalStore.getState().updateLinkDrag(canvasX, canvasY);
+    };
+
+    const onUp = () => {
+      useTerminalStore.getState().endLinkDrag();
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [linkDragActive]);
+
   const dotOpacity = Math.min(0.28, 0.15 + transform.scale * 0.06);
 
   return (
@@ -125,7 +152,7 @@ export default function Canvas({
         inset: 0,
         overflow: 'hidden',
         background: 'var(--bg-deepest)',
-        cursor: getIsPanning() ? 'grabbing' : 'grab',
+        cursor: linkDragActive ? 'crosshair' : getIsPanning() ? 'grabbing' : 'grab',
       }}
     >
       {/* Subtle radial gradient — depth atmosphere */}
@@ -153,13 +180,14 @@ export default function Canvas({
       {/* Transform container */}
       <div
         style={{
-          transform: `translate(${transform.offsetX}px, ${transform.offsetY}px)`,
-          zoom: transform.scale,
+          transform: `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale})`,
+          transformOrigin: '0 0',
           position: 'absolute',
           top: 0,
           left: 0,
         }}
       >
+        <LinkLines />
         {token &&
           Array.from(terminals.values()).map((tw) => (
             <TerminalWindow
