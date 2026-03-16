@@ -1,21 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import type { CanvasTransform } from '../hooks/useCanvas.js';
-
-interface SessionStatus {
-  sessionId: string;
-  pid: number;
-  cwd: string;
-  cwdShort: string;
-  foregroundProcess: string;
-  isRunning: boolean;
-  isProcessing: boolean;
-  name?: string;
-}
+import type { SessionStatus } from '../types.js';
 
 interface SidebarProps {
   transform: CanvasTransform;
   onAddTerminal: () => void;
+  onAddBrowser: () => void;
   onDuplicateTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onClaudeTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onCodexTerminal: (cwd: string, nearX: number, nearY: number) => void;
@@ -52,11 +43,11 @@ function isAgentProcess(process: string): boolean {
   return AGENT_PROCESSES.has(process);
 }
 
-export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout }: SidebarProps) {
+export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout }: SidebarProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
-  const { bringToFront, setActive, updateTerminal } = useTerminalStore();
-  const [statuses, setStatuses] = useState<Map<string, SessionStatus>>(new Map());
+  const statuses = useTerminalStore((s) => s.sessionStatuses);
+  const { bringToFront, setActive, updateTerminal, setSessionStatuses } = useTerminalStore();
   const [expanded, setExpanded] = useState(false);
 
   const zoomPercent = Math.round(transform.scale * 100);
@@ -73,7 +64,7 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
         for (const s of data.statuses as SessionStatus[]) {
           map.set(s.sessionId, s);
         }
-        setStatuses(map);
+        setSessionStatuses(map);
         const store = useTerminalStore.getState();
         for (const tw of store.terminals.values()) {
           const status = map.get(tw.sessionId);
@@ -89,7 +80,7 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
     poll();
     const interval = setInterval(poll, 2000);
     return () => { active = false; clearInterval(interval); };
-  }, [updateTerminal]);
+  }, [updateTerminal, setSessionStatuses]);
 
   const handleClick = useCallback(
     (id: string) => {
@@ -280,6 +271,21 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
               <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
             </svg>
           </button>
+
+          {/* Add browser */}
+          <button
+            onClick={() => onAddBrowser()}
+            title="New Browser"
+            style={iconBtn}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(125, 207, 255, 0.12)'; e.currentTarget.style.color = 'var(--accent-cyan)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
+              <ellipse cx="8" cy="8" rx="3" ry="6.5" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.3"/>
+            </svg>
+          </button>
         </div>
 
         {/* Session list (Figma layers panel style) */}
@@ -294,15 +300,17 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
             }}
           >
             {Array.from(terminals.values()).map((tw) => {
-              const status = statuses.get(tw.sessionId);
+              const isBrowser = tw.type === 'browser';
+              const status = isBrowser ? undefined : statuses.get(tw.sessionId);
               const isActive = activeTerminalId === tw.id;
               const running = status?.isRunning ?? false;
               const processing = status?.isProcessing ?? false;
               const agent = status ? isAgentProcess(status.foregroundProcess) : false;
-              const displayName = getDisplayName(status);
-              const processName = status?.foregroundProcess ?? 'bash';
+              const displayName = isBrowser ? (tw.title || 'Browser') : getDisplayName(status);
 
-              const dotColor = running && agent && processing
+              const dotColor = isBrowser
+                ? 'var(--accent-cyan)'
+                : running && agent && processing
                 ? 'var(--accent-yellow)'
                 : running && agent
                 ? 'var(--accent-green)'
@@ -310,21 +318,15 @@ export default function Sidebar({ transform, onAddTerminal, onDuplicateTerminal,
                 ? 'var(--accent-yellow)'
                 : 'var(--text-ghost)';
 
-              const dotGlow = running && agent && !processing
+              const dotGlow = isBrowser
+                ? '0 0 6px rgba(125, 207, 255, 0.4)'
+                : running && agent && !processing
                 ? '0 0 6px rgba(158, 206, 106, 0.5)'
                 : running && processing
                 ? '0 0 6px rgba(224, 175, 104, 0.5)'
                 : undefined;
 
-              const processColor = running && agent && processing
-                ? 'var(--accent-yellow)'
-                : running && agent
-                ? 'var(--accent-green)'
-                : running
-                ? 'var(--accent-yellow)'
-                : 'var(--text-tertiary)';
-
-              const isPulsing = running && (agent || processing);
+              const isPulsing = !isBrowser && running && (agent || processing);
 
               return (
                 <div

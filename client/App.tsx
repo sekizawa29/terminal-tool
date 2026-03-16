@@ -164,6 +164,34 @@ export default function App() {
     }, 500);
   }, [token, addTerminal, canvas]);
 
+  const addBrowserPanel = useCallback((url?: string) => {
+    const { offsetX, offsetY, scale } = canvas.transform;
+    const centerX = (window.innerWidth / 2 - offsetX) / scale;
+    const centerY = (window.innerHeight / 2 - offsetY) / scale;
+
+    const width = 800;
+    const height = 550;
+
+    const initialUrl = url || 'https://www.google.com/webhp?igu=1';
+    const host = initialUrl.replace(/^https?:\/\//, '').split('/')[0];
+
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId: '', // no server session for browser panels
+      type: 'browser',
+      url: initialUrl,
+      x: centerX - width / 2,
+      y: centerY - height / 2,
+      width,
+      height,
+      zIndex: 0,
+      title: host,
+    };
+
+    addTerminal(tw);
+    useTerminalStore.getState().saveLayout();
+  }, [canvas.transform, addTerminal]);
+
   // Restore sessions on mount (with StrictMode guard)
   const restoredRef = useRef(false);
   useEffect(() => {
@@ -177,6 +205,24 @@ export default function App() {
 
       let reconnected = 0;
       for (const layout of savedLayouts) {
+        // Restore browser panels (no server session needed)
+        if (layout.type === 'browser') {
+          const tw: TerminalWindow = {
+            id: crypto.randomUUID(),
+            sessionId: '',
+            type: 'browser',
+            url: layout.url,
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+            zIndex: 0,
+            title: layout.title || 'Browser',
+          };
+          addTerminal(tw);
+          reconnected++;
+          continue;
+        }
         if (layout.sessionId && activeSet.has(layout.sessionId)) {
           terminalCounter++;
           const tw: TerminalWindow = {
@@ -299,6 +345,7 @@ export default function App() {
       <Sidebar
         transform={canvas.transform}
         onAddTerminal={addNewTerminal}
+        onAddBrowser={addBrowserPanel}
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
         onCodexTerminal={codexTerminal}

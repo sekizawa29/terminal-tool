@@ -1,11 +1,13 @@
 import { create } from 'zustand';
-import type { TerminalWindow, TerminalLink } from '../types.js';
+import type { TerminalWindow, TerminalLink, SessionStatus } from '../types.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
 const LINKS_KEY = 'terminal-board-links';
 
 interface SavedLayout {
   sessionId: string;
+  type?: 'terminal' | 'browser';
+  url?: string;
   x: number;
   y: number;
   width: number;
@@ -32,8 +34,10 @@ interface TerminalState {
   token: string | null;
   links: TerminalLink[];
   linkDrag: LinkDrag;
+  sessionStatuses: Map<string, SessionStatus>;
 
   setToken: (token: string) => void;
+  setSessionStatuses: (statuses: Map<string, SessionStatus>) => void;
   addTerminal: (tw: TerminalWindow) => void;
   removeTerminal: (id: string) => void;
   updateTerminal: (id: string, updates: Partial<TerminalWindow>) => void;
@@ -58,8 +62,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   token: null,
   links: [],
   linkDrag: { active: false, sourceId: null, mouseX: 0, mouseY: 0 },
+  sessionStatuses: new Map(),
 
   setToken: (token) => set({ token }),
+  setSessionStatuses: (statuses) => set({ sessionStatuses: statuses }),
 
   addTerminal: (tw) =>
     set((state) => {
@@ -105,6 +111,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const { terminals } = get();
     const layout: SavedLayout[] = Array.from(terminals.values()).map((tw) => ({
       sessionId: tw.sessionId,
+      type: tw.type,
+      url: tw.url,
       x: tw.x,
       y: tw.y,
       width: tw.width,

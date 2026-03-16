@@ -1,8 +1,14 @@
 import { useCallback, useRef, useState } from 'react';
 import TerminalContent from './TerminalContent.js';
+import BrowserContent from './BrowserContent.js';
 import ResizeHandle from './ResizeHandle.js';
 import type { TerminalWindow as TWType } from '../types.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
+
+const AGENT_PROCESSES = new Set([
+  'claude', 'codex', 'aider', 'cursor', 'copilot',
+  'cline', 'roo',
+]);
 
 interface TerminalWindowProps {
   tw: TWType;
@@ -30,6 +36,16 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
   const [isHovered, setIsHovered] = useState(false);
   const [closeHovered, setCloseHovered] = useState(false);
   const [connectorHovered, setConnectorHovered] = useState(false);
+
+  const isBrowser = tw.type === 'browser';
+  const status = useTerminalStore((s) => s.sessionStatuses.get(tw.sessionId));
+  const isAgentProcessing = !!(
+    !isBrowser &&
+    status &&
+    status.isRunning &&
+    AGENT_PROCESSES.has(status.foregroundProcess) &&
+    status.isProcessing
+  );
 
   const isActive = activeTerminalId === tw.id;
   const isDropTarget = linkDragActive && linkDragSourceId !== tw.id;
@@ -87,10 +103,17 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
   }, [tw.id, bringToFront, setActive]);
 
   const onClose = useCallback(() => {
-    fetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
+    if (!isBrowser) {
+      fetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
+    }
     removeTerminal(tw.id);
     saveLayout();
-  }, [tw.id, tw.sessionId, removeTerminal, saveLayout]);
+  }, [tw.id, tw.sessionId, isBrowser, removeTerminal, saveLayout]);
+
+  const onUrlChange = useCallback((url: string) => {
+    updateTerminal(tw.id, { url, title: url.replace(/^https?:\/\//, '').split('/')[0] || url });
+    saveLayout();
+  }, [tw.id, updateTerminal, saveLayout]);
 
   // Link connector: start drag
   const onStartConnector = useCallback(
@@ -146,6 +169,8 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
           zIndex: 1,
           border: isDropTarget
             ? '1px solid rgba(187, 154, 247, 0.6)'
+            : isAgentProcessing
+            ? '1px solid rgba(224, 175, 104, 0.6)'
             : isActive
             ? '1px solid rgba(122, 162, 247, 0.5)'
             : isHovered
@@ -153,11 +178,14 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
             : '1px solid var(--border-subtle)',
           boxShadow: isDropTarget
             ? '0 0 24px rgba(187, 154, 247, 0.15), var(--shadow-window)'
+            : isAgentProcessing
+            ? '0 0 0 1px rgba(224, 175, 104, 0.5), 0 0 20px rgba(224, 175, 104, 0.15), 0 0 40px rgba(224, 175, 104, 0.08), 0 8px 32px rgba(0, 0, 0, 0.5)'
             : isActive
             ? 'var(--shadow-glow)'
             : isHovered
             ? 'var(--shadow-lg)'
             : 'var(--shadow-window)',
+          animation: isAgentProcessing ? 'borderGlowPulse 2s ease-in-out infinite' : undefined,
           transition:
             'border-color var(--duration-normal) var(--ease-out), box-shadow var(--duration-slow) var(--ease-out)',
         }}
@@ -250,15 +278,23 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
           <div style={{ width: 12 }} />
         </div>
 
-        {/* Terminal content */}
+        {/* Content */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-          <TerminalContent
-            sessionId={tw.sessionId}
-            token={token}
-            isActive={isActive}
-            onZoom={onZoom}
-            onExit={onClose}
-          />
+          {isBrowser ? (
+            <BrowserContent
+              url={tw.url || 'https://www.google.com/webhp?igu=1'}
+              isActive={isActive}
+              onUrlChange={onUrlChange}
+            />
+          ) : (
+            <TerminalContent
+              sessionId={tw.sessionId}
+              token={token}
+              isActive={isActive}
+              onZoom={onZoom}
+              onExit={onClose}
+            />
+          )}
           <ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} scale={scale} />
         </div>
       </div>
