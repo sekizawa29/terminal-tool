@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Canvas from './components/Canvas.js';
 import Sidebar from './components/Sidebar.js';
+import ExplorerContent from './components/ExplorerContent.js';
 import { useCanvas } from './hooks/useCanvas.js';
 import { useTerminalStore } from './hooks/useTerminalStore.js';
 import type { TerminalWindow } from './types.js';
@@ -29,10 +30,14 @@ async function fetchActiveSessions(): Promise<string[]> {
   return data.sessions;
 }
 
+const PANEL_WIDTH = 290;
+
 export default function App() {
   const canvas = useCanvas();
   const { setToken, addTerminal, loadLayout } = useTerminalStore();
   const token = useTerminalStore((s) => s.token);
+  const [explorerOpen, setExplorerOpen] = useState(false);
+  const [explorerRoot, setExplorerRoot] = useState('~');
 
   // Fetch token on mount (with StrictMode guard)
   useEffect(() => {
@@ -164,6 +169,48 @@ export default function App() {
     }, 500);
   }, [token, addTerminal, canvas]);
 
+  const toggleExplorer = useCallback(() => {
+    setExplorerOpen((prev) => !prev);
+  }, []);
+
+  const openFileEditor = useCallback((filePath: string, fileName: string, nearX?: number, nearY?: number) => {
+    // Check if this file is already open
+    const existing = Array.from(useTerminalStore.getState().terminals.values()).find(
+      (t) => t.type === 'editor' && t.filePath === filePath
+    );
+    if (existing) {
+      useTerminalStore.getState().bringToFront(existing.id);
+      useTerminalStore.getState().setActive(existing.id);
+      canvas.focusOn(existing.x, existing.y, existing.width, existing.height);
+      return;
+    }
+
+    const width = 650;
+    const height = 500;
+
+    // Place at viewport center if no position given (e.g. from fixed explorer)
+    const { offsetX, offsetY, scale } = canvas.transform;
+    const cx = nearX ?? (window.innerWidth / 2 - offsetX) / scale;
+    const cy = nearY ?? (window.innerHeight / 2 - offsetY) / scale;
+
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId: '',
+      type: 'editor',
+      filePath,
+      x: cx,
+      y: cy,
+      width,
+      height,
+      zIndex: 0,
+      title: fileName,
+    };
+
+    addTerminal(tw);
+    canvas.focusOn(tw.x, tw.y, tw.width, tw.height);
+    useTerminalStore.getState().saveLayout();
+  }, [addTerminal, canvas]);
+
   const addBrowserPanel = useCallback((url?: string) => {
     const { offsetX, offsetY, scale } = canvas.transform;
     const centerX = (window.innerWidth / 2 - offsetX) / scale;
@@ -172,8 +219,8 @@ export default function App() {
     const width = 800;
     const height = 550;
 
-    const initialUrl = url || 'https://www.google.com/webhp?igu=1';
-    const host = initialUrl.replace(/^https?:\/\//, '').split('/')[0];
+    const initialUrl = url || 'about:blank';
+    const host = initialUrl === 'about:blank' ? 'Browser' : initialUrl.replace(/^https?:\/\//, '').split('/')[0];
 
     const tw: TerminalWindow = {
       id: crypto.randomUUID(),
@@ -218,6 +265,42 @@ export default function App() {
             height: layout.height,
             zIndex: 0,
             title: layout.title || 'Browser',
+          };
+          addTerminal(tw);
+          reconnected++;
+          continue;
+        }
+        // Restore explorer panels
+        if (layout.type === 'explorer') {
+          const tw: TerminalWindow = {
+            id: crypto.randomUUID(),
+            sessionId: '',
+            type: 'explorer',
+            explorerRoot: layout.explorerRoot,
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+            zIndex: 0,
+            title: layout.title || 'Explorer',
+          };
+          addTerminal(tw);
+          reconnected++;
+          continue;
+        }
+        // Restore editor panels
+        if (layout.type === 'editor') {
+          const tw: TerminalWindow = {
+            id: crypto.randomUUID(),
+            sessionId: '',
+            type: 'editor',
+            filePath: layout.filePath,
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+            zIndex: 0,
+            title: layout.title || 'Editor',
           };
           addTerminal(tw);
           reconnected++;
@@ -332,20 +415,101 @@ export default function App() {
 
   return (
     <>
-      <Canvas
-        transform={canvas.transform}
-        startPan={canvas.startPan}
-        updatePan={canvas.updatePan}
-        endPan={canvas.endPan}
-        zoom={canvas.zoom}
-        getIsSpaceDown={canvas.getIsSpaceDown}
-        getIsPanning={canvas.getIsPanning}
-        setSpaceDown={canvas.setSpaceDown}
-      />
+      {/* Fixed explorer panel — aligned with toolbar, rounded, floating */}
+      {explorerOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            left: 12,
+            top: 58,
+            bottom: 12,
+            width: PANEL_WIDTH,
+            zIndex: 9999,
+            background: 'rgba(22, 22, 30, 0.35)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            border: 'none',
+            borderRadius: 10,
+            boxShadow: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            animation: 'scaleIn 0.2s var(--ease-out) both',
+          }}
+        >
+          {/* Explorer header */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              height: 34,
+              padding: '0 10px',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
+              flexShrink: 0,
+              gap: 7,
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
+              <path d="M2 4a1 1 0 011-1h3.586a1 1 0 01.707.293L8.414 4.414A1 1 0 009.121 4.7H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+            </svg>
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.04em', textTransform: 'uppercase', flex: 1 }}>
+              Explorer
+            </span>
+            <button
+              onClick={toggleExplorer}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 20,
+                height: 20,
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-tertiary)',
+                cursor: 'pointer',
+                borderRadius: 4,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+              title="Close Explorer"
+            >
+              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              </svg>
+            </button>
+          </div>
+          {/* Explorer content */}
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <ExplorerContent
+              rootPath={explorerRoot}
+              isActive={true}
+              onOpenFile={(filePath, fileName) => openFileEditor(filePath, fileName)}
+              onNavigate={(newRoot) => setExplorerRoot(newRoot)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Canvas */}
+      <div style={{ position: 'fixed', inset: 0 }}>
+        <Canvas
+          transform={canvas.transform}
+          startPan={canvas.startPan}
+          updatePan={canvas.updatePan}
+          endPan={canvas.endPan}
+          zoom={canvas.zoom}
+          getIsSpaceDown={canvas.getIsSpaceDown}
+          getIsPanning={canvas.getIsPanning}
+          setSpaceDown={canvas.setSpaceDown}
+          onOpenFile={openFileEditor}
+        />
+      </div>
       <Sidebar
         transform={canvas.transform}
         onAddTerminal={addNewTerminal}
         onAddBrowser={addBrowserPanel}
+        onToggleExplorer={toggleExplorer}
+        explorerOpen={explorerOpen}
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
         onCodexTerminal={codexTerminal}
@@ -353,6 +517,30 @@ export default function App() {
         onZoomToFit={handleZoomToFit}
         onAutoLayout={handleAutoLayout}
       />
+      {/* Zoom indicator — fixed bottom-right */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: 12,
+          right: 12,
+          zIndex: 10000,
+          background: 'rgba(22, 22, 30, 0.5)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          border: '1px solid rgba(255, 255, 255, 0.04)',
+          borderRadius: 8,
+          padding: '4px 10px',
+          fontSize: 10.5,
+          fontWeight: 500,
+          color: 'var(--text-ghost)',
+          fontVariantNumeric: 'tabular-nums',
+          userSelect: 'none',
+          pointerEvents: 'none',
+          letterSpacing: '-0.01em',
+        }}
+      >
+        {Math.round(canvas.transform.scale * 100)}%
+      </div>
       <div className="noise-overlay" />
     </>
   );

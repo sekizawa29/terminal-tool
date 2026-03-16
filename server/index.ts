@@ -2,9 +2,9 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { randomBytes } from 'crypto';
-import { resolve, dirname, join } from 'path';
+import { resolve, dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, writeFileSync } from 'fs';
+import { existsSync, writeFileSync, readdirSync, readFileSync, statSync } from 'fs';
 import { PtyManager } from './pty-manager.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -275,6 +275,164 @@ app.delete('/api/terminals/:sessionId', (req, res) => {
     res.json({ ok: true });
   } else {
     res.status(404).json({ error: 'Session not found' });
+  }
+});
+
+// ── Files: Directory listing & file reading ───────────────────────────
+
+// List directory contents
+app.get('/api/files', (req, res) => {
+  const dirPath = (req.query.path as string) || process.env.HOME || '/';
+  try {
+    const resolved = resolve(dirPath);
+    const entries = readdirSync(resolved, { withFileTypes: true });
+    const files = entries
+      .filter((e) => !e.name.startsWith('.')) // hide dotfiles by default
+      .map((e) => {
+        const fullPath = join(resolved, e.name);
+        let size = 0;
+        let modified = '';
+        try {
+          const st = statSync(fullPath);
+          size = st.size;
+          modified = st.mtime.toISOString();
+        } catch { /* permission denied */ }
+        return {
+          name: e.name,
+          path: fullPath,
+          isDirectory: e.isDirectory(),
+          size,
+          modified,
+          extension: e.isDirectory() ? '' : extname(e.name).slice(1),
+        };
+      })
+      .sort((a, b) => {
+        // directories first, then alphabetical
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    res.json({ path: resolved, files });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// List directory including hidden files
+app.get('/api/files/all', (req, res) => {
+  const dirPath = (req.query.path as string) || process.env.HOME || '/';
+  try {
+    const resolved = resolve(dirPath);
+    const entries = readdirSync(resolved, { withFileTypes: true });
+    const files = entries
+      .map((e) => {
+        const fullPath = join(resolved, e.name);
+        let size = 0;
+        let modified = '';
+        try {
+          const st = statSync(fullPath);
+          size = st.size;
+          modified = st.mtime.toISOString();
+        } catch { /* permission denied */ }
+        return {
+          name: e.name,
+          path: fullPath,
+          isDirectory: e.isDirectory(),
+          size,
+          modified,
+          extension: e.isDirectory() ? '' : extname(e.name).slice(1),
+        };
+      })
+      .sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    res.json({ path: resolved, files });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// MIME types for binary serving
+const IMAGE_MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
+  bmp: 'image/bmp', ico: 'image/x-icon',
+};
+
+// Read file contents (JSON for text, raw binary for images when mode=raw)
+app.get('/api/files/read', (req, res) => {
+  const filePath = req.query.path as string;
+  const mode = req.query.mode as string;
+  if (!filePath) {
+    res.status(400).json({ error: 'path query param required' });
+    return;
+  }
+  try {
+    const resolved = resolve(filePath);
+    const st = statSync(resolved);
+    const ext = extname(resolved).slice(1).toLowerCase();
+
+    // Raw mode: serve binary with correct MIME type (for images)
+    if (mode === 'raw') {
+      if (st.size > 10 * 1024 * 1024) {
+        res.status(413).json({ error: 'File too large (max 10MB)' });
+        return;
+      }
+      const mime = IMAGE_MIME[ext] || 'application/octet-stream';
+      res.setHeader('Content-Type', mime);
+      res.send(readFileSync(resolved));
+      return;
+    }
+
+    // Text mode: JSON response
+    if (st.size > 2 * 1024 * 1024) {
+      res.status(413).json({ error: 'File too large (max 2MB)' });
+      return;
+    }
+    const content = readFileSync(resolved, 'utf-8');
+    res.json({
+      path: resolved,
+      name: basename(resolved),
+      content,
+      extension: ext,
+      size: st.size,
+    });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// Serve raw file (for images, binary files)
+const MIME_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+};
+
+app.get('/api/files/raw', (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) {
+    res.status(400).json({ error: 'path query param required' });
+    return;
+  }
+  try {
+    const resolved = resolve(filePath);
+    const st = statSync(resolved);
+    if (st.size > 10 * 1024 * 1024) {
+      res.status(413).json({ error: 'File too large (max 10MB)' });
+      return;
+    }
+    const ext = extname(resolved).slice(1).toLowerCase();
+    const mime = MIME_TYPES[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.send(readFileSync(resolved));
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
   }
 });
 

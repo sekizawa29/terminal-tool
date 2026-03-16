@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import TerminalContent from './TerminalContent.js';
 import BrowserContent from './BrowserContent.js';
+import ExplorerContent from './ExplorerContent.js';
+import EditorContent from './EditorContent.js';
 import ResizeHandle from './ResizeHandle.js';
 import type { TerminalWindow as TWType } from '../types.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
@@ -15,12 +17,13 @@ interface TerminalWindowProps {
   token: string;
   scale: number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
+  onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
 }
 
 const MIN_WIDTH = 300;
 const MIN_HEIGHT = 200;
 
-export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWindowProps) {
+export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }: TerminalWindowProps) {
   const { updateTerminal, removeTerminal, bringToFront, setActive, activeTerminalId, saveLayout } =
     useTerminalStore();
 
@@ -38,6 +41,8 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
   const [connectorHovered, setConnectorHovered] = useState(false);
 
   const isBrowser = tw.type === 'browser';
+  const isExplorer = tw.type === 'explorer';
+  const isEditor = tw.type === 'editor';
   const status = useTerminalStore((s) => s.sessionStatuses.get(tw.sessionId));
   const isAgentProcessing = !!(
     !isBrowser &&
@@ -282,9 +287,26 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           {isBrowser ? (
             <BrowserContent
-              url={tw.url || 'https://www.google.com/webhp?igu=1'}
+              url={tw.url || 'about:blank'}
               isActive={isActive}
               onUrlChange={onUrlChange}
+            />
+          ) : isExplorer ? (
+            <ExplorerContent
+              rootPath={tw.explorerRoot || '/'}
+              isActive={isActive}
+              onOpenFile={(filePath, fileName) => {
+                onOpenFile?.(filePath, fileName, tw.x + tw.width + 20, tw.y);
+              }}
+              onNavigate={(newRoot) => {
+                updateTerminal(tw.id, { explorerRoot: newRoot, title: newRoot.split('/').pop() || 'Explorer' });
+                saveLayout();
+              }}
+            />
+          ) : isEditor ? (
+            <EditorContent
+              filePath={tw.filePath || ''}
+              isActive={isActive}
             />
           ) : (
             <TerminalContent
@@ -299,35 +321,37 @@ export default function TerminalWindow({ tw, token, scale, onZoom }: TerminalWin
         </div>
       </div>
 
-      {/* Right connector — drag source (rendered AFTER inner div = on top) */}
-      <div
-        onMouseDown={onStartConnector}
-        onMouseEnter={() => setConnectorHovered(true)}
-        onMouseLeave={() => setConnectorHovered(false)}
-        style={{
-          position: 'absolute',
-          right: -7,
-          top: '50%',
-          width: 14,
-          height: 14,
-          borderRadius: '50%',
-          background: connectorHovered ? '#7dcfff' : 'rgba(125, 207, 255, 0.5)',
-          border: '2px solid var(--bg-base)',
-          cursor: 'crosshair',
-          zIndex: 20,
-          opacity: isHovered || linkDragActive ? 1 : 0,
-          transition: 'opacity 0.2s, background 0.15s',
-          transform: connectorHovered
-            ? 'translateY(-50%) scale(1.3)'
-            : 'translateY(-50%)',
-          boxShadow: connectorHovered
-            ? '0 0 10px rgba(125, 207, 255, 0.5)'
-            : '0 0 4px rgba(125, 207, 255, 0.2)',
-        }}
-      />
+      {/* Right connector — drag source (only for terminals) */}
+      {!isBrowser && !isExplorer && !isEditor && (
+        <div
+          onMouseDown={onStartConnector}
+          onMouseEnter={() => setConnectorHovered(true)}
+          onMouseLeave={() => setConnectorHovered(false)}
+          style={{
+            position: 'absolute',
+            right: -7,
+            top: '50%',
+            width: 14,
+            height: 14,
+            borderRadius: '50%',
+            background: connectorHovered ? '#7dcfff' : 'rgba(125, 207, 255, 0.5)',
+            border: '2px solid var(--bg-base)',
+            cursor: 'crosshair',
+            zIndex: 20,
+            opacity: isHovered || linkDragActive ? 1 : 0,
+            transition: 'opacity 0.2s, background 0.15s',
+            transform: connectorHovered
+              ? 'translateY(-50%) scale(1.3)'
+              : 'translateY(-50%)',
+            boxShadow: connectorHovered
+              ? '0 0 10px rgba(125, 207, 255, 0.5)'
+              : '0 0 4px rgba(125, 207, 255, 0.2)',
+          }}
+        />
+      )}
 
-      {/* Left connector — target indicator during link drag */}
-      {isDropTarget && (
+      {/* Left connector — target indicator during link drag (only for terminals) */}
+      {isDropTarget && !isBrowser && !isExplorer && !isEditor && (
         <div
           style={{
             position: 'absolute',

@@ -224,6 +224,132 @@ button[title="Open Claude here"]:hover {
   background-size: 256px 256px;
 }
 
+/* ── Markdown body ── */
+.markdown-body {
+  color: #c0caf5;
+  line-height: 1.7;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  color: #c0caf5;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.markdown-body h1 { font-size: 1.6em; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.35em; border-bottom: 1px solid rgba(255,255,255,0.04); padding-bottom: 0.25em; }
+.markdown-body h3 { font-size: 1.15em; }
+.markdown-body h4 { font-size: 1em; }
+
+.markdown-body p {
+  margin: 0.6em 0;
+}
+
+.markdown-body a {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.markdown-body em {
+  color: var(--accent-magenta);
+}
+
+.markdown-body code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.88em;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  color: var(--accent-cyan);
+}
+
+.markdown-body pre {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  color: #c0caf5;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid var(--accent-blue);
+  padding: 0.3em 1em;
+  margin: 0.8em 0;
+  color: var(--text-tertiary);
+  background: rgba(122, 162, 247, 0.04);
+  border-radius: 0 6px 6px 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.8em;
+  margin: 0.5em 0;
+}
+
+.markdown-body li {
+  margin: 0.25em 0;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin: 1.5em 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.8em 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 6px 12px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.markdown-body th {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 600;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 0.5em 0;
+}
+
+.markdown-body input[type="checkbox"] {
+  margin-right: 6px;
+}
+
 /* ── Focus ring ── */
 :focus-visible {
   outline: 2px solid var(--accent-blue);

@@ -13,6 +13,7 @@ interface CanvasProps {
   getIsSpaceDown: () => boolean;
   getIsPanning: () => boolean;
   setSpaceDown: (down: boolean) => void;
+  onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
 }
 
 export default function Canvas({
@@ -24,6 +25,7 @@ export default function Canvas({
   getIsSpaceDown,
   getIsPanning,
   setSpaceDown,
+  onOpenFile,
 }: CanvasProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const token = useTerminalStore((s) => s.token);
@@ -148,7 +150,7 @@ export default function Canvas({
       onMouseUp={onMouseUp}
       onWheel={onWheel}
       style={{
-        position: 'fixed',
+        position: 'absolute',
         inset: 0,
         overflow: 'hidden',
         background: 'var(--bg-deepest)',
@@ -196,6 +198,7 @@ export default function Canvas({
               token={token}
               scale={transform.scale}
               onZoom={zoom}
+              onOpenFile={onOpenFile}
             />
           ))}
       </div>

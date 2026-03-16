@@ -7,6 +7,8 @@ interface SidebarProps {
   transform: CanvasTransform;
   onAddTerminal: () => void;
   onAddBrowser: () => void;
+  onToggleExplorer: () => void;
+  explorerOpen: boolean;
   onDuplicateTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onClaudeTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onCodexTerminal: (cwd: string, nearX: number, nearY: number) => void;
@@ -43,7 +45,7 @@ function isAgentProcess(process: string): boolean {
   return AGENT_PROCESSES.has(process);
 }
 
-export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout }: SidebarProps) {
+export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout }: SidebarProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const statuses = useTerminalStore((s) => s.sessionStatuses);
@@ -99,8 +101,8 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 28,
-    height: 28,
+    width: 26,
+    height: 26,
     background: 'none',
     border: 'none',
     color: 'var(--text-tertiary)',
@@ -124,14 +126,15 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
       {/* Floating toolbar */}
       <div
         style={{
-          background: 'rgba(22, 22, 30, 0.88)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
+          background: 'rgba(22, 22, 30, 0.35)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          border: 'none',
           borderRadius: 10,
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.15)',
+          boxShadow: 'none',
           overflow: 'hidden',
-          minWidth: expanded ? 260 : undefined,
+          width: 290,
+          minWidth: expanded ? 290 : undefined,
           transition: 'min-width 200ms var(--ease-out), box-shadow 200ms',
         }}
       >
@@ -141,49 +144,27 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
             display: 'flex',
             alignItems: 'center',
             height: 36,
-            padding: '0 4px',
+            padding: '0 8px 0 6px',
             gap: 1,
           }}
         >
           {/* Logo */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              padding: '0 6px 0 6px',
-              cursor: 'default',
-              flexShrink: 0,
-            }}
-          >
-            <img
-              src="/logo.svg"
-              alt="tboard"
-              style={{ height: 16, flexShrink: 0, opacity: 0.9 }}
-            />
+          <div style={{ display: 'flex', alignItems: 'center', padding: '0 6px', cursor: 'default', flexShrink: 0 }}>
+            <img src="/logo.svg" alt="tboard" style={{ height: 16, flexShrink: 0, opacity: 0.9 }} />
           </div>
 
           {/* Separator */}
-          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 2px' }} />
+          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 3px' }} />
 
           {/* Session toggle */}
           <button
             onClick={() => setExpanded((p) => !p)}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              padding: '0 8px',
-              height: 28,
+              display: 'flex', alignItems: 'center', gap: 5, padding: '0 6px', height: 28,
               background: expanded ? 'rgba(255, 255, 255, 0.06)' : 'none',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontSize: 11,
-              fontWeight: 500,
-              whiteSpace: 'nowrap',
-              borderRadius: 6,
-              transition: 'background 120ms, color 120ms',
-              letterSpacing: '-0.01em',
+              border: 'none', color: 'var(--text-secondary)', cursor: 'pointer',
+              fontSize: 11, fontWeight: 500, whiteSpace: 'nowrap', borderRadius: 6,
+              transition: 'background 120ms, color 120ms', letterSpacing: '-0.01em',
             }}
             title="Toggle sessions"
             onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'; }}
@@ -194,44 +175,27 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
               <path d="M12 4V3a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1" stroke="currentColor" strokeWidth="1.4" fill="none"/>
             </svg>
             <span style={{ fontVariantNumeric: 'tabular-nums' }}>{terminals.size}</span>
-            <svg
-              width="7"
-              height="7"
-              viewBox="0 0 8 8"
-              fill="none"
-              style={{
-                transform: expanded ? 'rotate(180deg)' : 'rotate(0)',
-                transition: 'transform 200ms var(--ease-out)',
-                opacity: 0.4,
-              }}
-            >
+            <svg width="7" height="7" viewBox="0 0 8 8" fill="none"
+              style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 200ms var(--ease-out)', opacity: 0.4 }}>
               <path d="M1.5 3L4 5.5L6.5 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </button>
 
-          {/* Separator */}
-          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 2px' }} />
-
-          {/* Zoom */}
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 500,
-              color: 'var(--text-tertiary)',
-              padding: '0 6px',
-              fontVariantNumeric: 'tabular-nums',
-              whiteSpace: 'nowrap',
-              letterSpacing: '-0.01em',
-            }}
+          {/* Add terminal (+) — right next to session count */}
+          <button onClick={onAddTerminal} title="New Terminal (Ctrl+Shift+N)" style={iconBtn}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(122, 162, 247, 0.12)'; e.currentTarget.style.color = 'var(--accent-blue)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
-            {zoomPercent}%
-          </span>
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+              <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+
+          {/* Separator */}
+          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 3px' }} />
 
           {/* Zoom to Fit */}
-          <button
-            onClick={onZoomToFit}
-            title="Zoom to Fit"
-            style={iconBtn}
+          <button onClick={onZoomToFit} title="Zoom to Fit" style={iconBtn}
             onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
@@ -241,10 +205,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
           </button>
 
           {/* Auto Layout */}
-          <button
-            onClick={onAutoLayout}
-            title="Auto Layout"
-            style={iconBtn}
+          <button onClick={onAutoLayout} title="Auto Layout" style={iconBtn}
             onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
@@ -256,27 +217,8 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
             </svg>
           </button>
 
-          {/* Separator */}
-          <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 2px' }} />
-
-          {/* Add terminal */}
-          <button
-            onClick={onAddTerminal}
-            title="New Terminal (Ctrl+Shift+N)"
-            style={iconBtn}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(122, 162, 247, 0.12)'; e.currentTarget.style.color = 'var(--accent-blue)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-          >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-              <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-          </button>
-
           {/* Add browser */}
-          <button
-            onClick={() => onAddBrowser()}
-            title="New Browser"
-            style={iconBtn}
+          <button onClick={() => onAddBrowser()} title="New Browser" style={iconBtn}
             onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(125, 207, 255, 0.12)'; e.currentTarget.style.color = 'var(--accent-cyan)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
           >
@@ -284,6 +226,17 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
               <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
               <ellipse cx="8" cy="8" rx="3" ry="6.5" stroke="currentColor" strokeWidth="1.3"/>
               <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.3"/>
+            </svg>
+          </button>
+
+          {/* Toggle explorer */}
+          <button onClick={onToggleExplorer} title="Toggle Explorer"
+            style={{ ...iconBtn, background: explorerOpen ? 'rgba(224, 175, 104, 0.15)' : 'none', color: explorerOpen ? 'var(--accent-yellow)' : 'var(--text-tertiary)' }}
+            onMouseEnter={(e) => { if (!explorerOpen) { e.currentTarget.style.background = 'rgba(224, 175, 104, 0.12)'; e.currentTarget.style.color = 'var(--accent-yellow)'; } }}
+            onMouseLeave={(e) => { if (!explorerOpen) { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; } }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M2 4a1 1 0 011-1h3.586a1 1 0 01.707.293L8.414 4.414A1 1 0 009.121 4.7H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" strokeWidth="1.3" fill="none"/>
             </svg>
           </button>
         </div>
@@ -470,6 +423,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onDupl
           </div>
         )}
       </div>
+
     </div>
   );
 }

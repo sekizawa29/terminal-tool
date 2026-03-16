@@ -6,8 +6,10 @@ const LINKS_KEY = 'terminal-board-links';
 
 interface SavedLayout {
   sessionId: string;
-  type?: 'terminal' | 'browser';
+  type?: 'terminal' | 'browser' | 'explorer' | 'editor';
   url?: string;
+  explorerRoot?: string;
+  filePath?: string;
   x: number;
   y: number;
   width: number;
@@ -113,6 +115,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       sessionId: tw.sessionId,
       type: tw.type,
       url: tw.url,
+      explorerRoot: tw.explorerRoot,
+      filePath: tw.filePath,
       x: tw.x,
       y: tw.y,
       width: tw.width,

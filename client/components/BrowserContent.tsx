@@ -18,7 +18,7 @@ interface BrowserContentProps {
 export default function BrowserContent({ url, isActive, onUrlChange }: BrowserContentProps) {
   const [inputUrl, setInputUrl] = useState(url);
   const [currentUrl, setCurrentUrl] = useState(url);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(url !== 'about:blank');
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -180,20 +180,32 @@ export default function BrowserContent({ url, isActive, onUrlChange }: BrowserCo
         }} />
       )}
 
-      {/* iframe — no sandbox for localhost to allow full dev tool access */}
-      <iframe
-        ref={iframeRef}
-        src={currentUrl}
-        onLoad={() => setLoading(false)}
-        {...(isLocalUrl(currentUrl) ? {} : { sandbox: 'allow-same-origin allow-scripts allow-popups allow-forms allow-modals' })}
-        style={{
-          flex: 1,
-          width: '100%',
-          border: 'none',
-          background: '#fff',
-        }}
-        title="Browser"
-      />
+      {/* iframe wrapper — overlay blocks pointer events when not focused */}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <iframe
+          ref={iframeRef}
+          src={currentUrl}
+          onLoad={() => setLoading(false)}
+          {...(isLocalUrl(currentUrl) ? {} : { sandbox: 'allow-same-origin allow-scripts allow-popups allow-forms allow-modals' })}
+          style={{
+            width: '100%',
+            height: '100%',
+            border: 'none',
+            background: currentUrl === 'about:blank' ? '#1a1b26' : '#fff',
+          }}
+          title="Browser"
+        />
+        {/* Transparent overlay — prevents iframe from stealing mouse events when not active */}
+        {!isActive && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              cursor: 'default',
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }

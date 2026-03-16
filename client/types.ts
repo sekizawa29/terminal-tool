@@ -1,14 +1,25 @@
 export interface TerminalWindow {
   id: string;
   sessionId: string;
-  type?: 'terminal' | 'browser';
+  type?: 'terminal' | 'browser' | 'explorer' | 'editor';
   url?: string;
+  explorerRoot?: string;
+  filePath?: string;
   x: number;
   y: number;
   width: number;
   height: number;
   zIndex: number;
   title: string;
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size: number;
+  modified: string;
+  extension: string;
 }
 
 export interface TerminalLink {
