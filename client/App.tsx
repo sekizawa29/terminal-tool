@@ -370,23 +370,34 @@ export default function App() {
 
     const cols = Math.ceil(Math.sqrt(n));
     const gap = 30;
+    const items = Array.from(terminals.values());
 
-    // Use max dimensions so no panels overlap
-    let maxW = 0, maxH = 0;
-    for (const tw of terminals.values()) {
-      if (tw.width > maxW) maxW = tw.width;
-      if (tw.height > maxH) maxH = tw.height;
+    // Compute max width per column and max height per row
+    const colWidths = new Array<number>(cols).fill(0);
+    const rows = Math.ceil(n / cols);
+    const rowHeights = new Array<number>(rows).fill(0);
+
+    for (let i = 0; i < items.length; i++) {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      colWidths[c] = Math.max(colWidths[c], items[i].width);
+      rowHeights[r] = Math.max(rowHeights[r], items[i].height);
     }
 
-    let i = 0;
-    for (const tw of terminals.values()) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      updateTerminal(tw.id, {
-        x: col * (maxW + gap),
-        y: row * (maxH + gap),
-      });
-      i++;
+    // Cumulative offsets for each column/row
+    const colX = [0];
+    for (let c = 1; c < cols; c++) {
+      colX[c] = colX[c - 1] + colWidths[c - 1] + gap;
+    }
+    const rowY = [0];
+    for (let r = 1; r < rows; r++) {
+      rowY[r] = rowY[r - 1] + rowHeights[r - 1] + gap;
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      updateTerminal(items[i].id, { x: colX[c], y: rowY[r] });
     }
     saveLayout();
     canvas.zoomToFit(useTerminalStore.getState().terminals);
