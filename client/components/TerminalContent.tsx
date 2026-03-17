@@ -7,6 +7,7 @@ interface TerminalContentProps {
   sessionId: string;
   token: string;
   isActive: boolean;
+  scale: number;
   onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
   onExit?: () => void;
 }
@@ -15,6 +16,7 @@ export default function TerminalContent({
   sessionId,
   token,
   isActive,
+  scale,
   onZoom,
   onExit,
 }: TerminalContentProps) {
@@ -25,6 +27,8 @@ export default function TerminalContent({
   const prevSizeRef = useRef({ cols: 0, rows: 0 });
   const tokenRef = useRef(token);
   tokenRef.current = token;
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
 
   // Fit on container resize
   const doFit = useCallback(() => {
@@ -86,23 +90,58 @@ export default function TerminalContent({
 
     term.open(container);
 
-    // Auto-copy on selection (like typical Linux terminal)
-    term.onSelectionChange(() => {
+    // Fix mouse coordinate offset caused by CSS transform: scale() on ancestor.
+    // xterm.js computes cell width via OffscreenCanvas (unscaled), but mouse
+    // coordinates from getBoundingClientRect are in screen space (scaled).
+    const core = (term as any)._core;
+    if (core?._mouseService) {
+      const ms = core._mouseService;
+      const origGetCoords = ms.getCoords.bind(ms);
+      ms.getCoords = function(event: any, element: HTMLElement, colCount: number, rowCount: number, isSelection?: boolean) {
+        const s = scaleRef.current;
+        if (s !== 1) {
+          const rect = element.getBoundingClientRect();
+          event = {
+            clientX: rect.left + (event.clientX - rect.left) / s,
+            clientY: rect.top + (event.clientY - rect.top) / s,
+          };
+        }
+        return origGetCoords(event, element, colCount, rowCount, isSelection);
+      };
+      const origGetMouseReportCoords = ms.getMouseReportCoords.bind(ms);
+      ms.getMouseReportCoords = function(event: any, element: HTMLElement) {
+        const s = scaleRef.current;
+        if (s !== 1) {
+          const rect = element.getBoundingClientRect();
+          event = {
+            ...event,
+            clientX: rect.left + (event.clientX - rect.left) / s,
+            clientY: rect.top + (event.clientY - rect.top) / s,
+          };
+        }
+        return origGetMouseReportCoords(event, element);
+      };
+    }
+
+    // Re-measure after fonts load to ensure correct character dimensions
+    document.fonts.ready.then(() => doFit());
+
+    // Right-click: copy selection if any, otherwise paste
+    const onContextMenu = (e: Event) => {
+      e.preventDefault();
       const sel = term.getSelection();
       if (sel) {
         navigator.clipboard.writeText(sel).catch(() => {});
+        term.clearSelection();
+      } else {
+        navigator.clipboard.readText().then((text) => {
+          if (text && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(text);
+          }
+        }).catch(() => {});
       }
-    });
-
-    // Right-click → paste
-    container.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      navigator.clipboard.readText().then((text) => {
-        if (text && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(text);
-        }
-      }).catch(() => {});
-    });
+    };
+    container.addEventListener('contextmenu', onContextMenu);
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true;
@@ -184,6 +223,7 @@ export default function TerminalContent({
     resizeObserver.observe(container);
 
     return () => {
+      container.removeEventListener('contextmenu', onContextMenu);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       onBinaryDisposable.dispose();

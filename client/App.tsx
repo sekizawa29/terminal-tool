@@ -515,30 +515,6 @@ export default function App() {
         onZoomToFit={handleZoomToFit}
         onAutoLayout={handleAutoLayout}
       />
-      {/* Zoom indicator — fixed bottom-right */}
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 12,
-          right: 12,
-          zIndex: 10000,
-          background: 'rgba(22, 22, 30, 0.5)',
-          backdropFilter: 'blur(12px)',
-          WebkitBackdropFilter: 'blur(12px)',
-          border: '1px solid rgba(255, 255, 255, 0.04)',
-          borderRadius: 8,
-          padding: '4px 10px',
-          fontSize: 10.5,
-          fontWeight: 500,
-          color: 'var(--text-ghost)',
-          fontVariantNumeric: 'tabular-nums',
-          userSelect: 'none',
-          pointerEvents: 'none',
-          letterSpacing: '-0.01em',
-        }}
-      >
-        {Math.round(canvas.transform.scale * 100)}%
-      </div>
       <div className="noise-overlay" />
     </>
   );

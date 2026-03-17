@@ -313,6 +313,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
               sessionId={tw.sessionId}
               token={token}
               isActive={isActive}
+              scale={scale}
               onZoom={onZoom}
               onExit={onClose}
             />
