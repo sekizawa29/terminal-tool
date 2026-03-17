@@ -11,6 +11,18 @@ echo "  Frontend : ${URL}"
 echo "  Backend  : http://127.0.0.1:${PORT}"
 echo ""
 
+# Install dependencies if needed
+if [ ! -d node_modules ]; then
+  echo "Installing dependencies ..."
+  npm install
+  echo ""
+fi
+
+# Fix node-pty spawn-helper permissions (may be lost when copied from Windows)
+if [[ "$(uname)" != MINGW* && "$(uname)" != MSYS* ]]; then
+  find node_modules/node-pty/prebuilds -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
+fi
+
 # Start dev server in background
 npm run dev &
 DEV_PID=$!
@@ -19,8 +31,10 @@ DEV_PID=$!
 (
   for i in $(seq 1 30); do
     if curl -s -o /dev/null "http://127.0.0.1:${VITE_PORT}" 2>/dev/null; then
-      # Open browser on Windows (WSL2)
-      if command -v cmd.exe &>/dev/null; then
+      # Open browser
+      if [[ "$(uname)" == "Darwin" ]]; then
+        open "$URL"
+      elif command -v cmd.exe &>/dev/null; then
         cmd.exe /c start "$URL" 2>/dev/null
       elif command -v wslview &>/dev/null; then
         wslview "$URL"

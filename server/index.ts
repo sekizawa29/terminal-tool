@@ -438,7 +438,7 @@ app.get('/api/files/raw', (req, res) => {
 
 // Serve static files in production
 const clientDist = resolve(__dirname, '../client');
-if (existsSync(clientDist)) {
+if (existsSync(resolve(clientDist, 'index.html'))) {
   app.use(express.static(clientDist));
   app.get('/{*splat}', (_req, res) => {
     res.sendFile(resolve(clientDist, 'index.html'));

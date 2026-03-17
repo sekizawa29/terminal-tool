@@ -126,7 +126,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
       {/* Floating toolbar */}
       <div
         style={{
-          background: 'rgba(22, 22, 30, 0.35)',
+          background: 'rgba(22, 22, 30, 0.75)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
           border: 'none',
