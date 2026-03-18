@@ -146,7 +146,9 @@ interface PtySession {
   ws: WebSocket | null;
   alive: boolean;
   buffer: string; // buffered output while detached
-  lastOutputAt: number; // timestamp of last PTY output
+  lastOutputAt: number;    // timestamp of last PTY output
+  outputBurstStart: number; // when current continuous output burst started
+  lastInputAt: number;     // timestamp of last user input via WebSocket
   shellName: string; // normalized base name of shell (e.g. 'bash', 'zsh', 'cmd', 'powershell')
   name?: string; // user-assigned label
   onDataDisposable: pty.IDisposable | null;
@@ -199,6 +201,8 @@ export class PtyManager {
       alive: true,
       buffer: '',
       lastOutputAt: 0,
+      outputBurstStart: 0,
+      lastInputAt: 0,
       shellName,
       onDataDisposable: null,
       onExitDisposable: null,
@@ -207,7 +211,12 @@ export class PtyManager {
 
     // Always buffer all output (for replay on reconnect)
     session.onDataDisposable = p.onData((data: string) => {
-      session.lastOutputAt = Date.now();
+      const now = Date.now();
+      // Detect new output burst (gap > 500ms since last output)
+      if (now - session.lastOutputAt > 500) {
+        session.outputBurstStart = now;
+      }
+      session.lastOutputAt = now;
 
       // Always append to rolling buffer
       session.buffer += data;
@@ -305,6 +314,7 @@ export class PtyManager {
       }
 
       // Data: keyboard input
+      session.lastInputAt = Date.now();
       session.pty.write(str);
     });
 
@@ -443,7 +453,13 @@ export class PtyManager {
     }
 
     const cwdShort = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
-    const isProcessing = isRunning && (Date.now() - session.lastOutputAt < 3000);
+    // Agent is processing when: running, recent output, and the current output
+    // burst has lasted >800ms (filters out brief status bar updates, cursor redraws,
+    // and click/input echo — only sustained agent output triggers this)
+    const now = Date.now();
+    const hasRecentOutput = now - session.lastOutputAt < 2000;
+    const isSustainedBurst = session.lastOutputAt - session.outputBurstStart > 800;
+    const isProcessing = isRunning && hasRecentOutput && isSustainedBurst;
 
     return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name };
   }

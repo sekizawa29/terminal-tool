@@ -1,23 +1,18 @@
 @echo off
 title tboard
-cd /d "%~dp0"
 
 echo Starting tboard ...
 echo   Frontend : http://127.0.0.1:51730
 echo   Backend  : http://127.0.0.1:51731
 echo.
 
-:: Install dependencies if needed
-if not exist node_modules (
-  echo Installing dependencies ...
-  call npm install
-  echo.
-)
+set "WSL_DIR=/home/sekiz/pjt/terminal-tool"
 
-:: Start dev server in background
-set PORT=51731
-set VITE_PORT=51730
-start /b npm run dev
+:: Install dependencies if needed
+wsl bash -c "cd %WSL_DIR% && [ -d node_modules ] || npm install"
+
+:: Start dev server via WSL in background
+start /b wsl bash -c "cd %WSL_DIR% && PORT=51731 VITE_PORT=51730 npm run dev"
 
 :: Wait for Vite to be ready
 echo Waiting for server...
