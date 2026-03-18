@@ -15,6 +15,7 @@ interface SidebarProps {
   onFocusTerminal: (x: number, y: number, width: number, height: number) => void;
   onZoomToFit: () => void;
   onAutoLayout: () => void;
+  onExpandChange?: (expanded: boolean) => void;
 }
 
 const ClaudeIcon = () => (
@@ -45,7 +46,7 @@ function isAgentProcess(process: string): boolean {
   return AGENT_PROCESSES.has(process);
 }
 
-export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout }: SidebarProps) {
+export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout, onExpandChange }: SidebarProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const statuses = useTerminalStore((s) => s.sessionStatuses);
@@ -158,7 +159,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
 
           {/* Session toggle */}
           <button
-            onClick={() => setExpanded((p) => !p)}
+            onClick={() => setExpanded((p) => { const next = !p; onExpandChange?.(next); return next; })}
             style={{
               display: 'flex', alignItems: 'center', gap: 5, padding: '0 6px', height: 28,
               background: expanded ? 'rgba(255, 255, 255, 0.06)' : 'none',
@@ -246,7 +247,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
           <div
             style={{
               borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-              maxHeight: 300,
+              maxHeight: 176,
               overflowY: 'auto',
               padding: 3,
               animation: 'slideInUp 0.15s var(--ease-out) both',

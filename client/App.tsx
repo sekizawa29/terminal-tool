@@ -38,6 +38,7 @@ export default function App() {
   const token = useTerminalStore((s) => s.token);
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [explorerRoot, setExplorerRoot] = useState('~');
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
 
   // Fetch token on mount (with StrictMode guard)
   useEffect(() => {
@@ -432,8 +433,9 @@ export default function App() {
           style={{
             position: 'fixed',
             left: 12,
-            top: 58,
+            top: sessionsExpanded ? 58 + 177 : 58,
             bottom: 12,
+            transition: 'top 200ms var(--ease-out)',
             width: PANEL_WIDTH,
             zIndex: 9999,
             background: 'transparent',
@@ -525,6 +527,7 @@ export default function App() {
         onFocusTerminal={canvas.focusOn}
         onZoomToFit={handleZoomToFit}
         onAutoLayout={handleAutoLayout}
+        onExpandChange={setSessionsExpanded}
       />
       <div className="noise-overlay" />
     </>
