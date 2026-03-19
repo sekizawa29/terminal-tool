@@ -30,6 +30,17 @@ export default function TerminalContent({
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
 
+  const sendPaste = useCallback((text: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !text) return;
+
+    const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const payload = normalized.includes('\n')
+      ? `\x1b[200~${normalized}\x1b[201~`
+      : normalized;
+    ws.send(payload);
+  }, []);
+
   // Fit on container resize
   const doFit = useCallback(() => {
     if (!fitAddonRef.current || !termRef.current) return;
@@ -135,13 +146,20 @@ export default function TerminalContent({
         term.clearSelection();
       } else {
         navigator.clipboard.readText().then((text) => {
-          if (text && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(text);
-          }
+          sendPaste(text);
         }).catch(() => {});
       }
     };
     container.addEventListener('contextmenu', onContextMenu);
+
+    const onPaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text/plain') || '';
+      if (!text) return;
+      e.preventDefault();
+      e.stopPropagation();
+      sendPaste(text);
+    };
+    container.addEventListener('paste', onPaste);
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true;
@@ -224,6 +242,7 @@ export default function TerminalContent({
 
     return () => {
       container.removeEventListener('contextmenu', onContextMenu);
+      container.removeEventListener('paste', onPaste);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       onBinaryDisposable.dispose();
@@ -304,9 +323,9 @@ export default function TerminalContent({
     if (paths.length > 0) {
       // Paste escaped paths into terminal
       const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
-      ws.send(escaped);
+      sendPaste(escaped);
     }
-  }, [sessionId]);
+  }, [sendPaste, sessionId]);
 
   return (
     <div
