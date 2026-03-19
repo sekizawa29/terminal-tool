@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { marked } from 'marked';
 
 interface EditorContentProps {
@@ -51,36 +51,78 @@ const LANGUAGE_NAMES: Record<string, string> = {
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
 
+async function readApiPayload(res: Response): Promise<unknown> {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return await res.json();
+  }
+  return await res.text();
+}
+
+function getApiError(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string') {
+    return payload.error;
+  }
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload.slice(0, 200);
+  }
+  return fallback;
+}
+
 export default function EditorContent({ filePath, isActive }: EditorContentProps) {
   const [content, setContent] = useState<string | null>(null);
+  const [savedContent, setSavedContent] = useState<string | null>(null);
   const [extension, setExtension] = useState('');
   const [fileName, setFileName] = useState('');
   const [fileSize, setFileSize] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'rendered' | 'source'>('rendered');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lineNumbersRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<string | null>(null);
+  const savedContentRef = useRef<string | null>(null);
 
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   const isImageFile = IMAGE_EXTENSIONS.has(ext);
 
-  const loadFile = useCallback(async () => {
+  useEffect(() => {
+    contentRef.current = content;
+    savedContentRef.current = savedContent;
+  }, [content, savedContent]);
+
+  const loadFile = useCallback(async (force = false) => {
+    if (
+      !force &&
+      savedContentRef.current !== null &&
+      contentRef.current !== null &&
+      contentRef.current !== savedContentRef.current
+    ) {
+      const confirmed = window.confirm('Discard unsaved changes and reload this file?');
+      if (!confirmed) return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       if (isImageFile) {
-        // For images, just set metadata — the img tag loads via /api/files/raw
         setContent('');
+        setSavedContent('');
         setExtension(ext);
         setFileName(filePath.split('/').pop() || '');
         setFileSize(0);
       } else {
         const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+        const data = await readApiPayload(res);
         if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || 'Failed to load file');
+          throw new Error(getApiError(data, 'Failed to load file'));
         }
-        const data = await res.json();
+        if (!data || typeof data !== 'object') {
+          throw new Error('Invalid file response');
+        }
         setContent(data.content);
+        setSavedContent(data.content);
         setExtension(data.extension);
         setFileName(data.name);
         setFileSize(data.size);
@@ -90,18 +132,69 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
     } finally {
       setLoading(false);
     }
-  }, [filePath, isImageFile, ext]);
+  }, [ext, filePath, isImageFile]);
 
   useEffect(() => {
-    loadFile();
+    loadFile(true);
   }, [loadFile]);
 
   const isMarkdown = MARKDOWN_EXTENSIONS.has(extension);
   const isImage = IMAGE_EXTENSIONS.has(extension);
   const languageName = LANGUAGE_NAMES[extension] || extension.toUpperCase() || 'File';
-  const lineCount = content ? content.split('\n').length : 0;
+  const editable = !isImage && (!isMarkdown || viewMode === 'source');
+  const dirty = content !== null && savedContent !== null && content !== savedContent;
+  const lineCount = useMemo(() => (content ? content.split('\n').length : 0), [content]);
 
-  // Render markdown to HTML
+  const saveFile = useCallback(async () => {
+    if (!editable || content === null) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/files/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filePath, content }),
+      });
+      const data = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getApiError(data, `Failed to save file (HTTP ${res.status})`));
+      }
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid save response');
+      }
+      setSavedContent(content);
+      setFileSize(data.size ?? fileSize);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  }, [content, editable, filePath, fileSize]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        saveFile();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive, saveFile]);
+
+  useEffect(() => {
+    if (isActive && editable) {
+      textareaRef.current?.focus();
+    }
+  }, [editable, isActive, filePath]);
+
+  const handleScroll = useCallback(() => {
+    if (textareaRef.current && lineNumbersRef.current) {
+      lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  }, []);
+
   const renderedHtml = isMarkdown && content && viewMode === 'rendered'
     ? marked(content) as string
     : null;
@@ -117,7 +210,6 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         color: 'var(--text-secondary)',
       }}
     >
-      {/* Header bar */}
       <div
         style={{
           display: 'flex',
@@ -141,6 +233,17 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         >
           {languageName}
         </span>
+        {dirty && (
+          <span
+            style={{
+              fontSize: 10,
+              color: 'var(--accent-yellow)',
+              fontWeight: 600,
+            }}
+          >
+            Unsaved
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         {isMarkdown && (
           <div style={{ display: 'flex', gap: 2 }}>
@@ -177,7 +280,29 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
           </div>
         )}
         <button
-          onClick={loadFile}
+          onClick={saveFile}
+          disabled={!editable || !dirty || saving}
+          title="Save (Ctrl/Cmd+S)"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minWidth: 46,
+            height: 22,
+            padding: '0 8px',
+            background: !editable || !dirty || saving ? 'rgba(255,255,255,0.04)' : 'rgba(122, 162, 247, 0.2)',
+            border: 'none',
+            color: !editable || !dirty || saving ? 'var(--text-ghost)' : 'var(--accent-blue)',
+            cursor: !editable || !dirty || saving ? 'default' : 'pointer',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 600,
+          }}
+        >
+          {saving ? 'Saving' : 'Save'}
+        </button>
+        <button
+          onClick={() => loadFile(false)}
           title="Reload"
           style={{
             display: 'flex',
@@ -210,7 +335,6 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         </button>
       </div>
 
-      {/* Content area */}
       <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
         {loading && (
           <div
@@ -227,9 +351,11 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         {error && (
           <div
             style={{
-              padding: 16,
+              padding: '10px 16px',
               color: 'var(--accent-red)',
               fontSize: 12,
+              borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+              background: 'rgba(247, 118, 142, 0.08)',
             }}
           >
             {error}
@@ -273,13 +399,14 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
               />
             ) : (
               <div style={{ display: 'flex', height: '100%' }}>
-                {/* Line numbers */}
                 <div
+                  ref={lineNumbersRef}
                   style={{
                     padding: '8px 0',
                     textAlign: 'right',
                     userSelect: 'none',
                     flexShrink: 0,
+                    overflow: 'hidden',
                     borderRight: '1px solid rgba(255, 255, 255, 0.04)',
                     background: 'rgba(0, 0, 0, 0.1)',
                   }}
@@ -288,7 +415,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
                     <div
                       key={i}
                       style={{
-                        padding: '0 12px 0 12px',
+                        padding: '0 12px',
                         fontSize: 12,
                         lineHeight: '20px',
                         color: 'var(--text-ghost)',
@@ -300,29 +427,36 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
                     </div>
                   ))}
                 </div>
-                {/* Code content */}
-                <pre
+                <textarea
+                  ref={textareaRef}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  onScroll={handleScroll}
+                  spellCheck={false}
+                  readOnly={!editable}
                   style={{
                     margin: 0,
                     padding: '8px 16px',
                     flex: 1,
-                    overflow: 'auto',
+                    resize: 'none',
+                    border: 'none',
+                    outline: 'none',
+                    background: 'transparent',
                     fontSize: 12,
                     lineHeight: '20px',
                     fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
                     color: '#c0caf5',
                     tabSize: 2,
+                    whiteSpace: 'pre',
+                    overflow: 'auto',
                   }}
-                >
-                  {content}
-                </pre>
+                />
               </div>
             )}
           </>
         )}
       </div>
 
-      {/* Status bar */}
       <div
         style={{
           display: 'flex',
@@ -346,6 +480,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
             ? `${(fileSize / 1024).toFixed(1)}KB`
             : `${(fileSize / (1024 * 1024)).toFixed(1)}MB`}
         </span>
+        <span>{editable ? 'Editable' : 'Read only'}</span>
         <span style={{ flex: 1 }} />
         <span style={{ direction: 'rtl', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <bdi>{filePath}</bdi>

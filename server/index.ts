@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import { randomBytes } from 'crypto';
 import { resolve, dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, writeFileSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync } from 'fs';
 import { PtyManager } from './pty-manager.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,22 @@ const ptyManager = new PtyManager(PORT, binDirResolved);
 // Resolve session ID from full ID, short prefix, or name
 function resolveSession(idOrName: string): string | null {
   return ptyManager.resolveSession(idOrName);
+}
+
+function getFileInfo(filePath: string) {
+  const st = statSync(filePath);
+  return {
+    path: filePath,
+    name: basename(filePath),
+    size: st.size,
+    modified: st.mtime.toISOString(),
+    extension: extname(filePath).slice(1).toLowerCase(),
+  };
+}
+
+function isDescendantPath(parentPath: string, childPath: string): boolean {
+  const normalizedParent = parentPath.endsWith('/') ? parentPath : `${parentPath}/`;
+  return childPath === parentPath || childPath.startsWith(normalizedParent);
 }
 
 // Auth token store (simple in-memory)
@@ -280,6 +296,96 @@ app.delete('/api/terminals/:sessionId', (req, res) => {
 
 // ── Files: Directory listing & file reading ───────────────────────────
 
+// Overwrite an existing text file
+app.post('/api/files/write', (req, res) => {
+  const { path: filePath, content } = req.body || {};
+  if (typeof filePath !== 'string' || typeof content !== 'string') {
+    res.status(400).json({ error: 'path and content must be strings' });
+    return;
+  }
+  try {
+    const resolved = resolve(filePath);
+    const st = statSync(resolved);
+    if (st.isDirectory()) {
+      res.status(400).json({ error: 'Cannot write to a directory' });
+      return;
+    }
+
+    writeFileSync(resolved, content, 'utf-8');
+    res.json({ ok: true, ...getFileInfo(resolved) });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// Move a file or directory into another directory
+app.post('/api/files/move', (req, res) => {
+  const { sourcePath, targetDir } = req.body || {};
+  if (typeof sourcePath !== 'string' || typeof targetDir !== 'string') {
+    res.status(400).json({ error: 'sourcePath and targetDir must be strings' });
+    return;
+  }
+  try {
+    const resolvedSource = resolve(sourcePath);
+    const resolvedTargetDir = resolve(targetDir);
+    const sourceStat = statSync(resolvedSource);
+    const targetStat = statSync(resolvedTargetDir);
+    if (!targetStat.isDirectory()) {
+      res.status(400).json({ error: 'Target must be a directory' });
+      return;
+    }
+
+    const destinationPath = join(resolvedTargetDir, basename(resolvedSource));
+    if (destinationPath === resolvedSource) {
+      res.status(400).json({ error: 'Source is already in that directory' });
+      return;
+    }
+    if (sourceStat.isDirectory() && isDescendantPath(resolvedSource, resolvedTargetDir)) {
+      res.status(400).json({ error: 'Cannot move a directory into itself' });
+      return;
+    }
+    if (existsSync(destinationPath)) {
+      res.status(409).json({ error: 'Target already exists' });
+      return;
+    }
+
+    renameSync(resolvedSource, destinationPath);
+    res.json({ ok: true, path: destinationPath, name: basename(destinationPath) });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// Upload a file into a directory for explorer drag-and-drop
+app.post('/api/files/upload', (req, res) => {
+  const { filename, data, targetDir } = req.body || {};
+  if (typeof filename !== 'string' || typeof data !== 'string' || typeof targetDir !== 'string') {
+    res.status(400).json({ error: 'filename, data, targetDir required' });
+    return;
+  }
+  try {
+    const resolvedTargetDir = resolve(targetDir);
+    const st = statSync(resolvedTargetDir);
+    if (!st.isDirectory()) {
+      res.status(400).json({ error: 'targetDir must be a directory' });
+      return;
+    }
+
+    const sanitized = filename.replace(/[/\\]/g, '_');
+    const destinationPath = join(resolvedTargetDir, sanitized);
+    if (existsSync(destinationPath)) {
+      res.status(409).json({ error: 'Target already exists' });
+      return;
+    }
+
+    const buf = Buffer.from(data, 'base64');
+    writeFileSync(destinationPath, buf);
+    res.json({ ok: true, ...getFileInfo(destinationPath) });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
 // List directory contents
 app.get('/api/files', (req, res) => {
   const dirPath = (req.query.path as string) || process.env.HOME || '/';
@@ -431,6 +537,25 @@ app.get('/api/files/raw', (req, res) => {
     const mime = MIME_TYPES[ext] || 'application/octet-stream';
     res.setHeader('Content-Type', mime);
     res.send(readFileSync(resolved));
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.get('/api/files/download', (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) {
+    res.status(400).json({ error: 'path query param required' });
+    return;
+  }
+  try {
+    const resolved = resolve(filePath);
+    const st = statSync(resolved);
+    if (st.isDirectory()) {
+      res.status(400).json({ error: 'Cannot download a directory' });
+      return;
+    }
+    res.download(resolved, basename(resolved));
   } catch (err) {
     res.status(400).json({ error: String(err) });
   }
