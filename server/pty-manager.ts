@@ -120,6 +120,15 @@ export interface SessionStatus {
   isRunning: boolean;
   isProcessing: boolean; // recent PTY output detected (agent actively generating)
   name?: string; // user-assigned label
+  shellType: 'linux' | 'windows'; // whether this is a WSL/Linux or Windows shell
+}
+
+/** Shells that are Windows executables (run via WSL interop) */
+const WINDOWS_SHELLS = new Set(['powershell.exe', 'pwsh.exe', 'cmd.exe', 'powershell', 'pwsh']);
+
+function isWindowsShell(shell: string): boolean {
+  const base = basename(shell).toLowerCase();
+  return WINDOWS_SHELLS.has(base);
 }
 
 const BACKPRESSURE_THRESHOLD = 1024 * 1024; // 1MB
@@ -150,6 +159,7 @@ interface PtySession {
   outputBurstStart: number; // when current continuous output burst started
   lastInputAt: number;     // timestamp of last user input via WebSocket
   shellName: string; // normalized base name of shell (e.g. 'bash', 'zsh', 'cmd', 'powershell')
+  shellType: 'linux' | 'windows'; // whether this is a WSL/Linux or Windows shell
   name?: string; // user-assigned label
   onDataDisposable: pty.IDisposable | null;
   onExitDisposable: pty.IDisposable | null;
@@ -204,6 +214,7 @@ export class PtyManager {
       outputBurstStart: 0,
       lastInputAt: 0,
       shellName,
+      shellType: isWindowsShell(resolvedShell) ? 'windows' : 'linux',
       onDataDisposable: null,
       onExitDisposable: null,
       headlessTerm,
@@ -404,7 +415,15 @@ export class PtyManager {
     let foregroundProcess = session.shellName;
     let isRunning = false;
 
-    if (currentPlatform === 'linux') {
+    if (session.shellType === 'windows') {
+      // Windows shell via WSL interop: /proc won't reflect Windows process state
+      // Use pty.process for foreground detection; CWD not reliably obtainable
+      const currentProcess = normalizeProcessName(session.pty.process || '');
+      if (currentProcess && currentProcess !== session.shellName) {
+        foregroundProcess = currentProcess;
+        isRunning = true;
+      }
+    } else if (currentPlatform === 'linux') {
       // Linux: use /proc filesystem for precise status
       try { cwd = readlinkSync(`/proc/${pid}/cwd`); } catch {}
 
@@ -461,7 +480,7 @@ export class PtyManager {
     const isSustainedBurst = session.lastOutputAt - session.outputBurstStart > 800;
     const isProcessing = isRunning && hasRecentOutput && isSustainedBurst;
 
-    return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name };
+    return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name, shellType: session.shellType };
   }
 
   getAllStatuses(): SessionStatus[] {

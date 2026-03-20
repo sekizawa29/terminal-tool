@@ -44,6 +44,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   const isExplorer = tw.type === 'explorer';
   const isEditor = tw.type === 'editor';
   const status = useTerminalStore((s) => s.sessionStatuses.get(tw.sessionId));
+  const isWindows = status?.shellType === 'windows';
   const isAgentProcessing = !!(
     !isBrowser &&
     status &&
@@ -262,22 +263,46 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
           </div>
 
           {/* Title */}
-          <span
+          <div
             style={{
               flex: 1,
-              fontSize: 11.5,
-              fontWeight: 500,
-              color: isActive ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-              textAlign: 'center',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
               overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              letterSpacing: '0.2px',
-              transition: 'color var(--duration-normal)',
             }}
           >
-            {tw.title}
-          </span>
+            {isWindows && (
+              <span style={{
+                fontSize: 8.5,
+                fontWeight: 700,
+                color: '#0078D4',
+                background: 'rgba(0, 120, 212, 0.15)',
+                padding: '1px 4px',
+                borderRadius: 3,
+                letterSpacing: '0.02em',
+                lineHeight: '13px',
+                flexShrink: 0,
+              }}>
+                WIN
+              </span>
+            )}
+            <span
+              style={{
+                fontSize: 11.5,
+                fontWeight: 500,
+                color: isActive ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                letterSpacing: '0.2px',
+                transition: 'color var(--duration-normal)',
+              }}
+            >
+              {tw.title}
+            </span>
+          </div>
 
           {/* Right spacer to balance the close button */}
           <div style={{ width: 12 }} />

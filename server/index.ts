@@ -55,8 +55,8 @@ app.get('/api/token', (_req, res) => {
 
 // Create terminal
 app.post('/api/terminals', (req, res) => {
-  const { cols = 80, rows = 24, cwd } = req.body || {};
-  const sessionId = ptyManager.create(cols, rows, cwd);
+  const { cols = 80, rows = 24, cwd, shell } = req.body || {};
+  const sessionId = ptyManager.create(cols, rows, cwd, shell);
   const pid = ptyManager.getPid(sessionId);
   res.json({ sessionId, pid });
 });

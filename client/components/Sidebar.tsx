@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import type { CanvasTransform } from '../hooks/useCanvas.js';
 import type { SessionStatus } from '../types.js';
@@ -12,6 +12,7 @@ interface SidebarProps {
   onDuplicateTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onClaudeTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onCodexTerminal: (cwd: string, nearX: number, nearY: number) => void;
+  onPowershellTerminal: (nearX: number, nearY: number) => void;
   onFocusTerminal: (x: number, y: number, width: number, height: number) => void;
   onZoomToFit: () => void;
   onAutoLayout: () => void;
@@ -30,6 +31,29 @@ const CodexIcon = () => (
   </svg>
 );
 
+const PowerShellIcon = () => (
+  <svg height="11" width="11" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2.5 3L8.5 8L2.5 13" stroke="#0078D4" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+    <path d="M8.5 13H13.5" stroke="#0078D4" strokeWidth="1.8" strokeLinecap="round"/>
+  </svg>
+);
+
+const WindowsBadge = () => (
+  <span style={{
+    fontSize: 9,
+    fontWeight: 700,
+    color: '#0078D4',
+    background: 'rgba(0, 120, 212, 0.12)',
+    padding: '1px 4px',
+    borderRadius: 3,
+    letterSpacing: '0.02em',
+    lineHeight: '14px',
+    flexShrink: 0,
+  }}>
+    WIN
+  </span>
+);
+
 const AGENT_PROCESSES = new Set([
   'claude', 'codex', 'aider', 'cursor', 'copilot',
   'cline', 'roo',
@@ -46,12 +70,14 @@ function isAgentProcess(process: string): boolean {
   return AGENT_PROCESSES.has(process);
 }
 
-export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onFocusTerminal, onZoomToFit, onAutoLayout, onExpandChange }: SidebarProps) {
+export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onPowershellTerminal, onFocusTerminal, onZoomToFit, onAutoLayout, onExpandChange }: SidebarProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const statuses = useTerminalStore((s) => s.sessionStatuses);
   const { bringToFront, setActive, updateTerminal, setSessionStatuses } = useTerminalStore();
   const [expanded, setExpanded] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const zoomPercent = Math.round(transform.scale * 100);
 
@@ -133,7 +159,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
           border: 'none',
           borderRadius: 10,
           boxShadow: 'none',
-          overflow: 'hidden',
+          overflow: 'visible',
           width: 290,
           minWidth: expanded ? 290 : undefined,
           transition: 'min-width 200ms var(--ease-out), box-shadow 200ms',
@@ -182,15 +208,96 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
             </svg>
           </button>
 
-          {/* Add terminal (+) — right next to session count */}
-          <button onClick={onAddTerminal} title="New Terminal (Ctrl+Shift+N)" style={iconBtn}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(122, 162, 247, 0.12)'; e.currentTarget.style.color = 'var(--accent-blue)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+          {/* Add terminal (+) — click: instant, hover-hold: dropdown with PowerShell */}
+          <div
+            style={{ position: 'relative' }}
+            onMouseEnter={() => {
+              addMenuTimer.current = setTimeout(() => setAddMenuOpen(true), 600);
+            }}
+            onMouseLeave={() => {
+              if (addMenuTimer.current) { clearTimeout(addMenuTimer.current); addMenuTimer.current = null; }
+              setAddMenuOpen(false);
+            }}
           >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-              <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-          </button>
+            <button
+              onClick={onAddTerminal}
+              title="New Terminal (Ctrl+Shift+N)"
+              style={iconBtn}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(122, 162, 247, 0.12)'; e.currentTarget.style.color = 'var(--accent-blue)'; }}
+              onMouseLeave={(e) => { if (!addMenuOpen) { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; } }}
+            >
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+            {addMenuOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: -4,
+                  paddingTop: 4,
+                  zIndex: 10002,
+                }}
+              >
+              <div
+                style={{
+                  background: 'rgba(22, 22, 30, 0.92)',
+                  backdropFilter: 'blur(16px)',
+                  WebkitBackdropFilter: 'blur(16px)',
+                  borderRadius: 8,
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
+                  padding: 4,
+                  zIndex: 10001,
+                  minWidth: 160,
+                  animation: 'scaleIn 0.12s var(--ease-out) both',
+                }}
+              >
+                <button
+                  onClick={() => { setAddMenuOpen(false); onAddTerminal(); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    padding: '6px 10px', background: 'none', border: 'none',
+                    color: 'var(--text-secondary)', cursor: 'pointer', borderRadius: 5,
+                    fontSize: 11.5, fontWeight: 500, textAlign: 'left',
+                    transition: 'background 100ms',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.6, flexShrink: 0 }}>
+                    <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+                    <path d="M5 7l2 1.5L5 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  Terminal
+                </button>
+                <button
+                  onClick={() => {
+                    setAddMenuOpen(false);
+                    const { offsetX, offsetY, scale } = transform;
+                    const cx = (window.innerWidth / 2 - offsetX) / scale;
+                    const cy = (window.innerHeight / 2 - offsetY) / scale;
+                    onPowershellTerminal(cx - 350, cy - 225);
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    padding: '6px 10px', background: 'none', border: 'none',
+                    color: 'var(--text-secondary)', cursor: 'pointer', borderRadius: 5,
+                    fontSize: 11.5, fontWeight: 500, textAlign: 'left',
+                    transition: 'background 100ms',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0, 120, 212, 0.1)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+                >
+                  <PowerShellIcon />
+                  <span>PowerShell</span>
+                  <span style={{ fontSize: 9, color: '#0078D4', opacity: 0.7, marginLeft: 'auto' }}>WIN</span>
+                </button>
+              </div>
+              </div>
+            )}
+          </div>
 
           {/* Separator */}
           <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.06)', flexShrink: 0, margin: '0 3px' }} />
@@ -260,6 +367,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
               const running = status?.isRunning ?? false;
               const processing = status?.isProcessing ?? false;
               const agent = status ? isAgentProcess(status.foregroundProcess) : false;
+              const isWindows = status?.shellType === 'windows';
               const displayName = isBrowser ? (tw.title || 'Browser') : getDisplayName(status);
 
               const dotColor = isBrowser
@@ -314,6 +422,7 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
                         animation: isPulsing ? 'statusPulse 2s ease-in-out infinite' : undefined,
                       }}
                     />
+                    {isWindows && <WindowsBadge />}
                     <span
                       style={{
                         fontSize: 11.5,

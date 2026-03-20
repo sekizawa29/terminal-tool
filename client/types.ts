@@ -43,4 +43,5 @@ export interface SessionStatus {
   isRunning: boolean;
   isProcessing: boolean;
   name?: string;
+  shellType?: 'linux' | 'windows';
 }

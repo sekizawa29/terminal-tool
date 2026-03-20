@@ -14,11 +14,11 @@ async function fetchToken(): Promise<string> {
   return data.token;
 }
 
-async function createTerminalSession(cols = 80, rows = 24, cwd?: string): Promise<string> {
+async function createTerminalSession(cols = 80, rows = 24, cwd?: string, shell?: string): Promise<string> {
   const res = await fetch('/api/terminals', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cols, rows, cwd }),
+    body: JSON.stringify({ cols, rows, cwd, shell }),
   });
   const data = await res.json();
   return data.sessionId;
@@ -98,9 +98,8 @@ export default function App() {
     };
 
     addTerminal(tw);
-    canvas.focusOn(tw.x, tw.y, tw.width, tw.height);
     useTerminalStore.getState().saveLayout();
-  }, [token, addTerminal, canvas]);
+  }, [token, addTerminal]);
 
   const claudeTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
     if (!token) return;
@@ -122,7 +121,6 @@ export default function App() {
     };
 
     addTerminal(tw);
-    canvas.focusOn(tw.x, tw.y, tw.width, tw.height);
     useTerminalStore.getState().saveLayout();
 
     setTimeout(async () => {
@@ -134,7 +132,7 @@ export default function App() {
         body: JSON.stringify({ data: 'claude\n' }),
       });
     }, 500);
-  }, [token, addTerminal, canvas]);
+  }, [token, addTerminal]);
 
   const codexTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
     if (!token) return;
@@ -156,7 +154,6 @@ export default function App() {
     };
 
     addTerminal(tw);
-    canvas.focusOn(tw.x, tw.y, tw.width, tw.height);
     useTerminalStore.getState().saveLayout();
 
     setTimeout(async () => {
@@ -168,7 +165,30 @@ export default function App() {
         body: JSON.stringify({ data: 'codex\n' }),
       });
     }, 500);
-  }, [token, addTerminal, canvas]);
+  }, [token, addTerminal]);
+
+  const powershellTerminal = useCallback(async (nearX: number, nearY: number) => {
+    if (!token) return;
+
+    const sessionId = await createTerminalSession(80, 24, undefined, 'powershell.exe');
+    const width = 700;
+    const height = 450;
+
+    terminalCounter++;
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId,
+      x: nearX,
+      y: nearY,
+      width,
+      height,
+      zIndex: 0,
+      title: `PowerShell ${terminalCounter}`,
+    };
+
+    addTerminal(tw);
+    useTerminalStore.getState().saveLayout();
+  }, [token, addTerminal]);
 
   const toggleExplorer = useCallback(() => {
     setExplorerOpen((prev) => !prev);
@@ -524,6 +544,7 @@ export default function App() {
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
         onCodexTerminal={codexTerminal}
+        onPowershellTerminal={powershellTerminal}
         onFocusTerminal={canvas.focusOn}
         onZoomToFit={handleZoomToFit}
         onAutoLayout={handleAutoLayout}
