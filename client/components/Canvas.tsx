@@ -85,26 +85,17 @@ export default function Canvas({
     endPan();
   }, [endPan]);
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        zoom(e.deltaY, e.clientX, e.clientY);
-      }
-    },
-    [zoom]
-  );
-
-  // Prevent browser zoom
+  // Global wheel zoom – works even when mouse is over panels
   useEffect(() => {
     const handler = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
+        zoom(e.deltaY, e.clientX, e.clientY);
       }
     };
     window.addEventListener('wheel', handler, { passive: false });
     return () => window.removeEventListener('wheel', handler);
-  }, []);
+  }, [zoom]);
 
   // Prevent middle-click autoscroll
   useEffect(() => {
@@ -148,7 +139,6 @@ export default function Canvas({
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
-      onWheel={onWheel}
       style={{
         position: 'absolute',
         inset: 0,
