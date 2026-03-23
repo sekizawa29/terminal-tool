@@ -1,10 +1,11 @@
 export interface TerminalWindow {
   id: string;
   sessionId: string;
-  type?: 'terminal' | 'browser' | 'explorer' | 'editor';
+  type?: 'terminal' | 'browser' | 'explorer' | 'editor' | 'memo';
   url?: string;
   explorerRoot?: string;
   filePath?: string;
+  memoText?: string;
   x: number;
   y: number;
   width: number;

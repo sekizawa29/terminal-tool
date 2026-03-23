@@ -614,6 +614,6 @@ process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 process.on('exit', () => ptyManager.killAll());
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Terminal Board server listening on http://127.0.0.1:${PORT}`);
 });

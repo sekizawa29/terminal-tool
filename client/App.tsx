@@ -194,6 +194,31 @@ export default function App() {
     setExplorerOpen((prev) => !prev);
   }, []);
 
+  const addMemoPanel = useCallback(() => {
+    const { offsetX, offsetY, scale } = canvas.transform;
+    const centerX = (window.innerWidth / 2 - offsetX) / scale;
+    const centerY = (window.innerHeight / 2 - offsetY) / scale;
+
+    const width = 320;
+    const height = 220;
+
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId: '',
+      type: 'memo',
+      memoText: '',
+      x: centerX - width / 2,
+      y: centerY - height / 2,
+      width,
+      height,
+      zIndex: 0,
+      title: 'Memo',
+    };
+
+    addTerminal(tw);
+    useTerminalStore.getState().saveLayout();
+  }, [canvas, addTerminal]);
+
   const openFileEditor = useCallback((filePath: string, fileName: string, nearX?: number, nearY?: number) => {
     // Check if this file is already open
     const existing = Array.from(useTerminalStore.getState().terminals.values()).find(
@@ -304,6 +329,24 @@ export default function App() {
             height: layout.height,
             zIndex: 0,
             title: layout.title || 'Explorer',
+          };
+          addTerminal(tw);
+          reconnected++;
+          continue;
+        }
+        // Restore memo panels
+        if (layout.type === 'memo') {
+          const tw: TerminalWindow = {
+            id: crypto.randomUUID(),
+            sessionId: '',
+            type: 'memo',
+            memoText: layout.memoText ?? '',
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+            zIndex: 0,
+            title: layout.title || 'Memo',
           };
           addTerminal(tw);
           reconnected++;
@@ -541,6 +584,7 @@ export default function App() {
         onAddBrowser={addBrowserPanel}
         onToggleExplorer={toggleExplorer}
         explorerOpen={explorerOpen}
+        onAddMemo={addMemoPanel}
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
         onCodexTerminal={codexTerminal}

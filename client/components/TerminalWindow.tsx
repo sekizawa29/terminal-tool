@@ -3,6 +3,7 @@ import TerminalContent from './TerminalContent.js';
 import BrowserContent from './BrowserContent.js';
 import ExplorerContent from './ExplorerContent.js';
 import EditorContent from './EditorContent.js';
+import MemoContent from './MemoContent.js';
 import ResizeHandle from './ResizeHandle.js';
 import type { TerminalWindow as TWType } from '../types.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
@@ -43,6 +44,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   const isBrowser = tw.type === 'browser';
   const isExplorer = tw.type === 'explorer';
   const isEditor = tw.type === 'editor';
+  const isMemo = tw.type === 'memo';
   const status = useTerminalStore((s) => s.sessionStatuses.get(tw.sessionId));
   const isWindows = status?.shellType === 'windows';
   const isAgentProcessing = !!(
@@ -109,12 +111,12 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   }, [tw.id, bringToFront, setActive]);
 
   const onClose = useCallback(() => {
-    if (!isBrowser) {
+    if (!isBrowser && !isMemo) {
       fetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
     removeTerminal(tw.id);
     saveLayout();
-  }, [tw.id, tw.sessionId, isBrowser, removeTerminal, saveLayout]);
+  }, [tw.id, tw.sessionId, isBrowser, isMemo, removeTerminal, saveLayout]);
 
   const onUrlChange = useCallback((url: string) => {
     updateTerminal(tw.id, { url, title: url.replace(/^https?:\/\//, '').split('/')[0] || url });
@@ -333,6 +335,11 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
               filePath={tw.filePath || ''}
               isActive={isActive}
             />
+          ) : isMemo ? (
+            <MemoContent
+              windowId={tw.id}
+              isActive={isActive}
+            />
           ) : (
             <TerminalContent
               sessionId={tw.sessionId}
@@ -348,7 +355,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
       </div>
 
       {/* Right connector — drag source (only for terminals) */}
-      {!isBrowser && !isExplorer && !isEditor && (
+      {!isBrowser && !isExplorer && !isEditor && !isMemo && (
         <div
           onMouseDown={onStartConnector}
           onMouseEnter={() => setConnectorHovered(true)}

@@ -9,6 +9,7 @@ interface SidebarProps {
   onAddBrowser: () => void;
   onToggleExplorer: () => void;
   explorerOpen: boolean;
+  onAddMemo: () => void;
   onDuplicateTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onClaudeTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onCodexTerminal: (cwd: string, nearX: number, nearY: number) => void;
@@ -70,7 +71,7 @@ function isAgentProcess(process: string): boolean {
   return AGENT_PROCESSES.has(process);
 }
 
-export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onPowershellTerminal, onFocusTerminal, onZoomToFit, onAutoLayout, onExpandChange }: SidebarProps) {
+export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onToggleExplorer, explorerOpen, onAddMemo, onDuplicateTerminal, onClaudeTerminal, onCodexTerminal, onPowershellTerminal, onFocusTerminal, onZoomToFit, onAutoLayout, onExpandChange }: SidebarProps) {
   const terminals = useTerminalStore((s) => s.terminals);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const statuses = useTerminalStore((s) => s.sessionStatuses);
@@ -325,18 +326,6 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
             </svg>
           </button>
 
-          {/* Add browser */}
-          <button onClick={() => onAddBrowser()} title="New Browser" style={iconBtn}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(125, 207, 255, 0.12)'; e.currentTarget.style.color = 'var(--accent-cyan)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
-              <ellipse cx="8" cy="8" rx="3" ry="6.5" stroke="currentColor" strokeWidth="1.3"/>
-              <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.3"/>
-            </svg>
-          </button>
-
           {/* Toggle explorer */}
           <button onClick={onToggleExplorer} title="Toggle Explorer"
             style={{ ...iconBtn, background: explorerOpen ? 'rgba(224, 175, 104, 0.15)' : 'none', color: explorerOpen ? 'var(--accent-yellow)' : 'var(--text-tertiary)' }}
@@ -345,6 +334,18 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
           >
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
               <path d="M2 4a1 1 0 011-1h3.586a1 1 0 01.707.293L8.414 4.414A1 1 0 009.121 4.7H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+            </svg>
+          </button>
+
+          {/* Memo */}
+          <button onClick={onAddMemo} title="Memo"
+            style={iconBtn}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(187, 154, 247, 0.12)'; e.currentTarget.style.color = '#bb9af7'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+              <path d="M5 5h6M5 8h6M5 11h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
             </svg>
           </button>
         </div>
@@ -362,16 +363,20 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
           >
             {Array.from(terminals.values()).map((tw) => {
               const isBrowser = tw.type === 'browser';
-              const status = isBrowser ? undefined : statuses.get(tw.sessionId);
+              const isMemo = tw.type === 'memo';
+              const isNonTerminal = isBrowser || isMemo;
+              const status = isNonTerminal ? undefined : statuses.get(tw.sessionId);
               const isActive = activeTerminalId === tw.id;
               const running = status?.isRunning ?? false;
               const processing = status?.isProcessing ?? false;
               const agent = status ? isAgentProcess(status.foregroundProcess) : false;
               const isWindows = status?.shellType === 'windows';
-              const displayName = isBrowser ? (tw.title || 'Browser') : getDisplayName(status);
+              const displayName = isNonTerminal ? (tw.title || tw.type || 'Panel') : getDisplayName(status);
 
               const dotColor = isBrowser
                 ? 'var(--accent-cyan)'
+                : isMemo
+                ? '#bb9af7'
                 : running && agent && processing
                 ? 'var(--accent-yellow)'
                 : running && agent
@@ -382,13 +387,15 @@ export default function Sidebar({ transform, onAddTerminal, onAddBrowser, onTogg
 
               const dotGlow = isBrowser
                 ? '0 0 6px rgba(125, 207, 255, 0.4)'
+                : isMemo
+                ? '0 0 6px rgba(187, 154, 247, 0.4)'
                 : running && agent && !processing
                 ? '0 0 6px rgba(158, 206, 106, 0.5)'
                 : running && processing
                 ? '0 0 6px rgba(224, 175, 104, 0.5)'
                 : undefined;
 
-              const isPulsing = !isBrowser && running && (agent || processing);
+              const isPulsing = !isNonTerminal && running && (agent || processing);
 
               return (
                 <div

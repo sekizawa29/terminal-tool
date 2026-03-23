@@ -10,7 +10,7 @@ export default defineConfig({
     outDir: 'dist/client',
   },
   server: {
-    host: '127.0.0.1',
+    host: '0.0.0.0',
     port: parseInt(process.env.VITE_PORT || '5173', 10),
     proxy: {
       '/api': `http://127.0.0.1:${backendPort}`,

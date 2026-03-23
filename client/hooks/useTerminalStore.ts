@@ -3,13 +3,13 @@ import type { TerminalWindow, TerminalLink, SessionStatus } from '../types.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
 const LINKS_KEY = 'terminal-board-links';
-
 interface SavedLayout {
   sessionId: string;
-  type?: 'terminal' | 'browser' | 'explorer' | 'editor';
+  type?: 'terminal' | 'browser' | 'explorer' | 'editor' | 'memo';
   url?: string;
   explorerRoot?: string;
   filePath?: string;
+  memoText?: string;
   x: number;
   y: number;
   width: number;
@@ -117,6 +117,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       url: tw.url,
       explorerRoot: tw.explorerRoot,
       filePath: tw.filePath,
+      memoText: tw.memoText,
       x: tw.x,
       y: tw.y,
       width: tw.width,
