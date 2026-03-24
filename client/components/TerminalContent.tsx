@@ -167,6 +167,16 @@ export default function TerminalContent({
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         return false;
       }
+      // Block browser shortcuts that conflict with terminal Ctrl sequences
+      // r=reverse-i-search, w=delete word, n=next history, p=previous history,
+      // t=transpose chars, k=kill line, u=kill to start, y=yank, g=cancel
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        const blocked = ['r', 'w', 'n', 'p', 't', 'k', 'u', 'y', 'g'];
+        if (blocked.includes(e.key.toLowerCase())) {
+          e.preventDefault();
+          return true; // let xterm handle the keystroke
+        }
+      }
       return true;
     });
 
