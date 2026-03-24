@@ -3,32 +3,32 @@
 </p>
 
 <p align="center">
-  Browser-based terminal management on an infinite canvas.<br>
-  Manage multiple shell sessions, link terminals together, and orchestrate AI agents — all from one board.
+  無限キャンバス上でターミナルを管理するブラウザベースのツール。<br>
+  複数のシェルセッションを並べ、ターミナル同士を接続し、AIエージェントを操作できます。
 </p>
 
 ---
 
-## Features
+## 機能
 
-- **Infinite Canvas** — Pan, zoom, and arrange terminal windows freely on a boundless workspace
-- **Multiple Shells** — Spawn unlimited terminal sessions (Bash, Zsh, PowerShell) side by side
-- **Inter-Terminal Communication** — Link terminals and send commands between them via the `tt` CLI
-- **AI Agent Launchers** — One-click launch for Claude, Codex, and other AI coding agents
-- **File Explorer** — Browse, drag-drop, rename, and delete files with a built-in tree view
-- **Text Editor** — Open and edit files directly on the canvas
-- **Memo Panel** — Quick scratch notes pinned to the board
-- **Browser Panel** — Embedded web viewer with navigation
-- **Layout Persistence** — Window positions and links are saved automatically
-- **Cross-Platform** — Works on macOS, Linux, and Windows (via WSL2)
+- **無限キャンバス** — パン・ズームで自由にターミナルウィンドウを配置
+- **マルチシェル** — Bash / Zsh / PowerShell のセッションを好きなだけ同時起動
+- **ターミナル間通信** — ターミナルをリンクし、`tt` CLI でコマンドを送受信
+- **AIエージェント起動** — Claude・Codex などをワンクリックで起動
+- **ファイルエクスプローラー** — ツリー表示、ドラッグ&ドロップ、リネーム、削除
+- **テキストエディター** — キャンバス上でファイルを直接編集
+- **メモパネル** — ボードに貼り付けるメモ帳
+- **ブラウザパネル** — ナビゲーション付き埋め込みWebビューアー
+- **レイアウト自動保存** — ウィンドウ位置やリンクが自動的に保持される
+- **クロスプラットフォーム** — macOS / Linux / Windows (WSL2) 対応
 
-## Requirements
+## 動作要件
 
-- **Node.js** 18+ (with npm)
-- **macOS** or **Linux** — native support
-- **Windows** — requires WSL2 with Node.js installed inside WSL
+- **Node.js** 18 以上 (npm 含む)
+- **macOS** または **Linux** — そのまま動作
+- **Windows** — WSL2 が必要。Node.js は **WSL 内**にインストールすること
 
-## Quick Start
+## セットアップ
 
 ### macOS / Linux
 
@@ -38,106 +38,105 @@ cd terminal-tool
 ./start.sh
 ```
 
-`start.sh` will:
-1. Install dependencies if `node_modules/` doesn't exist
-2. Start the dev server (frontend + backend)
-3. Auto-open your browser in app mode (Chrome, Edge, Brave, Safari, or default)
+`start.sh` が以下を自動で行います:
+1. `node_modules/` がなければ `npm install` を実行
+2. 開発サーバー (フロントエンド + バックエンド) を起動
+3. ブラウザをアプリモードで自動オープン (Chrome, Edge, Brave, Safari の順に検出)
 
 ### Windows (WSL2)
 
-**Prerequisites:** WSL2 installed with a Linux distro, and Node.js installed **inside** WSL (not Windows Node).
+**前提:** WSL2 と Linux ディストリビューションがインストール済みで、WSL 内に Node.js がインストールされていること (Windows 側の Node ではなく WSL 側)。
 
-1. Clone the repo inside WSL:
+1. WSL ターミナルでリポジトリをクローン:
    ```bash
-   # In WSL terminal
    git clone https://github.com/sekizawa29/terminal-tool.git
    cd terminal-tool
    ```
 
-2. Launch from either:
-   - **WSL terminal:** `./start.sh`
-   - **Windows Explorer:** double-click `start.bat`
-   - **Windows Terminal / CMD:** `start.bat`
+2. 以下のいずれかで起動:
+   - **WSL ターミナル:** `./start.sh`
+   - **エクスプローラー:** `start.bat` をダブルクリック
+   - **コマンドプロンプト / Windows Terminal:** `start.bat`
 
-   `start.bat` automatically detects the repo's WSL path — no manual configuration needed.
+   `start.bat` はリポジトリの WSL パスを自動検出するため、手動設定は不要です。
 
-The app will open at `http://127.0.0.1:51730` in your browser.
+起動後、ブラウザで `http://127.0.0.1:51730` が開きます。
 
-> **Tip:** If you use nvm inside WSL, `start.sh` automatically detects and loads it.
+> **ヒント:** WSL 内で nvm を使っている場合、`start.sh` が自動検出して読み込みます。
 
-### Manual Start (any platform)
+### 手動起動 (全プラットフォーム共通)
 
 ```bash
 npm install
 npm run dev
 ```
 
-This starts the Vite dev server (port 5173) and the backend API server (port 3001). Open `http://127.0.0.1:5173` in your browser.
+Vite 開発サーバー (ポート 5173) とバックエンド API サーバー (ポート 3001) が起動します。ブラウザで `http://127.0.0.1:5173` を開いてください。
 
-## Production Build
+## 本番ビルド
 
 ```bash
 npm run build
 npm start
 ```
 
-Builds the frontend with Vite and compiles the server TypeScript, then serves everything from `dist/`.
+Vite でフロントエンドをビルドし、サーバーの TypeScript をコンパイルした後、`dist/` から配信します。
 
-## Usage
+## 使い方
 
-### Canvas Controls
+### キャンバス操作
 
-| Action | Shortcut |
-|--------|----------|
-| New terminal | `Ctrl/Cmd + Shift + N` |
-| Pan | Drag background or `Space` + drag |
-| Zoom | `Ctrl/Cmd` + scroll |
+| 操作 | ショートカット |
+|------|--------------|
+| 新規ターミナル | `Ctrl/Cmd + Shift + N` |
+| パン (移動) | 背景をドラッグ or `Space` + ドラッグ |
+| ズーム | `Ctrl/Cmd` + スクロール |
 
-### Panel Types
+### パネルの種類
 
-Create panels from the sidebar:
+サイドバーから作成できます:
 
-- **Terminal** — Full shell session with xterm.js
-- **Memo** — Text notepad
-- **Explorer** — File tree browser
-- **Editor** — Text file editor (double-click a file in Explorer)
-- **Browser** — Embedded web viewer
+- **Terminal** — xterm.js によるシェルセッション
+- **Memo** — テキストメモ
+- **Explorer** — ファイルツリーブラウザ
+- **Editor** — テキストエディター (Explorer でファイルをダブルクリックで開く)
+- **Browser** — 埋め込み Web ビューアー
 
-### Linking Terminals
+### ターミナルのリンク
 
-Drag from a terminal's connector button to another terminal to create a link. Linked terminals can communicate via the `tt` CLI.
+ターミナルのコネクターボタンから別のターミナルへドラッグするとリンクが作成されます。リンクしたターミナル同士は `tt` CLI で通信できます。
 
 ### `tt` CLI
 
-The `tt` command is automatically available inside every tboard terminal. Use it for inter-terminal communication:
+tboard 内のターミナルでは `tt` コマンドが自動的に使えます:
 
 ```bash
-tt ls                          # List all terminals
-tt send <target> <message>     # Send a command to another terminal
-tt read <target> [lines]       # Read terminal output
-tt ipc <target> <message>      # Send and wait for response
-tt peers                       # List linked terminals
-tt status                      # Show current terminal status
-tt history <target>            # View IPC conversation history
+tt ls                          # 全ターミナル一覧
+tt send <target> <message>     # 別のターミナルにコマンド送信
+tt read <target> [lines]       # ターミナル出力の読み取り
+tt ipc <target> <message>      # コマンド送信＋応答待ち
+tt peers                       # リンク中のターミナル一覧
+tt status                      # 現在のターミナル状態
+tt history <target>            # IPC 通信履歴の表示
 ```
 
-### Environment Variables
+### 環境変数
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3001` | Backend API server port |
-| `VITE_PORT` | `5173` | Vite dev server port |
+| 変数 | デフォルト | 説明 |
+|------|-----------|------|
+| `PORT` | `3001` | バックエンド API サーバーのポート |
+| `VITE_PORT` | `5173` | Vite 開発サーバーのポート |
 
-When launched via `start.sh`, ports are fixed to `51731` (backend) and `51730` (frontend).
+`start.sh` 経由で起動した場合、ポートは `51731` (バックエンド) / `51730` (フロントエンド) に固定されます。
 
-## Tech Stack
+## 技術スタック
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React, TypeScript, xterm.js, Zustand |
-| Backend | Express, node-pty, WebSocket |
-| Build | Vite |
+| レイヤー | 技術 |
+|---------|------|
+| フロントエンド | React, TypeScript, xterm.js, Zustand |
+| バックエンド | Express, node-pty, WebSocket |
+| ビルド | Vite |
 
-## License
+## ライセンス
 
 MIT

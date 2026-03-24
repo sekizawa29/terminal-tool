@@ -100,6 +100,25 @@ function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || '';
 }
 
+/** Resolve a Windows-native home directory for Windows shells running under WSL interop. */
+let _windowsHomeDirCache: string | undefined;
+function getWindowsHomeDir(): string {
+  if (_windowsHomeDirCache !== undefined) return _windowsHomeDirCache;
+  try {
+    const raw = execSync("cmd.exe /c \"echo %USERPROFILE%\" 2>/dev/null", { timeout: 3000 })
+      .toString().trim().replace(/\r/g, '');
+    if (raw && raw.includes('\\')) {
+      const m = raw.match(/^([A-Za-z]):\\(.*)/);
+      if (m) {
+        _windowsHomeDirCache = `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+        return _windowsHomeDirCache;
+      }
+    }
+  } catch { /* WSL interop not available */ }
+  _windowsHomeDirCache = '/mnt/c';
+  return _windowsHomeDirCache;
+}
+
 function getDefaultShell(shell?: string): string {
   if (shell) return shell;
   if (process.env.SHELL) return process.env.SHELL;
@@ -183,7 +202,8 @@ export class PtyManager {
     const sessionId = randomBytes(16).toString('hex');
     const resolvedShell = getDefaultShell(shell);
     const shellName = normalizeProcessName(resolvedShell);
-    const home = getHomeDir();
+    const winShell = isWindowsShell(resolvedShell);
+    const home = winShell ? getWindowsHomeDir() : getHomeDir();
 
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
