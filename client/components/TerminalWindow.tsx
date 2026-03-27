@@ -40,6 +40,8 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   const [isHovered, setIsHovered] = useState(false);
   const [closeHovered, setCloseHovered] = useState(false);
   const [connectorHovered, setConnectorHovered] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isBrowser = tw.type === 'browser';
   const isExplorer = tw.type === 'explorer';
@@ -117,6 +119,30 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
     removeTerminal(tw.id);
     saveLayout();
   }, [tw.id, tw.sessionId, isBrowser, isMemo, removeTerminal, saveLayout]);
+
+  const onTitleDoubleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setIsEditingTitle(true);
+    setTimeout(() => titleInputRef.current?.select(), 0);
+  }, []);
+
+  const onTitleCommit = useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== tw.title) {
+      updateTerminal(tw.id, { title: trimmed });
+      // Sync name to backend for terminal panels
+      if (!isBrowser && !isMemo && tw.sessionId) {
+        fetch(`/api/terminals/${tw.sessionId}/name`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed }),
+        }).catch(() => {});
+      }
+      saveLayout();
+    }
+    setIsEditingTitle(false);
+  }, [tw.id, tw.title, tw.sessionId, isBrowser, isMemo, updateTerminal, saveLayout]);
 
   const onUrlChange = useCallback((url: string) => {
     updateTerminal(tw.id, { url, title: url.replace(/^https?:\/\//, '').split('/')[0] || url });
@@ -290,20 +316,50 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
                 WIN
               </span>
             )}
-            <span
-              style={{
-                fontSize: 11.5,
-                fontWeight: 500,
-                color: isActive ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                letterSpacing: '0.2px',
-                transition: 'color var(--duration-normal)',
-              }}
-            >
-              {tw.title}
-            </span>
+            {isEditingTitle ? (
+              <input
+                ref={titleInputRef}
+                defaultValue={tw.title}
+                onBlur={(e) => onTitleCommit(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') onTitleCommit(e.currentTarget.value);
+                  if (e.key === 'Escape') setIsEditingTitle(false);
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: 'var(--text-secondary)',
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(122, 162, 247, 0.5)',
+                  borderRadius: 4,
+                  padding: '1px 6px',
+                  outline: 'none',
+                  textAlign: 'center',
+                  width: '100%',
+                  maxWidth: 200,
+                  letterSpacing: '0.2px',
+                  fontFamily: 'inherit',
+                }}
+              />
+            ) : (
+              <span
+                onDoubleClick={onTitleDoubleClick}
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: isActive ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  letterSpacing: '0.2px',
+                  transition: 'color var(--duration-normal)',
+                  cursor: 'text',
+                }}
+              >
+                {tw.title}
+              </span>
+            )}
           </div>
 
           {/* Right spacer to balance the close button */}
