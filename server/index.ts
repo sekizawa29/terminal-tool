@@ -182,6 +182,12 @@ app.delete('/api/links', (req, res) => {
     res.status(400).json({ error: 'sourceId and targetId are required' });
     return;
   }
+  // Notify both terminals that the link has been removed
+  const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
+  const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
+  ptyManager.write(sourceId, `[tboard] Link with "${targetName}" disconnected. Peer commands are no longer available.\r`);
+  ptyManager.write(targetId, `[tboard] Link with "${sourceName}" disconnected. Peer commands are no longer available.\r`);
+
   ptyManager.removeLink(sourceId, targetId);
   res.json({ ok: true });
 });
