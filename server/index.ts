@@ -153,9 +153,8 @@ app.post('/api/links', (req, res) => {
 
   const mainContext = [
     `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
-    `  - Send instructions:   tt peer ipc "your message"`,
-    `  - Wait for completion: tt peer read --wait`,
-    `  - Check new output:    tt peer read --since=0  (returns offset for next call)`,
+    `  - Send instructions:     tt peer ipc "your message"`,
+    `  - For long tasks:        tt peer send "task" then tt peer last --wait`,
     `  - After receiving a report from sub, decide: send more instructions or report to the user.`,
     ``
   ].join('\n');
@@ -163,9 +162,8 @@ app.post('/api/links', (req, res) => {
   const subContext = [
     `[tboard] Terminal link established with "${sourceName}".`,
     `  Available commands:`,
-    `  - tt peer ipc "message"   Send a message to the linked terminal`,
-    `  - tt peer read --wait     Read the linked terminal's output`,
-    `  - tt peer read --since=0  Incremental output read`,
+    `  - tt peer ipc "message"       Send a message to the linked terminal`,
+    `  - tt peer last --wait         Wait for response from linked terminal`,
     ``
   ].join('\n');
 
@@ -309,31 +307,6 @@ app.get('/api/terminals/:sessionId/rendered', (req, res) => {
   const status = ptyManager.getSessionStatus(resolved);
   res.json({
     output,
-    sessionId: resolved,
-    isProcessing: status?.isProcessing ?? false,
-    foregroundProcess: status?.foregroundProcess ?? 'unknown',
-  });
-});
-
-// Get incremental buffer content since offset
-app.get('/api/terminals/:sessionId/since', (req, res) => {
-  const resolved = resolveSession(req.params.sessionId);
-  if (!resolved) {
-    res.status(404).json({ error: 'Session not found' });
-    return;
-  }
-  const offset = parseInt(req.query.offset as string) || 0;
-  const clean = req.query.clean !== 'false';
-  const result = ptyManager.getBufferSince(resolved, offset, clean);
-  if (!result) {
-    res.status(404).json({ error: 'Session not found' });
-    return;
-  }
-  const status = ptyManager.getSessionStatus(resolved);
-  res.json({
-    output: result.output,
-    offset: result.offset,
-    truncated: result.truncated,
     sessionId: resolved,
     isProcessing: status?.isProcessing ?? false,
     foregroundProcess: status?.foregroundProcess ?? 'unknown',

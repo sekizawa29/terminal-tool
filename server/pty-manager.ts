@@ -44,13 +44,18 @@ function stripAgentNoise(text: string): string {
       continue;
     }
 
-    // Status bar: "esc to interrupt", combined variants
-    if (/esctointerrupt/i.test(trimmed) || /auto\s*mode\s*temporarily\s*unavailable/i.test(trimmed)) continue;
+    // Status bar: "esc to interrupt", "auto mode unavailable", timer, tips
+    if (/esctointerrupt/i.test(trimmed) || /auto\s*mode\s*(temporarily\s*)?unavailable/i.test(trimmed)) continue;
     if (/^esc\s+to\s+interrupt/i.test(trimmed)) continue;
+    if (/^Tip:/i.test(trimmed)) continue;
+    if (/^Press\s+Ctrl/i.test(trimmed)) continue;
+    if (/^\(\d+s\s*·\s*timeout\b/.test(trimmed)) continue;
 
-    // Spinner/loading: "✶ Nebulizing…", "*Tomfoolering…"
-    if (/^[✶✻✽✢✹✷✸✺✼✾✿❀●○⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏*·]+\s*[A-Z][a-z]+.*…/.test(trimmed)) continue;
+    // Spinner/loading: "✶ Nebulizing…", "*Tomfoolering…", "✢thinking with high effort"
+    if (/^[✶✻✽✢✹✷✸✺✼✾✿❀●○⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏*·]+\s*[A-Za-z]+.*/.test(trimmed)) continue;
     if (/^[A-Z][a-z]+ing…?\s*$/.test(trimmed)) continue;
+    // "thinking with high effort", "(thinking with high effort)"
+    if (/^\(?thinking\s+with\s+(high|medium|low)\s+effort\)?$/i.test(trimmed)) continue;
 
     // Horizontal separators
     if (/^[─━═]{5,}$/.test(trimmed)) continue;
@@ -83,10 +88,12 @@ function stripAgentNoise(text: string): string {
     }
 
     // Status badges & hook output
-    if (/^\(ctrl\+[a-z] to \w+\)$/.test(trimmed)) continue;
+    if (/^\(ctrl\+[a-z] to \w+\)$/i.test(trimmed)) continue;
     if (/^Running…$/.test(trimmed)) continue;
     if (/\(running \w+ hook\)/i.test(trimmed)) continue;
     if (/^…\s*\+\d+ lines/.test(trimmed)) continue;
+    // Cooked/timer summaries
+    if (/^[✶✻✽✢✹✷✸✺✼✾✿❀●○·*]\s*Cooked\s+for\b/i.test(trimmed)) continue;
 
     cleaned.push(line);
   }
@@ -174,7 +181,6 @@ interface PtySession {
   ws: WebSocket | null;
   alive: boolean;
   buffer: string; // buffered output while detached
-  bufferTrimmedBytes: number; // total bytes trimmed from buffer start (for absolute offset tracking)
   lastOutputAt: number;    // timestamp of last PTY output
   outputBurstStart: number; // when current continuous output burst started
   lastInputAt: number;     // timestamp of last user input via WebSocket
@@ -233,7 +239,6 @@ export class PtyManager {
       buffer: '',
       lastOutputAt: 0,
       outputBurstStart: 0,
-      bufferTrimmedBytes: 0,
       lastInputAt: 0,
       shellName,
       shellType: isWindowsShell(resolvedShell) ? 'windows' : 'linux',
@@ -254,8 +259,6 @@ export class PtyManager {
       // Always append to rolling buffer
       session.buffer += data;
       if (session.buffer.length > SCROLLBACK_BUFFER_LIMIT) {
-        const excess = session.buffer.length - SCROLLBACK_BUFFER_LIMIT;
-        session.bufferTrimmedBytes += excess;
         session.buffer = session.buffer.slice(-SCROLLBACK_BUFFER_LIMIT);
       }
 
@@ -623,7 +626,17 @@ export class PtyManager {
     }
 
     if (echoLine < 0) {
-      // Message echo not found yet — still being typed or not processed
+      // Message echo not found — fall back to last response if agent is done,
+      // but only if the prompt matches the current message (avoids stale responses)
+      if (!isProcessing) {
+        const last = this.getLastResponse(sessionId);
+        if (last && last.output && last.prompt) {
+          const promptNeedle = sentMessage.slice(0, 40);
+          if (last.prompt.includes(promptNeedle)) {
+            return { output: last.output, isProcessing: false };
+          }
+        }
+      }
       return { output: '', isProcessing };
     }
 
@@ -758,22 +771,19 @@ export class PtyManager {
     }
   }
 
-  /** Get buffer content since absolute offset (incremental read). Returns truncated=true if offset data was lost to buffer trim. */
-  getBufferSince(sessionId: string, offset: number, clean: boolean = true): { output: string; offset: number; truncated: boolean } | null {
+  /** Legacy: get buffer content since offset (for non-IPC use) */
+  getBufferSince(sessionId: string, offset: number, clean: boolean = true): { output: string; offset: number } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
-    const absoluteStart = session.bufferTrimmedBytes;
-    const absoluteEnd = absoluteStart + session.buffer.length;
-    const truncated = offset < absoluteStart;
-    const relativeOffset = Math.max(0, offset - absoluteStart);
-    const rawOutput = session.buffer.slice(relativeOffset);
+    const rawOutput = session.buffer.slice(offset);
+    const newOffset = session.buffer.length;
     let output = stripAnsiCodes(rawOutput);
     if (clean) {
       output = stripAgentNoise(output);
     }
 
-    return { output, offset: absoluteEnd, truncated };
+    return { output, offset: newOffset };
   }
 
   // ── IPC History ────────────────────────────────────────────────────

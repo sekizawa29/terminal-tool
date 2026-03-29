@@ -54,7 +54,7 @@ async function main() {
     case 'history':
       return showHistory(args[0]);
     case 'last':
-      return readLast(args[0]);
+      return readLast(args[0], ...args.slice(1));
     case 'poll':
       return pollResponse(args[0], args[1]);
     case 'peers':
@@ -152,21 +152,18 @@ async function sendCommand(args) {
 
 async function readOutput(target, ...extraArgs) {
   if (!target) {
-    console.error('Usage: tt read <id|name> [lines] [--since=N] [--wait] [--timeout=N] [--buffer]');
+    console.error('Usage: tt read <id|name> [lines] [--wait] [--buffer]');
     process.exit(1);
   }
 
   // Parse flags
   let lines = 100;
-  let sinceOffset = null;
   let wait = false;
-  let timeout = 0; // 0 = no timeout
+  let timeout = 0; // 0 = no timeout (hidden --timeout=N still accepted)
   let useBuffer = false;
 
   for (const arg of extraArgs) {
     if (arg === undefined) continue;
-    const sinceMatch = String(arg).match(/^--since=(\d+)$/);
-    if (sinceMatch) { sinceOffset = parseInt(sinceMatch[1]); continue; }
     const timeoutMatch = String(arg).match(/^--timeout=(\d+)$/);
     if (timeoutMatch) { timeout = parseInt(timeoutMatch[1]); continue; }
     if (arg === '--wait') { wait = true; continue; }
@@ -176,22 +173,6 @@ async function readOutput(target, ...extraArgs) {
   }
 
   const enc = encodeURIComponent(target);
-
-  // Mode: incremental read via /since
-  if (sinceOffset !== null) {
-    const res = await fetch(`${BASE}/api/terminals/${enc}/since?offset=${sinceOffset}&clean=true`);
-    const result = await res.json();
-    if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
-    if (result.output) {
-      process.stdout.write(result.output);
-      if (!result.output.endsWith('\n')) process.stdout.write('\n');
-    }
-    // Metadata to stderr so stdout stays clean for piping
-    const meta = `offset=${result.offset} processing=${result.isProcessing}` +
-      (result.truncated ? ' truncated=true' : '');
-    process.stderr.write(meta + '\n');
-    return;
-  }
 
   // Mode: wait for completion then read
   if (wait) {
@@ -240,7 +221,7 @@ async function readOutput(target, ...extraArgs) {
 
 async function ipcSendAndWait(args) {
   if (args.length < 2) {
-    console.error('Usage: tt ipc <id|name> <message...> [--timeout=N]');
+    console.error('Usage: tt ipc <id|name> <message...>');
     process.exit(1);
   }
 
@@ -320,14 +301,43 @@ async function pollResponse(target, messageArg) {
   process.stderr.write(`processing=${result.isProcessing}\n`);
 }
 
-async function readLast(target) {
+async function readLast(target, ...extraArgs) {
   if (!target) {
-    console.error('Usage: tt last <id|name>');
+    console.error('Usage: tt last <id|name> [--wait]');
     process.exit(1);
   }
-  const res = await fetch(
-    `${BASE}/api/ipc/last/${encodeURIComponent(target)}`
-  );
+
+  const wait = extraArgs.includes('--wait');
+  const enc = encodeURIComponent(target);
+
+  // --wait: poll until agent finishes, then return last response
+  if (wait) {
+    let settled = 0;
+    let lastResult = null;
+    while (true) {
+      const res = await fetch(`${BASE}/api/ipc/last/${enc}`);
+      lastResult = await res.json();
+      if (lastResult.error) { console.error(`Error: ${lastResult.error}`); process.exit(1); }
+      if (!lastResult.isProcessing) {
+        settled++;
+        if (settled >= 3) break;
+      } else {
+        settled = 0;
+      }
+      await sleep(2000);
+    }
+    if (lastResult.prompt) {
+      process.stderr.write(`prompt: ${lastResult.prompt}\n`);
+    }
+    process.stdout.write(lastResult.output || '(no response)');
+    if (lastResult.output && !lastResult.output.endsWith('\n')) {
+      process.stdout.write('\n');
+    }
+    return;
+  }
+
+  // Default: immediate read
+  const res = await fetch(`${BASE}/api/ipc/last/${enc}`);
   const result = await res.json();
   if (result.error) {
     console.error(`Error: ${result.error}`);
@@ -506,8 +516,8 @@ async function peerCommand(args) {
       return readOutput(target, ...rest);
     }
     case 'last': {
-      const { target } = resolvePeerTarget(peers, args.slice(1));
-      return readLast(target);
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      return readLast(target, ...rest);
     }
     case 'history': {
       const { target } = resolvePeerTarget(peers, args.slice(1));
@@ -557,14 +567,11 @@ Usage:
   tt send <id|name> <command>        Send command (auto-appends Enter)
   tt send <id|name> --raw <text>     Send text without Enter
   tt ipc <id|name> <message>         Send message & wait for response
-  tt ipc <id|name> <msg> --timeout=N Set wait timeout (default: no limit)
   tt last <id|name>                  Read the last response from an agent
+  tt last <id|name> --wait           Wait for agent to finish, then read response
   tt history <id|name>               Show IPC conversation history
-  tt poll <id|name> <message>        Read response for a sent message
   tt read <id|name> [lines]          Read terminal output (clean)
   tt read <id|name> --wait           Wait until agent finishes, then read
-  tt read <id|name> --since=N        Read new output since offset N
-  tt read <id|name> --buffer [lines] Read raw buffer (legacy mode)
   tt name <id|name> <new-name>       Name a terminal for easy reference
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
@@ -575,8 +582,8 @@ Peer commands (linked terminals):
   tt peer ipc [id|name] <message>    Send IPC message to peer & wait
   tt peer read [id|name] [lines]     Read peer's terminal output (clean)
   tt peer read [id|name] --wait      Wait for peer to finish, then read
-  tt peer read [id|name] --since=N   Read new output from peer since offset N
   tt peer last [id|name]             Read peer's last response
+  tt peer last [id|name] --wait      Wait for peer to finish, then read response
   tt peer history [id|name]          Show peer's IPC conversation history
 
 <id> can be: full session ID, short prefix (4+ chars), or name.
@@ -588,7 +595,6 @@ Examples:
   tt ipc sub-1 "run the tests"       Send to Claude agent & get response
   tt read sub-1 50                   Read last 50 lines (clean)
   tt read sub-1 --wait               Wait for sub-1 to finish processing
-  tt peer read --since=0             Start incremental read from peer
   tt history sub-1                   See IPC conversation history
   tt peers                           See linked peers
   tt peer ipc "run the tests"        Send to linked peer (single peer)

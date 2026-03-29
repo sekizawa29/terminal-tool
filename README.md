@@ -115,7 +115,6 @@ tt ls                          # 全ターミナル一覧
 tt send <target> <message>     # 別のターミナルにコマンド送信
 tt read <target> [lines]       # ターミナル出力の読み取り（クリーン）
 tt read <target> --wait        # エージェント完了まで待機して読み取り
-tt read <target> --since=N     # offset N 以降の差分を取得
 tt ipc <target> <message>      # コマンド送信＋応答待ち
 tt peers                       # リンク中のターミナル一覧
 tt peer ipc "message"          # リンク先にメッセージ送信＋応答待ち
