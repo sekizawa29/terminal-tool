@@ -46,7 +46,7 @@ async function main() {
       return sendCommand(args);
     case 'read':
     case 'output':
-      return readOutput(args[0], args[1]);
+      return readOutput(args[0], ...args.slice(1));
     case 'name':
       return setName(args[0], args[1]);
     case 'ipc':
@@ -150,38 +150,102 @@ async function sendCommand(args) {
   console.log(`Sent to ${target}.`);
 }
 
-async function readOutput(target, linesArg) {
+async function readOutput(target, ...extraArgs) {
   if (!target) {
-    console.error('Usage: tt read <id|name> [lines]');
+    console.error('Usage: tt read <id|name> [lines] [--since=N] [--wait] [--timeout=N] [--buffer]');
     process.exit(1);
   }
 
-  const lines = parseInt(linesArg) || 100;
-  const res = await fetch(
-    `${BASE}/api/terminals/${encodeURIComponent(target)}/buffer?lines=${lines}`
-  );
+  // Parse flags
+  let lines = 100;
+  let sinceOffset = null;
+  let wait = false;
+  let timeout = 0; // 0 = no timeout
+  let useBuffer = false;
 
+  for (const arg of extraArgs) {
+    if (arg === undefined) continue;
+    const sinceMatch = String(arg).match(/^--since=(\d+)$/);
+    if (sinceMatch) { sinceOffset = parseInt(sinceMatch[1]); continue; }
+    const timeoutMatch = String(arg).match(/^--timeout=(\d+)$/);
+    if (timeoutMatch) { timeout = parseInt(timeoutMatch[1]); continue; }
+    if (arg === '--wait') { wait = true; continue; }
+    if (arg === '--buffer') { useBuffer = true; continue; }
+    const parsed = parseInt(arg);
+    if (!isNaN(parsed)) { lines = parsed; continue; }
+  }
+
+  const enc = encodeURIComponent(target);
+
+  // Mode: incremental read via /since
+  if (sinceOffset !== null) {
+    const res = await fetch(`${BASE}/api/terminals/${enc}/since?offset=${sinceOffset}&clean=true`);
+    const result = await res.json();
+    if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
+    if (result.output) {
+      process.stdout.write(result.output);
+      if (!result.output.endsWith('\n')) process.stdout.write('\n');
+    }
+    // Metadata to stderr so stdout stays clean for piping
+    const meta = `offset=${result.offset} processing=${result.isProcessing}` +
+      (result.truncated ? ' truncated=true' : '');
+    process.stderr.write(meta + '\n');
+    return;
+  }
+
+  // Mode: wait for completion then read
+  if (wait) {
+    let settled = 0;
+    let lastOutput = '';
+    const deadline = timeout > 0 ? Date.now() + timeout * 1000 : 0;
+    while (true) {
+      if (deadline > 0 && Date.now() >= deadline) break;
+      const res = await fetch(`${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`);
+      const result = await res.json();
+      if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
+      lastOutput = result.output || '';
+      if (!result.isProcessing) {
+        settled++;
+        if (settled >= 3) break;
+      } else {
+        settled = 0;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    process.stdout.write(lastOutput);
+    if (lastOutput && !lastOutput.endsWith('\n')) process.stdout.write('\n');
+    return;
+  }
+
+  // Mode: legacy buffer (escape hatch)
+  if (useBuffer) {
+    const res = await fetch(`${BASE}/api/terminals/${enc}/buffer?lines=${lines}`);
+    const result = await res.json();
+    if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
+    process.stdout.write(result.output || '');
+    if (result.output && !result.output.endsWith('\n')) process.stdout.write('\n');
+    return;
+  }
+
+  // Default: rendered output (clean, noise-stripped)
+  const res = await fetch(`${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`);
   const result = await res.json();
-  if (result.error) {
-    console.error(`Error: ${result.error}`);
-    process.exit(1);
-  }
-
+  if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
   process.stdout.write(result.output || '');
-  // Ensure trailing newline
-  if (result.output && !result.output.endsWith('\n')) {
-    process.stdout.write('\n');
+  if (result.output && !result.output.endsWith('\n')) process.stdout.write('\n');
+  if (result.isProcessing) {
+    process.stderr.write('(still processing...)\n');
   }
 }
 
 async function ipcSendAndWait(args) {
   if (args.length < 2) {
-    console.error('Usage: tt ipc <id|name> <message...> [--timeout=60]');
+    console.error('Usage: tt ipc <id|name> <message...> [--timeout=N]');
     process.exit(1);
   }
 
   const target = args[0];
-  let timeout = 60;
+  let timeout = 0; // 0 = no timeout
   const msgParts = [];
   for (const a of args.slice(1)) {
     const m = a.match(/^--timeout=(\d+)$/);
@@ -205,14 +269,15 @@ async function ipcSendAndWait(args) {
   const turnId = sendResult.turnId;
   const encodedMsg = encodeURIComponent(message);
   const encodedTurnId = turnId ? `&turnId=${encodeURIComponent(turnId)}` : '';
-  const deadline = Date.now() + timeout * 1000;
+  const deadline = timeout > 0 ? Date.now() + timeout * 1000 : 0;
 
-  process.stderr.write(`Sent to ${target}. Waiting for response (timeout: ${timeout}s)...\n`);
+  process.stderr.write(`Sent to ${target}. Waiting for response...\n`);
 
-  // Poll until processing stops and we have output, or timeout
+  // Poll until processing stops and we have output
   let settled = 0;
   let lastOutput = '';
-  while (Date.now() < deadline) {
+  while (true) {
+    if (deadline > 0 && Date.now() >= deadline) break;
     await sleep(1500);
     const pollRes = await fetch(
       `${BASE}/api/ipc/response/${sessionId}?message=${encodedMsg}${encodedTurnId}`
@@ -438,7 +503,7 @@ async function peerCommand(args) {
     }
     case 'read': {
       const { target, rest } = resolvePeerTarget(peers, args.slice(1));
-      return readOutput(target, rest[0]);
+      return readOutput(target, ...rest);
     }
     case 'last': {
       const { target } = resolvePeerTarget(peers, args.slice(1));
@@ -492,11 +557,14 @@ Usage:
   tt send <id|name> <command>        Send command (auto-appends Enter)
   tt send <id|name> --raw <text>     Send text without Enter
   tt ipc <id|name> <message>         Send message & wait for response
-  tt ipc <id|name> <msg> --timeout=N Set wait timeout (default: 60s)
+  tt ipc <id|name> <msg> --timeout=N Set wait timeout (default: no limit)
   tt last <id|name>                  Read the last response from an agent
   tt history <id|name>               Show IPC conversation history
   tt poll <id|name> <message>        Read response for a sent message
-  tt read <id|name> [lines]          Read terminal output (last N lines)
+  tt read <id|name> [lines]          Read terminal output (clean)
+  tt read <id|name> --wait           Wait until agent finishes, then read
+  tt read <id|name> --since=N        Read new output since offset N
+  tt read <id|name> --buffer [lines] Read raw buffer (legacy mode)
   tt name <id|name> <new-name>       Name a terminal for easy reference
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
@@ -505,7 +573,9 @@ Peer commands (linked terminals):
   tt peers                           List linked peers
   tt peer send [id|name] <command>   Send command to peer
   tt peer ipc [id|name] <message>    Send IPC message to peer & wait
-  tt peer read [id|name] [lines]     Read peer's terminal output
+  tt peer read [id|name] [lines]     Read peer's terminal output (clean)
+  tt peer read [id|name] --wait      Wait for peer to finish, then read
+  tt peer read [id|name] --since=N   Read new output from peer since offset N
   tt peer last [id|name]             Read peer's last response
   tt peer history [id|name]          Show peer's IPC conversation history
 
@@ -516,7 +586,9 @@ Examples:
   tt ls                              See all terminals
   tt send sub-1 "npm test"           Run npm test in sub-1
   tt ipc sub-1 "run the tests"       Send to Claude agent & get response
-  tt read sub-1 50                   Read last 50 lines from sub-1
+  tt read sub-1 50                   Read last 50 lines (clean)
+  tt read sub-1 --wait               Wait for sub-1 to finish processing
+  tt peer read --since=0             Start incremental read from peer
   tt history sub-1                   See IPC conversation history
   tt peers                           See linked peers
   tt peer ipc "run the tests"        Send to linked peer (single peer)

@@ -146,6 +146,32 @@ app.post('/api/links', (req, res) => {
     return;
   }
   ptyManager.addLink(sourceId, targetId);
+
+  // Inject agent collaboration context into both terminals
+  const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
+  const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
+
+  const mainContext = [
+    `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
+    `  - Send instructions:   tt peer ipc "your message"`,
+    `  - Wait for completion: tt peer read --wait`,
+    `  - Check new output:    tt peer read --since=0  (returns offset for next call)`,
+    `  - After receiving a report from sub, decide: send more instructions or report to the user.`,
+    ``
+  ].join('\n');
+
+  const subContext = [
+    `[tboard] Terminal link established with "${sourceName}".`,
+    `  Available commands:`,
+    `  - tt peer ipc "message"   Send a message to the linked terminal`,
+    `  - tt peer read --wait     Read the linked terminal's output`,
+    `  - tt peer read --since=0  Incremental output read`,
+    ``
+  ].join('\n');
+
+  ptyManager.write(sourceId, mainContext + '\r');
+  ptyManager.write(targetId, subContext + '\r');
+
   res.json({ ok: true });
 });
 
@@ -280,7 +306,38 @@ app.get('/api/terminals/:sessionId/rendered', (req, res) => {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-  res.json({ output, sessionId: resolved });
+  const status = ptyManager.getSessionStatus(resolved);
+  res.json({
+    output,
+    sessionId: resolved,
+    isProcessing: status?.isProcessing ?? false,
+    foregroundProcess: status?.foregroundProcess ?? 'unknown',
+  });
+});
+
+// Get incremental buffer content since offset
+app.get('/api/terminals/:sessionId/since', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const offset = parseInt(req.query.offset as string) || 0;
+  const clean = req.query.clean !== 'false';
+  const result = ptyManager.getBufferSince(resolved, offset, clean);
+  if (!result) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const status = ptyManager.getSessionStatus(resolved);
+  res.json({
+    output: result.output,
+    offset: result.offset,
+    truncated: result.truncated,
+    sessionId: resolved,
+    isProcessing: status?.isProcessing ?? false,
+    foregroundProcess: status?.foregroundProcess ?? 'unknown',
+  });
 });
 
 // Kill a specific terminal (supports short ID / name resolution)

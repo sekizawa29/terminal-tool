@@ -174,6 +174,7 @@ interface PtySession {
   ws: WebSocket | null;
   alive: boolean;
   buffer: string; // buffered output while detached
+  bufferTrimmedBytes: number; // total bytes trimmed from buffer start (for absolute offset tracking)
   lastOutputAt: number;    // timestamp of last PTY output
   outputBurstStart: number; // when current continuous output burst started
   lastInputAt: number;     // timestamp of last user input via WebSocket
@@ -232,6 +233,7 @@ export class PtyManager {
       buffer: '',
       lastOutputAt: 0,
       outputBurstStart: 0,
+      bufferTrimmedBytes: 0,
       lastInputAt: 0,
       shellName,
       shellType: isWindowsShell(resolvedShell) ? 'windows' : 'linux',
@@ -252,6 +254,8 @@ export class PtyManager {
       // Always append to rolling buffer
       session.buffer += data;
       if (session.buffer.length > SCROLLBACK_BUFFER_LIMIT) {
+        const excess = session.buffer.length - SCROLLBACK_BUFFER_LIMIT;
+        session.bufferTrimmedBytes += excess;
         session.buffer = session.buffer.slice(-SCROLLBACK_BUFFER_LIMIT);
       }
 
@@ -754,19 +758,22 @@ export class PtyManager {
     }
   }
 
-  /** Legacy: get buffer content since offset (for non-IPC use) */
-  getBufferSince(sessionId: string, offset: number, clean: boolean = true): { output: string; offset: number } | null {
+  /** Get buffer content since absolute offset (incremental read). Returns truncated=true if offset data was lost to buffer trim. */
+  getBufferSince(sessionId: string, offset: number, clean: boolean = true): { output: string; offset: number; truncated: boolean } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
-    const rawOutput = session.buffer.slice(offset);
-    const newOffset = session.buffer.length;
+    const absoluteStart = session.bufferTrimmedBytes;
+    const absoluteEnd = absoluteStart + session.buffer.length;
+    const truncated = offset < absoluteStart;
+    const relativeOffset = Math.max(0, offset - absoluteStart);
+    const rawOutput = session.buffer.slice(relativeOffset);
     let output = stripAnsiCodes(rawOutput);
     if (clean) {
       output = stripAgentNoise(output);
     }
 
-    return { output, offset: newOffset };
+    return { output, offset: absoluteEnd, truncated };
   }
 
   // ── IPC History ────────────────────────────────────────────────────
