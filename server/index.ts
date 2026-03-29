@@ -219,8 +219,10 @@ app.post('/api/ipc/send', (req, res) => {
   // Create pending history turn
   const turnId = ptyManager.createPendingTurn(resolved, message, sourceSessionId || undefined);
 
-  // Write message + carriage return to submit
-  ptyManager.write(resolved, message + '\r');
+  // Wrap in bracketed paste to prevent multi-line messages from being split,
+  // then send CR after a delay to submit
+  ptyManager.write(resolved, `\x1b[200~${message}\x1b[201~`);
+  setTimeout(() => ptyManager.write(resolved, '\r'), 150);
 
   res.json({ ok: true, sessionId: resolved, message, turnId });
 });
