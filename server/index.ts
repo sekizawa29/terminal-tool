@@ -155,7 +155,8 @@ app.post('/api/links', (req, res) => {
     `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
     `  - Send instructions:     tt peer ipc "your message"`,
     `  - For long tasks:        tt peer send "task" then tt peer last --wait`,
-    `  - After receiving a report from sub, decide: send more instructions or report to the user.`,
+    `  - Sub will notify you with "DONE: ..." when finished.`,
+    `  - After notification, run tt peer last to check what sub actually did.`,
     ``
   ].join('\n');
 
@@ -164,6 +165,7 @@ app.post('/api/links', (req, res) => {
     `  Available commands:`,
     `  - tt peer ipc "message"       Send a message to the linked terminal`,
     `  - tt peer last --wait         Wait for response from linked terminal`,
+    `  - When you finish a task, report back: tt peer ipc "DONE: [summary + changed files]"`,
     ``
   ].join('\n');
 
