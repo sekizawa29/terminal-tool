@@ -233,8 +233,10 @@ app.post('/api/ipc/send', (req, res) => {
   const marker = `__IPC_${turnId}__`;
   const markedMessage = `${marker} ${message}`;
 
-  // Wrap in bracketed paste + CR in single write (eliminates timing issues)
-  ptyManager.write(resolved, `\x1b[200~${markedMessage}\x1b[201~\r`);
+  // Wrap in bracketed paste, then send CR after delay
+  // (Claude Code needs time to process paste-end before accepting Enter)
+  ptyManager.write(resolved, `\x1b[200~${markedMessage}\x1b[201~`);
+  setTimeout(() => ptyManager.write(resolved, '\r'), 150);
 
   res.json({ ok: true, sessionId: resolved, message, turnId, marker });
 });
