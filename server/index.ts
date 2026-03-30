@@ -274,8 +274,8 @@ app.get('/api/ipc/response/:sessionId', (req, res) => {
     }
   }
 
-  // Reconstruct marker from turnId (server-authoritative, not client-supplied)
-  const marker = turnId ? `__IPC_${turnId}__` : undefined;
+  // Reconstruct marker from turnId (must match format used in /api/ipc/send)
+  const marker = turnId ? `[ipc:${turnId.slice(0, 8)}]` : undefined;
   const result = ptyManager.getIpcResponse(resolved, message, marker);
   if (!result) {
     res.status(404).json({ error: 'Session not found' });
