@@ -65,6 +65,10 @@ async function main() {
       return showSelf();
     case 'status':
       return showStatus(args[0]);
+    case 'notify':
+      return sendNotification(args);
+    case 'notifications':
+      return showNotifications(...args);
     default:
       printHelp();
   }
@@ -266,6 +270,11 @@ async function ipcSendAndWait(args) {
     const poll = await pollRes.json();
     lastOutput = poll.output || '';
 
+    if (poll.timedOut) {
+      process.stderr.write('Error: IPC turn timed out (no response within 10 minutes).\n');
+      process.exit(1);
+    }
+
     if (!poll.isProcessing) {
       settled++;
       if (settled >= 2) break;
@@ -454,6 +463,66 @@ async function showStatus(target) {
   console.log(JSON.stringify(resolved, null, 2));
 }
 
+async function sendNotification(args) {
+  if (args.length < 2) {
+    console.error('Usage: tt notify <id|name> <message...>');
+    process.exit(1);
+  }
+  const target = args[0];
+  const message = args.slice(1).join(' ');
+
+  const res = await fetch(`${BASE}/api/notifications/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, message, sourceSessionId: SELF || undefined }),
+  });
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+  process.stderr.write(`Notification sent (${result.notificationId}).\n`);
+}
+
+async function showNotifications(...args) {
+  let target = null;
+  let doClear = false;
+  for (const a of args) {
+    if (a === '--clear') doClear = true;
+    else if (!target) target = a;
+  }
+  const sessionId = target || SELF;
+  if (!sessionId) {
+    console.error('Usage: tt notifications [id|name] [--clear]');
+    process.exit(1);
+  }
+
+  const res = await fetch(`${BASE}/api/notifications/${encodeURIComponent(sessionId)}`);
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  const notifications = result.notifications || [];
+  if (notifications.length === 0) {
+    console.log('No notifications.');
+    return;
+  }
+
+  for (const n of notifications) {
+    const time = new Date(n.timestamp).toLocaleTimeString();
+    const statusMark = n.status === 'queued' ? ' [queued]' : '';
+    console.log(`[${time}] from "${n.sourceName}"${statusMark}: ${n.message}`);
+  }
+  console.log(`\n${notifications.length} notification(s).`);
+
+  if (doClear) {
+    await fetch(`${BASE}/api/notifications/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    process.stderr.write('Notifications cleared.\n');
+  }
+}
+
 async function listPeers() {
   if (!SELF) {
     console.error('Not running inside a terminal-board session.');
@@ -523,9 +592,17 @@ async function peerCommand(args) {
       const { target } = resolvePeerTarget(peers, args.slice(1));
       return showHistory(target);
     }
+    case 'notify': {
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      if (rest.length === 0) {
+        console.error('Usage: tt peer notify [id|name] <message...>');
+        process.exit(1);
+      }
+      return sendNotification([target, ...rest]);
+    }
     default:
       console.error(`Unknown peer subcommand: ${subCmd}`);
-      console.error('Available: send, ipc, read, last, history');
+      console.error('Available: send, ipc, read, last, history, notify');
       process.exit(1);
   }
 }
@@ -573,6 +650,8 @@ Usage:
   tt read <id|name> [lines]          Read terminal output (clean)
   tt read <id|name> --wait           Wait until agent finishes, then read
   tt name <id|name> <new-name>       Name a terminal for easy reference
+  tt notify <id|name> <message>       Send notification (fire-and-forget)
+  tt notifications [id|name]         Show & clear pending notifications
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
 
@@ -580,6 +659,7 @@ Peer commands (linked terminals):
   tt peers                           List linked peers
   tt peer send [id|name] <command>   Send command to peer
   tt peer ipc [id|name] <message>    Send IPC message to peer & wait
+  tt peer notify [id|name] <message> Send notification to peer (non-blocking)
   tt peer read [id|name] [lines]     Read peer's terminal output (clean)
   tt peer read [id|name] --wait      Wait for peer to finish, then read
   tt peer last [id|name]             Read peer's last response

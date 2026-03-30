@@ -156,7 +156,9 @@ app.post('/api/links', (req, res) => {
     `  - Send instructions:     tt peer ipc "your message"`,
     `  - For long tasks:        tt peer send "task" then tt peer last --wait`,
     `  - Sub will notify you with "DONE: ..." when finished.`,
-    `  - After notification, run tt peer last to check what sub actually did.`,
+    `  - Notifications are queued and delivered when you return to prompt.`,
+    `  - Check pending:         tt notifications`,
+    `  - After notification, run tt peer last to review what sub did.`,
     ``
   ].join('\n');
 
@@ -165,7 +167,7 @@ app.post('/api/links', (req, res) => {
     `  Available commands:`,
     `  - tt peer ipc "message"       Send a message to the linked terminal`,
     `  - tt peer last --wait         Wait for response from linked terminal`,
-    `  - When you finish a task, report back: tt peer ipc "DONE: [summary + changed files]"`,
+    `  - When you finish a task, notify: tt peer notify "DONE: [summary + changed files]"`,
     ``
   ].join('\n');
 
@@ -227,12 +229,14 @@ app.post('/api/ipc/send', (req, res) => {
   // Create pending history turn
   const turnId = ptyManager.createPendingTurn(resolved, message, sourceSessionId || undefined);
 
-  // Wrap in bracketed paste to prevent multi-line messages from being split,
-  // then send CR after a delay to submit
-  ptyManager.write(resolved, `\x1b[200~${message}\x1b[201~`);
-  setTimeout(() => ptyManager.write(resolved, '\r'), 150);
+  // Prefix with unique marker for reliable echo matching
+  const marker = `__IPC_${turnId}__`;
+  const markedMessage = `${marker} ${message}`;
 
-  res.json({ ok: true, sessionId: resolved, message, turnId });
+  // Wrap in bracketed paste + CR in single write (eliminates timing issues)
+  ptyManager.write(resolved, `\x1b[200~${markedMessage}\x1b[201~\r`);
+
+  res.json({ ok: true, sessionId: resolved, message, turnId, marker });
 });
 
 // Poll for IPC response — extracts rendered response by matching the sent message's echo
@@ -249,7 +253,27 @@ app.get('/api/ipc/response/:sessionId', (req, res) => {
     return;
   }
 
-  const result = ptyManager.getIpcResponse(resolved, message);
+  // Expire stale pending turns on each poll
+  ptyManager.expireStaleTurns(resolved);
+
+  // Check if this turn was timed out
+  if (turnId) {
+    const history = ptyManager.getIpcHistory(resolved);
+    const turn = history.find(e => e.turnId === turnId);
+    if (turn && turn.status === 'complete' && turn.response === '(timed out)') {
+      res.json({
+        output: '',
+        isProcessing: false,
+        timedOut: true,
+        foregroundProcess: 'unknown',
+      });
+      return;
+    }
+  }
+
+  // Reconstruct marker from turnId (server-authoritative, not client-supplied)
+  const marker = turnId ? `__IPC_${turnId}__` : undefined;
+  const result = ptyManager.getIpcResponse(resolved, message, marker);
   if (!result) {
     res.status(404).json({ error: 'Session not found' });
     return;
@@ -298,6 +322,47 @@ app.get('/api/ipc/history/:sessionId', (req, res) => {
   }
   const entries = ptyManager.getIpcHistory(resolved);
   res.json({ sessionId: resolved, entries });
+});
+
+// ── Notifications: fire-and-forget delivery with server-side queuing ──
+
+// Send a notification (non-blocking, enqueued for delivery)
+app.post('/api/notifications/send', (req, res) => {
+  const { target, message, sourceSessionId } = req.body || {};
+  if (!target || typeof message !== 'string') {
+    res.status(400).json({ error: 'target and message (string) are required' });
+    return;
+  }
+  const resolved = resolveSession(target);
+  if (!resolved) {
+    res.status(404).json({ error: `Target session not found: ${target}` });
+    return;
+  }
+  const source = sourceSessionId || 'unknown';
+  const notificationId = ptyManager.enqueueNotification(resolved, source, message);
+  res.json({ ok: true, notificationId, sessionId: resolved });
+});
+
+// Get notifications for a session
+app.get('/api/notifications/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const notifications = ptyManager.getNotifications(resolved);
+  res.json({ sessionId: resolved, notifications });
+});
+
+// Clear notifications for a session
+app.delete('/api/notifications/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  ptyManager.clearNotifications(resolved);
+  res.json({ ok: true });
 });
 
 // Get rendered terminal content (via headless xterm, no animation artifacts)

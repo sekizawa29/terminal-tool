@@ -73,15 +73,14 @@ function LinkLine({ link }: { link: TerminalLink }) {
           transition: 'r 0.15s',
         }}
       />
-      {/* Target attachment dot */}
-      <circle
-        cx={tx}
-        cy={ty}
-        r={hovered ? 5 : 4}
+      {/* Target arrow marker (drawn manually for hover reactivity) */}
+      <polygon
+        points={`${tx} ${ty}, ${tx - 12} ${ty - 6}, ${tx - 12} ${ty + 6}`}
         fill="#bb9af7"
         style={{
           filter: 'drop-shadow(0 0 4px rgba(187, 154, 247, 0.5))',
-          transition: 'r 0.15s',
+          transition: 'opacity 0.15s',
+          opacity: hovered ? 1 : 0.8,
         }}
       />
       {/* Delete button on hover */}
@@ -152,7 +151,11 @@ function DragLine() {
         fill="#7dcfff"
         style={{ filter: 'drop-shadow(0 0 4px rgba(125, 207, 255, 0.5))' }}
       />
-      <circle cx={tx} cy={ty} r={4} fill="#bb9af7" opacity={0.7} />
+      <polygon
+        points={`${tx} ${ty}, ${tx - 10} ${ty - 5}, ${tx - 10} ${ty + 5}`}
+        fill="#bb9af7"
+        opacity={0.7}
+      />
     </g>
   );
 }

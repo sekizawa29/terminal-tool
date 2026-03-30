@@ -176,6 +176,19 @@ export interface IpcHistoryEntry {
   truncated?: boolean;
 }
 
+export interface NotificationEntry {
+  notificationId: string;
+  sourceSessionId: string;
+  sourceName: string;
+  message: string;
+  timestamp: number;
+  seq: number;            // monotonic sequence for ordering
+  status: 'queued' | 'injected';
+}
+
+const NOTIFICATION_MAX_ENTRIES = 50;
+const NOTIFICATION_MAX_MSG_BYTES = 4 * 1024; // 4KB per message
+
 interface PtySession {
   pty: pty.IPty;
   ws: WebSocket | null;
@@ -190,6 +203,8 @@ interface PtySession {
   onDataDisposable: pty.IDisposable | null;
   onExitDisposable: pty.IDisposable | null;
   headlessTerm: InstanceType<typeof HeadlessTerminal>; // for IPC: renders PTY output properly
+  pendingIpcCount: number;   // number of in-flight IPC turns targeting this session
+  lastIpcSentAt: number;     // timestamp of most recent IPC send to this session
 }
 
 export class PtyManager {
@@ -197,6 +212,8 @@ export class PtyManager {
   private nameIndex = new Map<string, string>(); // name → sessionId
   private links = new Map<string, Set<string>>(); // sessionId → Set<linkedSessionIds>
   private ipcHistory = new Map<string, IpcHistoryEntry[]>();
+  private notificationQueues = new Map<string, NotificationEntry[]>();
+  private notificationSeq = 0; // global monotonic counter
   private serverPort: number;
   private binDir: string;
 
@@ -245,6 +262,8 @@ export class PtyManager {
       onDataDisposable: null,
       onExitDisposable: null,
       headlessTerm,
+      pendingIpcCount: 0,
+      lastIpcSentAt: 0,
     };
 
     // Always buffer all output (for replay on reconnect)
@@ -264,6 +283,9 @@ export class PtyManager {
 
       // Feed into headless terminal for proper rendering
       session.headlessTerm.write(data);
+
+      // Schedule notification flush (debounced, detects processing→idle transition)
+      this.scheduleNotificationFlush(sessionId);
 
       // Send to WebSocket if connected
       if (session.ws && session.ws.readyState === session.ws.OPEN) {
@@ -378,6 +400,7 @@ export class PtyManager {
   write(sessionId: string, data: string | Buffer): void {
     const session = this.sessions.get(sessionId);
     if (session) {
+      session.lastInputAt = Date.now();
       session.pty.write(typeof data === 'string' ? data : data.toString());
     }
   }
@@ -499,13 +522,31 @@ export class PtyManager {
     }
 
     const cwdShort = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
-    // Agent is processing when: running, recent output, and the current output
-    // burst has lasted >800ms (filters out brief status bar updates, cursor redraws,
-    // and click/input echo — only sustained agent output triggers this)
+
+    // ── isProcessing detection ──────────────────────────────────────
     const now = Date.now();
     const hasRecentOutput = now - session.lastOutputAt < 2000;
     const isSustainedBurst = session.lastOutputAt - session.outputBurstStart > 800;
-    const isProcessing = isRunning && hasRecentOutput && isSustainedBurst;
+
+    // Baseline: output-based heuristic (unchanged for non-IPC use)
+    let isProcessing = isRunning && hasRecentOutput && isSustainedBurst;
+
+    // Enhanced detection during active IPC turns
+    if (session.pendingIpcCount > 0) {
+      const hasOutputSinceSend = session.lastOutputAt > session.lastIpcSentAt;
+      const hasPrompt = this.hasPromptAtEnd(sessionId);
+
+      if (hasPrompt && !hasRecentOutput && hasOutputSinceSend) {
+        // Prompt visible, output stopped, output occurred after send → done
+        isProcessing = false;
+      } else if (!hasPrompt && isRunning) {
+        // No prompt yet → still processing (even if output paused >2s)
+        isProcessing = true;
+      } else if (!hasOutputSinceSend) {
+        // No output since IPC send → hasn't started yet
+        isProcessing = true;
+      }
+    }
 
     return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name, shellType: session.shellType };
   }
@@ -601,11 +642,44 @@ export class PtyManager {
   }
 
   /**
-   * Extract the IPC response for a given sent message.
-   * Finds the last prompt echo (❯ message) in the rendered buffer,
-   * then extracts the response content between that echo and the next prompt/status bar.
+   * Check if an idle prompt (❯ with no trailing command) is visible
+   * near the bottom of the rendered terminal screen.
+   * Scans from the bottom, skipping blank and status-bar lines.
    */
-  getIpcResponse(sessionId: string, sentMessage: string): { output: string; isProcessing: boolean } | null {
+  private hasPromptAtEnd(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    const buf = session.headlessTerm.buffer.active;
+    const totalLines = buf.baseY + buf.cursorY + 1;
+
+    // Scan up to 10 lines from the bottom (covers status bars, separators)
+    const scanStart = Math.max(0, totalLines - 10);
+    for (let y = totalLines - 1; y >= scanStart; y--) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true).trim();
+      if (!text) continue; // skip blank
+      if (/^[─━═]{5,}$/.test(text)) continue; // skip separator
+      if (/esc\s+to\s+interrupt/i.test(text)) continue; // skip status bar
+      if (/^Tip:/i.test(text)) continue; // skip tips
+      if (/^Press\s+Ctrl/i.test(text)) continue; // skip ctrl hints
+      if (/^\(ctrl\+[a-z] to \w+\)$/i.test(text)) continue; // skip ctrl badges
+      if (/\?\s+(for shortcuts|for help)/i.test(text)) continue; // skip help hints
+      if (/^●\s*(high|medium|low)\s*·\s*\//i.test(text)) continue; // skip model/status badge
+      if (/auto\s*mode/i.test(text)) continue; // skip auto mode status
+      // Idle prompt: ❯ alone or ❯ followed only by whitespace
+      if (/^❯\s*$/.test(text)) return true;
+      // If we hit a non-prompt, non-skippable line, stop
+      return false;
+    }
+    return false;
+  }
+
+  /**
+   * Extract the IPC response for a given sent message.
+   * Uses marker-based matching (preferred) with legacy prefix fallback.
+   */
+  getIpcResponse(sessionId: string, sentMessage: string, marker?: string): { output: string; isProcessing: boolean } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
@@ -613,21 +687,34 @@ export class PtyManager {
     const isProcessing = status?.isProcessing ?? false;
 
     const lines = this.getRenderedLines(sessionId);
-
-    // Find the last occurrence of the prompt echo for this message
-    const needle = sentMessage.slice(0, 60); // match prefix to handle truncation
     let echoLine = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const trimmed = lines[i].trim();
-      if (trimmed.startsWith('❯') && trimmed.includes(needle)) {
-        echoLine = i;
-        break;
+
+    // Primary: marker-based match on prompt echo lines only
+    // (avoids false hits if agent quotes the marker in its response)
+    if (marker) {
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const trimmed = lines[i].trim();
+        if (trimmed.startsWith('❯') && trimmed.includes(marker)) {
+          echoLine = i;
+          break;
+        }
+      }
+    }
+
+    // Fallback: legacy prefix match (for backward compatibility)
+    if (echoLine < 0) {
+      const needle = sentMessage.slice(0, 60);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const trimmed = lines[i].trim();
+        if (trimmed.startsWith('❯') && trimmed.includes(needle)) {
+          echoLine = i;
+          break;
+        }
       }
     }
 
     if (echoLine < 0) {
-      // Message echo not found — fall back to last response if agent is done,
-      // but only if the prompt matches the current message (avoids stale responses)
+      // Echo not found — fall back to last response if agent is done
       if (!isProcessing) {
         const last = this.getLastResponse(sessionId);
         if (last && last.output && last.prompt) {
@@ -644,7 +731,6 @@ export class PtyManager {
     const responseLines: string[] = [];
     for (let i = echoLine + 1; i < lines.length; i++) {
       const trimmed = lines[i].trim();
-      // Stop at status bar separator or next prompt
       if (/^[─━═]{5,}$/.test(trimmed)) break;
       if (/^❯/.test(trimmed)) break;
       responseLines.push(lines[i]);
@@ -804,6 +890,17 @@ export class PtyManager {
       status: 'pending',
     });
     this.enforceHistoryLimits(targetSessionId);
+
+    // Track in-flight IPC for enhanced isProcessing detection
+    const session = this.sessions.get(targetSessionId);
+    if (session) {
+      session.pendingIpcCount++;
+      // Use earliest pending turn's timestamp (safe for concurrent IPCs)
+      if (session.lastIpcSentAt === 0) {
+        session.lastIpcSentAt = Date.now();
+      }
+    }
+
     return turnId;
   }
 
@@ -828,6 +925,16 @@ export class PtyManager {
     entry.status = 'complete';
     if (truncated) entry.truncated = true;
 
+    // Decrement in-flight IPC counter
+    const session = this.sessions.get(targetSessionId);
+    if (session && session.pendingIpcCount > 0) {
+      session.pendingIpcCount--;
+      // Reset timestamp when no more pending turns
+      if (session.pendingIpcCount === 0) {
+        session.lastIpcSentAt = 0;
+      }
+    }
+
     this.enforceHistoryLimits(targetSessionId);
     return true;
   }
@@ -837,14 +944,42 @@ export class PtyManager {
     return this.ipcHistory.get(sessionId) || [];
   }
 
+  /** Expire stale pending turns (no finalize within 10 minutes). */
+  expireStaleTurns(sessionId: string): void {
+    const entries = this.ipcHistory.get(sessionId);
+    if (!entries) return;
+    const session = this.sessions.get(sessionId);
+    const now = Date.now();
+    const STALE_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+
+    for (const entry of entries) {
+      if (entry.status === 'pending' && now - entry.startedAt > STALE_TIMEOUT) {
+        entry.status = 'complete';
+        entry.response = '(timed out)';
+        entry.completedAt = now;
+        if (session && session.pendingIpcCount > 0) {
+          session.pendingIpcCount--;
+          if (session.pendingIpcCount === 0) {
+            session.lastIpcSentAt = 0;
+          }
+        }
+      }
+    }
+  }
+
   /** Enforce FIFO limits: max entries and max total bytes. */
   private enforceHistoryLimits(sessionId: string): void {
     const entries = this.ipcHistory.get(sessionId);
     if (!entries) return;
+    const session = this.sessions.get(sessionId);
 
     // Entry count limit
     while (entries.length > IPC_HISTORY_MAX_ENTRIES) {
-      entries.shift();
+      const removed = entries.shift()!;
+      if (removed.status === 'pending' && session && session.pendingIpcCount > 0) {
+        session.pendingIpcCount--;
+        if (session.pendingIpcCount === 0) session.lastIpcSentAt = 0;
+      }
     }
 
     // Size limit
@@ -854,6 +989,10 @@ export class PtyManager {
     }
     while (totalBytes > IPC_HISTORY_MAX_BYTES && entries.length > 0) {
       const removed = entries.shift()!;
+      if (removed.status === 'pending' && session && session.pendingIpcCount > 0) {
+        session.pendingIpcCount--;
+        if (session.pendingIpcCount === 0) session.lastIpcSentAt = 0;
+      }
       totalBytes -= Buffer.byteLength(removed.prompt, 'utf-8') + Buffer.byteLength(removed.response, 'utf-8');
     }
   }
@@ -861,5 +1000,106 @@ export class PtyManager {
   /** Remove all IPC history for a session. */
   private cleanupHistory(sessionId: string): void {
     this.ipcHistory.delete(sessionId);
+    this.notificationQueues.delete(sessionId);
+  }
+
+  // ── Notification Queue ─────────────────────────────────────────────
+
+  /** Enqueue a notification for a target session. Returns notificationId. */
+  enqueueNotification(targetSessionId: string, sourceSessionId: string, message: string): string {
+    const notificationId = randomBytes(8).toString('hex');
+    const sourceName = this.sessions.get(sourceSessionId)?.name || sourceSessionId.slice(0, 8);
+
+    // Truncate message to limit
+    let truncatedMsg = message;
+    if (Buffer.byteLength(truncatedMsg, 'utf-8') > NOTIFICATION_MAX_MSG_BYTES) {
+      const buf = Buffer.from(truncatedMsg, 'utf-8');
+      truncatedMsg = buf.subarray(0, NOTIFICATION_MAX_MSG_BYTES).toString('utf-8');
+    }
+
+    if (!this.notificationQueues.has(targetSessionId)) {
+      this.notificationQueues.set(targetSessionId, []);
+    }
+    const queue = this.notificationQueues.get(targetSessionId)!;
+    queue.push({
+      notificationId,
+      sourceSessionId,
+      sourceName,
+      message: truncatedMsg,
+      timestamp: Date.now(),
+      seq: ++this.notificationSeq,
+      status: 'queued',
+    });
+
+    // Enforce max entries
+    while (queue.length > NOTIFICATION_MAX_ENTRIES) {
+      queue.shift();
+    }
+
+    // Try immediate flush if target is idle
+    this.tryFlushNotifications(targetSessionId);
+
+    return notificationId;
+  }
+
+  /** Flush queued notifications to PTY if session is idle. */
+  tryFlushNotifications(sessionId: string): void {
+    const queue = this.notificationQueues.get(sessionId);
+    if (!queue) return;
+
+    const queued = queue.filter(n => n.status === 'queued');
+    if (queued.length === 0) return;
+
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Only auto-flush if agent is idle AND no recent human input (within 3s)
+    const status = this.getSessionStatus(sessionId);
+    if (status?.isProcessing) return;
+    const now = Date.now();
+    if (now - session.lastInputAt < 3000) return;
+
+    // Inject a single summary line (safe, fixed format — no raw user content)
+    const count = queued.length;
+    const summary = count === 1
+      ? `[tboard] 1 notification from "${queued[0].sourceName}". Run: tt notifications`
+      : `[tboard] ${count} notifications pending. Run: tt notifications`;
+
+    this.write(sessionId, `\x1b[200~${summary}\x1b[201~\r`);
+
+    // Mark as injected
+    for (const n of queued) {
+      n.status = 'injected';
+    }
+  }
+
+  /**
+   * Schedule a debounced notification flush for a session.
+   * Called from PTY onData to detect isProcessing true→false transitions.
+   */
+  private notificationFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  scheduleNotificationFlush(sessionId: string): void {
+    // Only bother if there are queued notifications
+    const queue = this.notificationQueues.get(sessionId);
+    if (!queue || !queue.some(n => n.status === 'queued')) return;
+
+    // Debounce: wait 3s after last output before attempting flush
+    const existing = this.notificationFlushTimers.get(sessionId);
+    if (existing) clearTimeout(existing);
+
+    this.notificationFlushTimers.set(sessionId, setTimeout(() => {
+      this.notificationFlushTimers.delete(sessionId);
+      this.tryFlushNotifications(sessionId);
+    }, 3000));
+  }
+
+  /** Get all notifications for a session (for tt notifications command). */
+  getNotifications(sessionId: string): NotificationEntry[] {
+    return this.notificationQueues.get(sessionId) || [];
+  }
+
+  /** Clear delivered notifications for a session. */
+  clearNotifications(sessionId: string): void {
+    this.notificationQueues.delete(sessionId);
   }
 }
