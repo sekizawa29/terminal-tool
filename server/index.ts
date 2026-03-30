@@ -158,8 +158,6 @@ app.post('/api/links', (req, res) => {
     `    tt peer send "task"          Send task to sub-agent (fire-and-forget)`,
     `    tt notifications             Check pending completion notifications`,
     `    tt tasks                     Check delegated task status`,
-    `    tt peer last                 Read sub-agent's latest output`,
-    `    tt peer last --wait          Wait for sub-agent to finish, then read`,
     `    tt peer read [lines]         Read sub-agent's terminal output`,
     ``,
     `  Protocol:`,
@@ -184,7 +182,6 @@ app.post('/api/links', (req, res) => {
     `  Other commands:`,
     `    tt peer send "message"       Send a message to the linked terminal`,
     `    tt peer notify "message"     Send a notification to the linked terminal`,
-    `    tt peer last --wait          Wait for response from linked terminal`,
     ``
   ].join('\n');
 
