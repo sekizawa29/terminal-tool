@@ -495,18 +495,33 @@ async function showTasks(target) {
     return;
   }
 
-  for (const t of tasks) {
+  // Show incomplete tasks in detail, then last 5 completed
+  const incomplete = tasks.filter(t => t.displayStatus !== 'done');
+  const completed = tasks.filter(t => t.displayStatus === 'done');
+
+  for (const t of incomplete) {
     const name = (t.targetName || '').padEnd(10);
     const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
     const cmdPad = cmd.padEnd(32);
-
-    if (t.displayStatus === 'done') {
-      const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
-      console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
-    } else if (t.displayStatus === 'working') {
+    if (t.displayStatus === 'working') {
       console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
     } else {
       console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+    }
+  }
+
+  const recentDone = completed.slice(-5);
+  if (recentDone.length > 0) {
+    if (incomplete.length > 0) console.log('');
+    if (completed.length > recentDone.length) {
+      console.log(`  (${completed.length - recentDone.length} older completed tasks hidden)`);
+    }
+    for (const t of recentDone) {
+      const name = (t.targetName || '').padEnd(10);
+      const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+      const cmdPad = cmd.padEnd(32);
+      const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
+      console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
     }
   }
 
@@ -569,24 +584,24 @@ async function showNotifications(...args) {
   }
   console.log(`\n${notifications.length} notification(s).`);
 
-  // Append task summary if available
+  // Append task summary — only show details for incomplete tasks
   try {
     const taskRes = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
     const taskResult = await taskRes.json();
     const tasks = taskResult.tasks || [];
     if (tasks.length > 0) {
-      console.log('');
-      for (const t of tasks) {
-        const name = (t.targetName || '').padEnd(10);
-        const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
-        const cmdPad = cmd.padEnd(32);
-        if (t.displayStatus === 'done') {
-          const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
-          console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
-        } else if (t.displayStatus === 'working') {
-          console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
-        } else {
-          console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+      const incomplete = tasks.filter(t => t.displayStatus !== 'done');
+      if (incomplete.length > 0) {
+        console.log('');
+        for (const t of incomplete) {
+          const name = (t.targetName || '').padEnd(10);
+          const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+          const cmdPad = cmd.padEnd(32);
+          if (t.displayStatus === 'working') {
+            console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+          } else {
+            console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+          }
         }
       }
       if (taskResult.summary) {
