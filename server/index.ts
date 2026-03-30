@@ -153,22 +153,36 @@ app.post('/api/links', (req, res) => {
 
   const mainContext = [
     `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
-    `  - Send instructions:     tt peer ipc "your message"`,
-    `  - For long tasks:        tt peer send "task" then tt peer last --wait`,
-    `  - Sub will notify you with "DONE: ..." when finished.`,
-    `  - Notifications are queued and delivered when you return to prompt.`,
-    `  - Check pending:         tt notifications`,
-    `  - After notification, run tt peer last to review what sub did.`,
+    ``,
+    `  Commands:`,
+    `    tt peer ipc "message"        Send instruction and wait for response`,
+    `    tt peer send "task"          Send without waiting (use tt peer last --wait to check)`,
+    `    tt notifications             Check pending completion notifications`,
+    `    tt peer last                 Read sub-agent's latest output`,
+    ``,
+    `  Protocol:`,
+    `    Sub will send: tt peer notify "DONE: [summary] | Changed: [files]"`,
+    `    Notifications are queued and delivered when you return to prompt.`,
+    `    If no DONE notification arrives, do not assume completion.`,
     ``
   ].join('\n');
 
   const subContext = [
     `[tboard] Terminal link established with "${sourceName}".`,
-    `  Available commands:`,
-    `  - tt peer ipc "message"       Send a message to the linked terminal`,
-    `  - tt peer last --wait         Wait for response from linked terminal`,
-    `  - When you finish a task, notify: tt peer notify "DONE: [summary + changed files]"`,
-    `  Note: IPC messages contain a tracking tag like [ipc:xxxxxxxx]. Ignore it — just read the message content.`,
+    ``,
+    `  COMPLETION PROTOCOL (mandatory):`,
+    `    When you finish ANY task received on this terminal, you MUST run:`,
+    `    tt peer notify "DONE: [one-line summary] | Changed: [file1, file2, ...]"`,
+    `    If no files changed, write: Changed: none`,
+    `    A task is NOT complete until this command has been executed.`,
+    `    Do NOT end your turn without sending the notification.`,
+    `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
+    ``,
+    `  Other commands:`,
+    `    tt peer ipc "message"        Send a message to the linked terminal`,
+    `    tt peer last --wait          Wait for response from linked terminal`,
+    ``,
+    `  Note: IPC messages contain a tracking tag like [ipc:xxxxxxxx]. Ignore it.`,
     ``
   ].join('\n');
 
