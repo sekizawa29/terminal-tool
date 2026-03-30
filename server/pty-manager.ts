@@ -24,6 +24,10 @@ function stripAnsiCodes(str: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
+function normalizeInlineWhitespace(str: string): string {
+  return str.replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Strip agent TUI chrome from rendered terminal text.
  * With @xterm/headless handling animation rendering correctly,
@@ -189,6 +193,22 @@ export interface NotificationEntry {
 const NOTIFICATION_MAX_ENTRIES = 50;
 const NOTIFICATION_MAX_MSG_BYTES = 4 * 1024; // 4KB per message
 
+export interface TaskEntry {
+  taskId: string;
+  sourceSessionId: string;  // MAIN who delegated
+  targetSessionId: string;  // SUB who is working
+  targetName: string;
+  command: string;
+  status: 'pending' | 'done';
+  result?: string;
+  createdAt: number;
+  completedAt?: number;
+}
+
+const TASK_MAX_ENTRIES = 100;
+const TASK_COMMAND_MAX_BYTES = 512;
+const TASK_RESULT_MAX_BYTES = 1024;
+
 interface PtySession {
   pty: pty.IPty;
   ws: WebSocket | null;
@@ -211,9 +231,11 @@ export class PtyManager {
   private sessions = new Map<string, PtySession>();
   private nameIndex = new Map<string, string>(); // name → sessionId
   private links = new Map<string, Set<string>>(); // sessionId → Set<linkedSessionIds>
+  private linkMainToSubs = new Map<string, Set<string>>(); // MAIN sessionId → Set<SUB sessionIds>
   private ipcHistory = new Map<string, IpcHistoryEntry[]>();
   private notificationQueues = new Map<string, NotificationEntry[]>();
   private notificationSeq = 0; // global monotonic counter
+  private taskRegistry = new Map<string, TaskEntry[]>(); // sourceSessionId (MAIN) → tasks
   private serverPort: number;
   private binDir: string;
 
@@ -403,6 +425,43 @@ export class PtyManager {
       session.lastInputAt = Date.now();
       session.pty.write(typeof data === 'string' ? data : data.toString());
     }
+  }
+
+  pasteAndSubmit(
+    sessionId: string,
+    text: string,
+    options?: {
+      enterDelayMs?: number;
+      retryDelayMs?: number;
+      retryNeedle?: string;
+    }
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const enterDelayMs = Math.max(0, options?.enterDelayMs ?? 350);
+    const retryDelayMs = Math.max(enterDelayMs + 250, options?.retryDelayMs ?? 1200);
+    const retryNeedle = normalizeInlineWhitespace(options?.retryNeedle ?? text).slice(0, 120);
+
+    this.write(sessionId, `\x1b[200~${text}\x1b[201~`);
+    setTimeout(() => {
+      if (this.sessions.has(sessionId)) {
+        this.write(sessionId, '\r');
+      }
+    }, enterDelayMs);
+
+    if (!retryNeedle) return;
+
+    // Codex/Claude prompts occasionally keep the pasted text in the live prompt
+    // if Enter lands too early. Retry once only when the same prompt is still present.
+    setTimeout(() => {
+      if (!this.sessions.has(sessionId)) return;
+      const promptText = this.getPromptTextAtEnd(sessionId);
+      if (!promptText) return;
+      if (normalizeInlineWhitespace(promptText).includes(retryNeedle)) {
+        this.write(sessionId, '\r');
+      }
+    }, retryDelayMs);
   }
 
   kill(sessionId: string): void {
@@ -646,9 +705,9 @@ export class PtyManager {
    * near the bottom of the rendered terminal screen.
    * Scans from the bottom, skipping blank and status-bar lines.
    */
-  private hasPromptAtEnd(sessionId: string): boolean {
+  private getPromptTextAtEnd(sessionId: string): string | null {
     const session = this.sessions.get(sessionId);
-    if (!session) return false;
+    if (!session) return null;
     const buf = session.headlessTerm.buffer.active;
     const totalLines = buf.baseY + buf.cursorY + 1;
 
@@ -667,12 +726,16 @@ export class PtyManager {
       if (/\?\s+(for shortcuts|for help)/i.test(text)) continue; // skip help hints
       if (/^●\s*(high|medium|low)\s*·\s*\//i.test(text)) continue; // skip model/status badge
       if (/auto\s*mode/i.test(text)) continue; // skip auto mode status
-      // Idle prompt: ❯ alone or ❯ followed only by whitespace
-      if (/^❯\s*$/.test(text)) return true;
+      if (/^❯/.test(text)) return text.replace(/^❯\s*/, '').trim();
       // If we hit a non-prompt, non-skippable line, stop
-      return false;
+      return null;
     }
-    return false;
+    return null;
+  }
+
+  private hasPromptAtEnd(sessionId: string): boolean {
+    const promptText = this.getPromptTextAtEnd(sessionId);
+    return promptText !== null && promptText.length === 0;
   }
 
   /**
@@ -809,11 +872,16 @@ export class PtyManager {
     if (!this.links.has(targetId)) this.links.set(targetId, new Set());
     this.links.get(sourceId)!.add(targetId);
     this.links.get(targetId)!.add(sourceId);
+    // Record directionality: source is MAIN, target is SUB
+    if (!this.linkMainToSubs.has(sourceId)) this.linkMainToSubs.set(sourceId, new Set());
+    this.linkMainToSubs.get(sourceId)!.add(targetId);
   }
 
   removeLink(sourceId: string, targetId: string): void {
     this.links.get(sourceId)?.delete(targetId);
     this.links.get(targetId)?.delete(sourceId);
+    this.linkMainToSubs.get(sourceId)?.delete(targetId);
+    this.linkMainToSubs.get(targetId)?.delete(sourceId);
   }
 
   getPeers(sessionId: string): { sessionId: string; shortId: string; name?: string }[] {
@@ -852,9 +920,11 @@ export class PtyManager {
     if (peers) {
       for (const peerId of peers) {
         this.links.get(peerId)?.delete(sessionId);
+        this.linkMainToSubs.get(peerId)?.delete(sessionId);
       }
       this.links.delete(sessionId);
     }
+    this.linkMainToSubs.delete(sessionId);
   }
 
   /** Legacy: get buffer content since offset (for non-IPC use) */
@@ -1001,6 +1071,13 @@ export class PtyManager {
   private cleanupHistory(sessionId: string): void {
     this.ipcHistory.delete(sessionId);
     this.notificationQueues.delete(sessionId);
+    this.taskRegistry.delete(sessionId);
+    // Also remove tasks targeting this session (it was a SUB)
+    for (const [, tasks] of this.taskRegistry) {
+      for (let i = tasks.length - 1; i >= 0; i--) {
+        if (tasks[i].targetSessionId === sessionId) tasks.splice(i, 1);
+      }
+    }
   }
 
   // ── Notification Queue ─────────────────────────────────────────────
@@ -1061,11 +1138,17 @@ export class PtyManager {
 
     // Inject a single summary line (safe, fixed format — no raw user content)
     const count = queued.length;
-    const summary = count === 1
+    let summary = count === 1
       ? `[tboard] 1 notification from "${queued[0].sourceName}". Run: tt notifications`
       : `[tboard] ${count} notifications pending. Run: tt notifications`;
 
-    this.write(sessionId, `\x1b[200~${summary}\x1b[201~\r`);
+    // Append task summary if this session has delegated tasks
+    const taskSummary = this.getTaskSummary(sessionId);
+    if (taskSummary) {
+      summary += ` | ${taskSummary.summary}`;
+    }
+
+    this.pasteAndSubmit(sessionId, summary, { retryNeedle: summary });
 
     // Mark as injected
     for (const n of queued) {
@@ -1101,5 +1184,93 @@ export class PtyManager {
   /** Clear delivered notifications for a session. */
   clearNotifications(sessionId: string): void {
     this.notificationQueues.delete(sessionId);
+  }
+
+  // ── Task Registry ──────────────────────────────────────────────────
+
+  /** Check if two sessions are linked peers. */
+  arePeers(sessionA: string, sessionB: string): boolean {
+    return this.links.get(sessionA)?.has(sessionB) ?? false;
+  }
+
+  /** Check if sourceId is MAIN and targetId is its SUB. */
+  isMainToSub(sourceId: string, targetId: string): boolean {
+    return this.linkMainToSubs.get(sourceId)?.has(targetId) ?? false;
+  }
+
+  /** Register a delegated task. Returns taskId. */
+  registerTask(sourceSessionId: string, targetSessionId: string, command: string): string {
+    const taskId = randomBytes(8).toString('hex');
+    const targetName = this.sessions.get(targetSessionId)?.name || targetSessionId.slice(0, 8);
+
+    let truncatedCmd = command;
+    if (Buffer.byteLength(truncatedCmd, 'utf-8') > TASK_COMMAND_MAX_BYTES) {
+      truncatedCmd = Buffer.from(truncatedCmd, 'utf-8').subarray(0, TASK_COMMAND_MAX_BYTES).toString('utf-8');
+    }
+
+    if (!this.taskRegistry.has(sourceSessionId)) {
+      this.taskRegistry.set(sourceSessionId, []);
+    }
+    const tasks = this.taskRegistry.get(sourceSessionId)!;
+    tasks.push({
+      taskId,
+      sourceSessionId,
+      targetSessionId,
+      targetName,
+      command: truncatedCmd,
+      status: 'pending',
+      createdAt: Date.now(),
+    });
+
+    // Enforce max entries: evict oldest completed first, then oldest pending
+    while (tasks.length > TASK_MAX_ENTRIES) {
+      const doneIdx = tasks.findIndex(t => t.status === 'done');
+      if (doneIdx >= 0) {
+        tasks.splice(doneIdx, 1);
+      } else {
+        tasks.shift();
+      }
+    }
+
+    return taskId;
+  }
+
+  /** Complete the oldest pending task from a specific SUB. Returns true if matched. */
+  completeTask(sourceSessionId: string, targetSessionId: string, result: string): boolean {
+    const tasks = this.taskRegistry.get(sourceSessionId);
+    if (!tasks) return false;
+
+    const task = tasks.find(t => t.targetSessionId === targetSessionId && t.status === 'pending');
+    if (!task) return false;
+
+    let truncatedResult = result;
+    if (Buffer.byteLength(truncatedResult, 'utf-8') > TASK_RESULT_MAX_BYTES) {
+      truncatedResult = Buffer.from(truncatedResult, 'utf-8').subarray(0, TASK_RESULT_MAX_BYTES).toString('utf-8');
+    }
+
+    task.status = 'done';
+    task.result = truncatedResult;
+    task.completedAt = Date.now();
+    return true;
+  }
+
+  /** Get all tasks for a source session (MAIN). */
+  getTasks(sourceSessionId: string): TaskEntry[] {
+    return this.taskRegistry.get(sourceSessionId) || [];
+  }
+
+  /** Get task summary for a source session. Returns null if no tasks. */
+  getTaskSummary(sourceSessionId: string): { total: number; done: number; pending: number; summary: string } | null {
+    const tasks = this.taskRegistry.get(sourceSessionId);
+    if (!tasks || tasks.length === 0) return null;
+
+    const done = tasks.filter(t => t.status === 'done').length;
+    const total = tasks.length;
+    const pending = total - done;
+    const summary = done === total
+      ? `Tasks: ${total}/${total} done (all complete)`
+      : `Tasks: ${done}/${total} done`;
+
+    return { total, done, pending, summary };
   }
 }

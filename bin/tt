@@ -69,6 +69,8 @@ async function main() {
       return sendNotification(args);
     case 'notifications':
       return showNotifications(...args);
+    case 'tasks':
+      return showTasks(args[0]);
     default:
       printHelp();
   }
@@ -138,7 +140,7 @@ async function sendCommand(args) {
     : `${BASE}/api/ipc/send`;
   const body = noNewline
     ? JSON.stringify({ data: command })
-    : JSON.stringify({ target, message: command });
+    : JSON.stringify({ target, message: command, sourceSessionId: SELF || undefined });
 
   const res = await fetch(url, {
     method: 'POST',
@@ -463,6 +465,56 @@ async function showStatus(target) {
   console.log(JSON.stringify(resolved, null, 2));
 }
 
+function formatAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
+
+async function showTasks(target) {
+  const sessionId = target || SELF;
+  if (!sessionId) {
+    console.error('Usage: tt tasks [id|name]');
+    process.exit(1);
+  }
+
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  const tasks = result.tasks || [];
+  if (tasks.length === 0) {
+    console.log('No delegated tasks.');
+    return;
+  }
+
+  for (const t of tasks) {
+    const name = (t.targetName || '').padEnd(10);
+    const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+    const cmdPad = cmd.padEnd(32);
+
+    if (t.displayStatus === 'done') {
+      const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
+      console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
+    } else if (t.displayStatus === 'working') {
+      console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+    } else {
+      console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+    }
+  }
+
+  if (result.summary) {
+    console.log(`\n${result.summary.summary}`);
+  }
+}
+
 async function sendNotification(args) {
   if (args.length < 2) {
     console.error('Usage: tt notify <id|name> <message...>');
@@ -517,6 +569,32 @@ async function showNotifications(...args) {
   }
   console.log(`\n${notifications.length} notification(s).`);
 
+  // Append task summary if available
+  try {
+    const taskRes = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
+    const taskResult = await taskRes.json();
+    const tasks = taskResult.tasks || [];
+    if (tasks.length > 0) {
+      console.log('');
+      for (const t of tasks) {
+        const name = (t.targetName || '').padEnd(10);
+        const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+        const cmdPad = cmd.padEnd(32);
+        if (t.displayStatus === 'done') {
+          const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
+          console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
+        } else if (t.displayStatus === 'working') {
+          console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+        } else {
+          console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+        }
+      }
+      if (taskResult.summary) {
+        console.log(`\n${taskResult.summary.summary}`);
+      }
+    }
+  } catch {}
+
   if (doClear) {
     await fetch(`${BASE}/api/notifications/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
     process.stderr.write('Notifications cleared.\n');
@@ -552,7 +630,7 @@ async function peerCommand(args) {
 
   const subCmd = args[0];
   if (!subCmd) {
-    console.error('Usage: tt peer <send|ipc|read|last|history> [args...]');
+    console.error('Usage: tt peer <send|notify|tasks|read|last|history> [args...]');
     process.exit(1);
   }
 
@@ -600,9 +678,11 @@ async function peerCommand(args) {
       }
       return sendNotification([target, ...rest]);
     }
+    case 'tasks':
+      return showTasks(SELF);
     default:
       console.error(`Unknown peer subcommand: ${subCmd}`);
-      console.error('Available: send, ipc, read, last, history, notify');
+      console.error('Available: send, notify, tasks, read, last, history (ipc is deprecated)');
       process.exit(1);
   }
 }
@@ -643,7 +723,7 @@ Usage:
   tt ls                              List all terminals (* = self, + = peer)
   tt send <id|name> <command>        Send command (auto-appends Enter)
   tt send <id|name> --raw <text>     Send text without Enter
-  tt ipc <id|name> <message>         Send message & wait for response
+  tt ipc <id|name> <message>         (deprecated) Send message & wait for response
   tt last <id|name>                  Read the last response from an agent
   tt last <id|name> --wait           Wait for agent to finish, then read response
   tt history <id|name>               Show IPC conversation history
@@ -652,14 +732,16 @@ Usage:
   tt name <id|name> <new-name>       Name a terminal for easy reference
   tt notify <id|name> <message>       Send notification (fire-and-forget)
   tt notifications [id|name]         Show & clear pending notifications
+  tt tasks [id|name]                  Show delegated task status
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
 
 Peer commands (linked terminals):
   tt peers                           List linked peers
   tt peer send [id|name] <command>   Send command to peer
-  tt peer ipc [id|name] <message>    Send IPC message to peer & wait
+  tt peer ipc [id|name] <message>    (deprecated) Send IPC message to peer & wait
   tt peer notify [id|name] <message> Send notification to peer (non-blocking)
+  tt peer tasks                        Show delegated task status
   tt peer read [id|name] [lines]     Read peer's terminal output (clean)
   tt peer read [id|name] --wait      Wait for peer to finish, then read
   tt peer last [id|name]             Read peer's last response
@@ -672,14 +754,15 @@ With one peer linked, "tt peer" commands auto-target it (no id needed).
 Examples:
   tt ls                              See all terminals
   tt send sub-1 "npm test"           Run npm test in sub-1
-  tt ipc sub-1 "run the tests"       Send to Claude agent & get response
+  tt notify sub-1 "DONE: summary"    Send notification to sub-1
   tt read sub-1 50                   Read last 50 lines (clean)
   tt read sub-1 --wait               Wait for sub-1 to finish processing
-  tt history sub-1                   See IPC conversation history
+  tt notifications sub-1             Check notifications from sub-1
+  tt tasks                            See delegated task progress
   tt peers                           See linked peers
-  tt peer ipc "run the tests"        Send to linked peer (single peer)
+  tt peer send "run the tests"       Send to linked peer (single peer)
+  tt peer notify "DONE: summary"     Notify linked peer
   tt peer read 50                    Read 50 lines from linked peer
-  tt peer history                    See peer's IPC history
 `);
 }
 

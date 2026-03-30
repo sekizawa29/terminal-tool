@@ -155,15 +155,18 @@ app.post('/api/links', (req, res) => {
     `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
     ``,
     `  Commands:`,
-    `    tt peer ipc "message"        Send instruction and wait for response`,
-    `    tt peer send "task"          Send without waiting (use tt peer last --wait to check)`,
+    `    tt peer send "task"          Send task to sub-agent (fire-and-forget)`,
     `    tt notifications             Check pending completion notifications`,
+    `    tt tasks                     Check delegated task status`,
     `    tt peer last                 Read sub-agent's latest output`,
+    `    tt peer last --wait          Wait for sub-agent to finish, then read`,
+    `    tt peer read [lines]         Read sub-agent's terminal output`,
     ``,
     `  Protocol:`,
     `    Sub will send: tt peer notify "DONE: [summary] | Changed: [files]"`,
     `    Notifications are queued and delivered when you return to prompt.`,
     `    If no DONE notification arrives, do not assume completion.`,
+    `    Check tt tasks before making decisions that depend on sub-agent results.`,
     ``
   ].join('\n');
 
@@ -179,10 +182,9 @@ app.post('/api/links', (req, res) => {
     `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
     ``,
     `  Other commands:`,
-    `    tt peer ipc "message"        Send a message to the linked terminal`,
+    `    tt peer send "message"       Send a message to the linked terminal`,
+    `    tt peer notify "message"     Send a notification to the linked terminal`,
     `    tt peer last --wait          Wait for response from linked terminal`,
-    ``,
-    `  Note: IPC messages contain a tracking tag like [ipc:xxxxxxxx]. Ignore it.`,
     ``
   ].join('\n');
 
@@ -248,10 +250,13 @@ app.post('/api/ipc/send', (req, res) => {
   const marker = `[ipc:${turnId.slice(0, 8)}]`;
   const markedMessage = `${message} ${marker}`;
 
-  // Wrap in bracketed paste, then send CR after delay
-  // (Claude Code needs time to process paste-end before accepting Enter)
-  ptyManager.write(resolved, `\x1b[200~${markedMessage}\x1b[201~`);
-  setTimeout(() => ptyManager.write(resolved, '\r'), 150);
+  // Auto-register task only when MAIN sends to its SUB (not reverse direction)
+  if (sourceSessionId && ptyManager.isMainToSub(sourceSessionId, resolved)) {
+    ptyManager.registerTask(sourceSessionId, resolved, message);
+  }
+
+  // Paste first, then submit with a guarded retry if the prompt still holds the draft.
+  ptyManager.pasteAndSubmit(resolved, markedMessage, { retryNeedle: markedMessage });
 
   res.json({ ok: true, sessionId: resolved, message, turnId, marker });
 });
@@ -357,6 +362,15 @@ app.post('/api/notifications/send', (req, res) => {
   }
   const source = sourceSessionId || 'unknown';
   const notificationId = ptyManager.enqueueNotification(resolved, source, message);
+
+  // Auto-complete task if this is a DONE notification from a linked peer
+  if (message.startsWith('DONE:') && source !== 'unknown') {
+    const resolvedSource = resolveSession(source);
+    if (resolvedSource && ptyManager.arePeers(resolvedSource, resolved)) {
+      ptyManager.completeTask(resolved, resolvedSource, message.slice(5).trim());
+    }
+  }
+
   res.json({ ok: true, notificationId, sessionId: resolved });
 });
 
@@ -380,6 +394,31 @@ app.delete('/api/notifications/:sessionId', (req, res) => {
   }
   ptyManager.clearNotifications(resolved);
   res.json({ ok: true });
+});
+
+// Get delegated tasks for a session (where this session is MAIN)
+app.get('/api/tasks/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const tasks = ptyManager.getTasks(resolved);
+
+  // Enrich with live processing status for display
+  const enriched = tasks.map(t => {
+    let displayStatus: string = t.status;
+    if (t.status === 'pending') {
+      const targetStatus = ptyManager.getSessionStatus(t.targetSessionId);
+      if (targetStatus?.isProcessing) {
+        displayStatus = 'working';
+      }
+    }
+    return { ...t, displayStatus };
+  });
+
+  const summary = ptyManager.getTaskSummary(resolved);
+  res.json({ sessionId: resolved, tasks: enriched, summary });
 });
 
 // Get rendered terminal content (via headless xterm, no animation artifacts)
