@@ -168,6 +168,7 @@ app.post('/api/links', (req, res) => {
     `  - tt peer ipc "message"       Send a message to the linked terminal`,
     `  - tt peer last --wait         Wait for response from linked terminal`,
     `  - When you finish a task, notify: tt peer notify "DONE: [summary + changed files]"`,
+    `  Note: IPC messages contain a tracking tag like [ipc:xxxxxxxx]. Ignore it — just read the message content.`,
     ``
   ].join('\n');
 
@@ -229,9 +230,9 @@ app.post('/api/ipc/send', (req, res) => {
   // Create pending history turn
   const turnId = ptyManager.createPendingTurn(resolved, message, sourceSessionId || undefined);
 
-  // Prefix with unique marker for reliable echo matching
-  const marker = `__IPC_${turnId}__`;
-  const markedMessage = `${marker} ${message}`;
+  // Append marker at end for reliable echo matching (less disruptive to agent)
+  const marker = `[ipc:${turnId.slice(0, 8)}]`;
+  const markedMessage = `${message} ${marker}`;
 
   // Wrap in bracketed paste, then send CR after delay
   // (Claude Code needs time to process paste-end before accepting Enter)
