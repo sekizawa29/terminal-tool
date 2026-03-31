@@ -864,6 +864,38 @@ export class PtyManager {
     return output;
   }
 
+  /**
+   * Get rendered output since the last IPC send to this terminal.
+   * Searches for the last [ipc:XXXXXXXX] marker on a prompt echo line (❯)
+   * and returns everything after it.
+   */
+  getRenderedBufferSinceSend(sessionId: string, clean: boolean = true): string | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const lines = this.getRenderedLines(sessionId);
+
+    // Find the last IPC marker on a prompt echo line
+    let markerLine = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith('❯') && /\[ipc:[0-9a-f]{8}\]/.test(trimmed)) {
+        markerLine = i;
+        break;
+      }
+    }
+
+    // If no marker found, return all lines
+    const startIndex = markerLine >= 0 ? markerLine + 1 : 0;
+    const outputLines = lines.slice(startIndex);
+
+    let output = outputLines.join('\n');
+    if (clean) {
+      output = stripAgentNoise(output);
+    }
+    return output;
+  }
+
   // ── Link registry (peer routing) ──────────────────────────────────
 
   addLink(sourceId: string, targetId: string): void {

@@ -158,7 +158,7 @@ async function sendCommand(args) {
 
 async function readOutput(target, ...extraArgs) {
   if (!target) {
-    console.error('Usage: tt read <id|name> [lines] [--wait] [--buffer]');
+    console.error('Usage: tt read <id|name> [lines] [--since-send] [--all] [--wait] [--buffer]');
     process.exit(1);
   }
 
@@ -167,6 +167,8 @@ async function readOutput(target, ...extraArgs) {
   let wait = false;
   let timeout = 0; // 0 = no timeout (hidden --timeout=N still accepted)
   let useBuffer = false;
+  let sinceSend = false;
+  let all = false;
 
   for (const arg of extraArgs) {
     if (arg === undefined) continue;
@@ -174,11 +176,20 @@ async function readOutput(target, ...extraArgs) {
     if (timeoutMatch) { timeout = parseInt(timeoutMatch[1]); continue; }
     if (arg === '--wait') { wait = true; continue; }
     if (arg === '--buffer') { useBuffer = true; continue; }
+    if (arg === '--since-send') { sinceSend = true; continue; }
+    if (arg === '--all') { all = true; continue; }
     const parsed = parseInt(arg);
     if (!isNaN(parsed)) { lines = parsed; continue; }
   }
 
   const enc = encodeURIComponent(target);
+
+  // Build query string based on flags
+  const buildRenderedUrl = () => {
+    if (sinceSend) return `${BASE}/api/terminals/${enc}/rendered?sinceSend=true&clean=true`;
+    if (all) return `${BASE}/api/terminals/${enc}/rendered?clean=true`;
+    return `${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`;
+  };
 
   // Mode: wait for completion then read
   if (wait) {
@@ -187,7 +198,7 @@ async function readOutput(target, ...extraArgs) {
     const deadline = timeout > 0 ? Date.now() + timeout * 1000 : 0;
     while (true) {
       if (deadline > 0 && Date.now() >= deadline) break;
-      const res = await fetch(`${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`);
+      const res = await fetch(buildRenderedUrl());
       const result = await res.json();
       if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
       lastOutput = result.output || '';
@@ -215,7 +226,7 @@ async function readOutput(target, ...extraArgs) {
   }
 
   // Default: rendered output (clean, noise-stripped)
-  const res = await fetch(`${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`);
+  const res = await fetch(buildRenderedUrl());
   const result = await res.json();
   if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
   process.stdout.write(result.output || '');
@@ -743,6 +754,8 @@ Usage:
   tt last <id|name> --wait           Wait for agent to finish, then read response
   tt history <id|name>               Show IPC conversation history
   tt read <id|name> [lines]          Read terminal output (clean)
+  tt read <id|name> --since-send     Read output since last sent task
+  tt read <id|name> --all            Read all available output
   tt read <id|name> --wait           Wait until agent finishes, then read
   tt name <id|name> <new-name>       Name a terminal for easy reference
   tt notify <id|name> <message>       Send notification (fire-and-forget)
@@ -758,6 +771,8 @@ Peer commands (linked terminals):
   tt peer notify [id|name] <message> Send notification to peer (non-blocking)
   tt peer tasks                        Show delegated task status
   tt peer read [id|name] [lines]     Read peer's terminal output (clean)
+  tt peer read [id|name] --since-send Read output since last sent task
+  tt peer read [id|name] --all       Read all available peer output
   tt peer read [id|name] --wait      Wait for peer to finish, then read
   tt peer last [id|name]             Read peer's last response
   tt peer last [id|name] --wait      Wait for peer to finish, then read response
@@ -778,6 +793,7 @@ Examples:
   tt peer send "run the tests"       Send to linked peer (single peer)
   tt peer notify "DONE: summary"     Notify linked peer
   tt peer read 50                    Read 50 lines from linked peer
+  tt peer read --since-send          Read peer output since last task sent
 `);
 }
 

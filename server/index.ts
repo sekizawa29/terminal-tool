@@ -155,16 +155,19 @@ app.post('/api/links', (req, res) => {
     `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
     ``,
     `  Commands:`,
-    `    tt peer send "task"          Send task to sub-agent (fire-and-forget)`,
-    `    tt notifications             Check pending completion notifications`,
-    `    tt tasks                     Check delegated task status`,
-    `    tt peer read [lines]         Read sub-agent's terminal output`,
+    `    tt peer send "task"              Send task to sub-agent (fire-and-forget)`,
+    `    tt notifications                 Check pending completion notifications`,
+    `    tt tasks                         Check delegated task status`,
+    `    tt peer read --since-send        Read output since last sent task (recommended)`,
+    `    tt peer read [lines]             Read last N lines of terminal output`,
+    `    tt peer read --all               Read all available terminal output`,
     ``,
     `  Protocol:`,
     `    Sub will send: tt peer notify "DONE: [summary] | Changed: [files]"`,
     `    Notifications are queued and delivered when you return to prompt.`,
     `    If no DONE notification arrives, do not assume completion.`,
     `    Check tt tasks before making decisions that depend on sub-agent results.`,
+    `    After receiving a DONE notification, read the full result with: tt peer read --since-send`,
     ``
   ].join('\n');
 
@@ -427,7 +430,10 @@ app.get('/api/terminals/:sessionId/rendered', (req, res) => {
   }
   const lines = parseInt(req.query.lines as string) || 0;
   const clean = req.query.clean !== 'false';
-  const output = ptyManager.getRenderedBuffer(resolved, lines || undefined, clean);
+  const sinceSend = req.query.sinceSend === 'true';
+  const output = sinceSend
+    ? ptyManager.getRenderedBufferSinceSend(resolved, clean)
+    : ptyManager.getRenderedBuffer(resolved, lines || undefined, clean);
   if (output === null) {
     res.status(404).json({ error: 'Session not found' });
     return;
