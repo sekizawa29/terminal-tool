@@ -1,10 +1,18 @@
 import * as pty from 'node-pty';
 import { randomBytes } from 'crypto';
-import { readFileSync, readlinkSync } from 'fs';
+import {
+  readFileSync, readlinkSync,
+  createWriteStream, createReadStream,
+  mkdirSync, readdirSync, unlinkSync, statSync, existsSync,
+  type WriteStream,
+} from 'fs';
+import { readFile } from 'fs/promises';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
-import { platform } from 'os';
-import { basename } from 'path';
+import { platform, tmpdir } from 'os';
+import { basename, join } from 'path';
+import { gunzipSync, createGzip } from 'zlib';
+import { pipeline } from 'stream/promises';
 import type { WebSocket } from 'ws';
 import type { ExitMessage, ResizeMessage } from './types.js';
 
@@ -151,6 +159,7 @@ export interface SessionStatus {
   isProcessing: boolean; // recent PTY output detected (agent actively generating)
   name?: string; // user-assigned label
   shellType: 'linux' | 'windows'; // whether this is a WSL/Linux or Windows shell
+  lastOutputAt: number; // timestamp of last PTY output
 }
 
 /** Shells that are Windows executables (run via WSL interop) */
@@ -209,6 +218,25 @@ const TASK_MAX_ENTRIES = 100;
 const TASK_COMMAND_MAX_BYTES = 512;
 const TASK_RESULT_MAX_BYTES = 1024;
 
+// Task capture settings — disk-backed output recording during active tasks
+const CAPTURE_DIR = process.env.TBOARD_CAPTURE_DIR
+  || join(process.env.XDG_RUNTIME_DIR || tmpdir(), 'tboard', 'captures');
+const CAPTURE_MAX_FILE_BYTES = 50 * 1024 * 1024;   // 50MB per capture
+const CAPTURE_MAX_TOTAL_BYTES = 1024 * 1024 * 1024; // 1GB total
+const CAPTURE_TTL_MS = 24 * 60 * 60 * 1000;         // 24h
+const CAPTURE_COMPRESS_DELAY_MS = 5 * 60 * 1000;    // 5min after completion
+
+interface CaptureHandle {
+  taskId: string;
+  targetSessionId: string;
+  stream: WriteStream;
+  filePath: string;
+  bytesWritten: number;
+  startedAt: number;
+  status: 'active' | 'closed' | 'interrupted';
+  truncated: boolean;
+}
+
 interface PtySession {
   pty: pty.IPty;
   ws: WebSocket | null;
@@ -232,10 +260,15 @@ export class PtyManager {
   private nameIndex = new Map<string, string>(); // name → sessionId
   private links = new Map<string, Set<string>>(); // sessionId → Set<linkedSessionIds>
   private linkMainToSubs = new Map<string, Set<string>>(); // MAIN sessionId → Set<SUB sessionIds>
+  private recentDisconnects = new Map<string, { sessionId: string; name?: string; disconnectedAt: number }[]>();
   private ipcHistory = new Map<string, IpcHistoryEntry[]>();
   private notificationQueues = new Map<string, NotificationEntry[]>();
   private notificationSeq = 0; // global monotonic counter
+  private notificationReadSeq = new Map<string, number>(); // sessionId → last read seq
   private taskRegistry = new Map<string, TaskEntry[]>(); // sourceSessionId (MAIN) → tasks
+  private activeCaptures = new Map<string, CaptureHandle[]>(); // targetSessionId → active captures
+  private captureDir = CAPTURE_DIR;
+  private compressTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private serverPort: number;
   private binDir: string;
 
@@ -306,6 +339,9 @@ export class PtyManager {
       // Feed into headless terminal for proper rendering
       session.headlessTerm.write(data);
 
+      // Write to active task captures (disk-backed)
+      this.writeToCapturesIfActive(sessionId, data);
+
       // Schedule notification flush (debounced, detects processing→idle transition)
       this.scheduleNotificationFlush(sessionId);
 
@@ -337,6 +373,8 @@ export class PtyManager {
       if (session.name) {
         this.nameIndex.delete(session.name);
       }
+      this.interruptCaptures(sessionId);
+      this.notifyPeersOfDisconnect(sessionId);
       this.cleanupLinks(sessionId);
       this.cleanupHistory(sessionId);
       session.headlessTerm.dispose();
@@ -470,6 +508,8 @@ export class PtyManager {
       if (session.name) {
         this.nameIndex.delete(session.name);
       }
+      this.interruptCaptures(sessionId);
+      this.notifyPeersOfDisconnect(sessionId);
       this.cleanupLinks(sessionId);
       this.cleanupHistory(sessionId);
       session.onDataDisposable?.dispose();
@@ -485,6 +525,10 @@ export class PtyManager {
   }
 
   killAll(): void {
+    for (const timer of this.compressTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.compressTimers.clear();
     for (const [id] of this.sessions) {
       this.kill(id);
     }
@@ -607,7 +651,7 @@ export class PtyManager {
       }
     }
 
-    return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name, shellType: session.shellType };
+    return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name, shellType: session.shellType, lastOutputAt: session.lastOutputAt };
   }
 
   getAllStatuses(): SessionStatus[] {
@@ -916,20 +960,61 @@ export class PtyManager {
     this.linkMainToSubs.get(targetId)?.delete(sourceId);
   }
 
-  getPeers(sessionId: string): { sessionId: string; shortId: string; name?: string }[] {
+  getPeers(sessionId: string): { sessionId: string; shortId: string; name?: string; disconnected?: boolean }[] {
+    const peers: { sessionId: string; shortId: string; name?: string; disconnected?: boolean }[] = [];
     const peerIds = this.links.get(sessionId);
-    if (!peerIds) return [];
-    const peers: { sessionId: string; shortId: string; name?: string }[] = [];
-    for (const peerId of peerIds) {
-      if (this.sessions.has(peerId)) {
+    if (peerIds) {
+      for (const peerId of peerIds) {
+        if (this.sessions.has(peerId)) {
+          peers.push({
+            sessionId: peerId,
+            shortId: peerId.slice(0, 8),
+            name: this.sessions.get(peerId)?.name,
+          });
+        }
+      }
+    }
+    // Include recently-disconnected peers (30min TTL)
+    const disconnected = this.recentDisconnects.get(sessionId);
+    if (disconnected) {
+      const cutoff = Date.now() - 30 * 60 * 1000;
+      for (let i = disconnected.length - 1; i >= 0; i--) {
+        if (disconnected[i].disconnectedAt < cutoff) {
+          disconnected.splice(i, 1);
+          continue;
+        }
+        const d = disconnected[i];
+        // Skip if already in active peers (re-connected)
+        if (peers.some(p => p.sessionId === d.sessionId)) continue;
         peers.push({
-          sessionId: peerId,
-          shortId: peerId.slice(0, 8),
-          name: this.sessions.get(peerId)?.name,
+          sessionId: d.sessionId,
+          shortId: d.sessionId.slice(0, 8),
+          name: d.name,
+          disconnected: true,
         });
+      }
+      if (disconnected.length === 0) {
+        this.recentDisconnects.delete(sessionId);
       }
     }
     return peers;
+  }
+
+  /** Clear a specific disconnected peer entry (used on reconnect). */
+  clearRecentDisconnect(sessionId: string, disconnectedSessionId: string): void {
+    const entries = this.recentDisconnects.get(sessionId);
+    if (!entries) return;
+    const idx = entries.findIndex(e => e.sessionId === disconnectedSessionId);
+    if (idx >= 0) entries.splice(idx, 1);
+    if (entries.length === 0) this.recentDisconnects.delete(sessionId);
+  }
+
+  /** Find a disconnected peer by name for a given session. */
+  findDisconnectedPeer(sessionId: string, name: string): { sessionId: string; name?: string } | null {
+    const entries = this.recentDisconnects.get(sessionId);
+    if (!entries) return null;
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    return entries.find(e => (e.name === name || e.sessionId.slice(0, 8) === name) && e.disconnectedAt >= cutoff) || null;
   }
 
   getAllLinks(): { sourceId: string; targetId: string }[] {
@@ -947,16 +1032,40 @@ export class PtyManager {
     return result;
   }
 
+  /** Notify all linked peers that this session is disconnecting. */
+  private notifyPeersOfDisconnect(sessionId: string): void {
+    const peerIds = this.links.get(sessionId);
+    if (!peerIds) return;
+    const name = this.sessions.get(sessionId)?.name || sessionId.slice(0, 8);
+    for (const peerId of peerIds) {
+      if (this.sessions.has(peerId)) {
+        this.enqueueNotification(peerId, sessionId, `SYSTEM: Peer "${name}" disconnected`);
+      }
+    }
+  }
+
   private cleanupLinks(sessionId: string): void {
     const peers = this.links.get(sessionId);
     if (peers) {
+      const disconnectedName = this.sessions.get(sessionId)?.name;
+      const now = Date.now();
       for (const peerId of peers) {
         this.links.get(peerId)?.delete(sessionId);
         this.linkMainToSubs.get(peerId)?.delete(sessionId);
+        // Record recently-disconnected peer info for remaining peers
+        if (!this.recentDisconnects.has(peerId)) {
+          this.recentDisconnects.set(peerId, []);
+        }
+        this.recentDisconnects.get(peerId)!.push({
+          sessionId,
+          name: disconnectedName,
+          disconnectedAt: now,
+        });
       }
       this.links.delete(sessionId);
     }
     this.linkMainToSubs.delete(sessionId);
+    this.recentDisconnects.delete(sessionId);
   }
 
   /** Legacy: get buffer content since offset (for non-IPC use) */
@@ -1103,6 +1212,7 @@ export class PtyManager {
   private cleanupHistory(sessionId: string): void {
     this.ipcHistory.delete(sessionId);
     this.notificationQueues.delete(sessionId);
+    this.notificationReadSeq.delete(sessionId);
     this.taskRegistry.delete(sessionId);
     // Also remove tasks targeting this session (it was a SUB)
     for (const [, tasks] of this.taskRegistry) {
@@ -1145,8 +1255,9 @@ export class PtyManager {
       queue.shift();
     }
 
-    // Try immediate flush if target is idle
+    // Try immediate flush if target is idle, and schedule retry if not
     this.tryFlushNotifications(targetSessionId);
+    this.scheduleNotificationFlush(targetSessionId);
 
     return notificationId;
   }
@@ -1164,9 +1275,15 @@ export class PtyManager {
 
     // Only auto-flush if agent is idle AND no recent human input (within 3s)
     const status = this.getSessionStatus(sessionId);
-    if (status?.isProcessing) return;
+    if (status?.isProcessing) {
+      this.scheduleNotificationRetry(sessionId);
+      return;
+    }
     const now = Date.now();
-    if (now - session.lastInputAt < 3000) return;
+    if (now - session.lastInputAt < 3000) {
+      this.scheduleNotificationRetry(sessionId);
+      return;
+    }
 
     // Inject a single summary line (safe, fixed format — no raw user content)
     const count = queued.length;
@@ -1208,9 +1325,42 @@ export class PtyManager {
     }, 3000));
   }
 
-  /** Get all notifications for a session (for tt notifications command). */
-  getNotifications(sessionId: string): NotificationEntry[] {
-    return this.notificationQueues.get(sessionId) || [];
+  /**
+   * Schedule a retry when tryFlushNotifications was skipped (processing or input guard).
+   * Uses a separate timer so it doesn't interfere with the output-based debounce.
+   */
+  private notificationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private scheduleNotificationRetry(sessionId: string): void {
+    // Don't stack retries
+    if (this.notificationRetryTimers.has(sessionId)) return;
+
+    this.notificationRetryTimers.set(sessionId, setTimeout(() => {
+      this.notificationRetryTimers.delete(sessionId);
+      this.tryFlushNotifications(sessionId);
+    }, 5000));
+  }
+
+  /** Get notifications for a session. If sinceSeq is provided, only return newer ones. */
+  getNotifications(sessionId: string, sinceSeq?: number): NotificationEntry[] {
+    const all = this.notificationQueues.get(sessionId) || [];
+    if (sinceSeq !== undefined) {
+      return all.filter(n => n.seq > sinceSeq);
+    }
+    return all;
+  }
+
+  /** Get the last-read seq for a session. */
+  getLastReadSeq(sessionId: string): number {
+    return this.notificationReadSeq.get(sessionId) || 0;
+  }
+
+  /** Mark notifications as read up to the current max seq. */
+  markNotificationsRead(sessionId: string): void {
+    const all = this.notificationQueues.get(sessionId) || [];
+    if (all.length > 0) {
+      const maxSeq = Math.max(...all.map(n => n.seq));
+      this.notificationReadSeq.set(sessionId, maxSeq);
+    }
   }
 
   /** Clear delivered notifications for a session. */
@@ -1264,6 +1414,9 @@ export class PtyManager {
       }
     }
 
+    // Start disk capture for this task
+    this.startCapture(taskId, targetSessionId);
+
     return taskId;
   }
 
@@ -1283,6 +1436,10 @@ export class PtyManager {
     task.status = 'done';
     task.result = truncatedResult;
     task.completedAt = Date.now();
+
+    // Close disk capture for this task
+    this.stopCapture(task.taskId, task.targetSessionId);
+
     return true;
   }
 
@@ -1304,5 +1461,265 @@ export class PtyManager {
       : `Tasks: ${done}/${total} done`;
 
     return { total, done, pending, summary };
+  }
+
+  // ── Task Capture (disk-backed output recording) ──────────────────────
+
+  /** Initialize capture directory and clean stale files. Call on server startup. */
+  initCaptures(): void {
+    try {
+      mkdirSync(this.captureDir, { recursive: true });
+      this.cleanupStaleCaptures();
+    } catch (err) {
+      console.error('Failed to initialize capture directory:', err);
+    }
+  }
+
+  /** Start recording PTY output for a task to disk. */
+  private startCapture(taskId: string, targetSessionId: string): void {
+    // Enforce total quota before creating a new capture
+    this.enforceCaptureQuota();
+
+    const filePath = join(this.captureDir, `${taskId}.capture`);
+    const stream = createWriteStream(filePath, { flags: 'a', highWaterMark: 64 * 1024 });
+
+    stream.on('error', (err) => {
+      console.error(`Capture write error for task ${taskId}:`, err.message);
+      this.removeCapture(taskId, targetSessionId);
+    });
+
+    const handle: CaptureHandle = {
+      taskId,
+      targetSessionId,
+      stream,
+      filePath,
+      bytesWritten: 0,
+      startedAt: Date.now(),
+      status: 'active',
+      truncated: false,
+    };
+
+    if (!this.activeCaptures.has(targetSessionId)) {
+      this.activeCaptures.set(targetSessionId, []);
+    }
+    this.activeCaptures.get(targetSessionId)!.push(handle);
+  }
+
+  /** Stop recording and schedule compression. */
+  private stopCapture(taskId: string, targetSessionId: string): void {
+    const captures = this.activeCaptures.get(targetSessionId);
+    if (!captures) return;
+
+    const idx = captures.findIndex(c => c.taskId === taskId);
+    if (idx < 0) return;
+
+    const handle = captures[idx];
+    handle.status = 'closed';
+    handle.stream.end();
+    captures.splice(idx, 1);
+    if (captures.length === 0) {
+      this.activeCaptures.delete(targetSessionId);
+    }
+
+    this.scheduleCompress(taskId, handle.filePath);
+  }
+
+  /** Close all captures for a session (abrupt terminal close). Files remain readable. */
+  private interruptCaptures(sessionId: string): void {
+    const captures = this.activeCaptures.get(sessionId);
+    if (!captures) return;
+
+    for (const handle of captures) {
+      handle.status = 'interrupted';
+      handle.stream.end();
+    }
+    this.activeCaptures.delete(sessionId);
+  }
+
+  /** Remove a specific capture handle (on stream error). */
+  private removeCapture(taskId: string, targetSessionId: string): void {
+    const captures = this.activeCaptures.get(targetSessionId);
+    if (!captures) return;
+    const idx = captures.findIndex(c => c.taskId === taskId);
+    if (idx >= 0) {
+      captures[idx].status = 'interrupted';
+      try { captures[idx].stream.end(); } catch {}
+      captures.splice(idx, 1);
+    }
+    if (captures.length === 0) {
+      this.activeCaptures.delete(targetSessionId);
+    }
+  }
+
+  /** Write PTY data to all active captures for a session. Called from onData. */
+  private writeToCapturesIfActive(sessionId: string, data: string): void {
+    const captures = this.activeCaptures.get(sessionId);
+    if (!captures) return;
+    for (const cap of captures) {
+      if (cap.status === 'active') {
+        if (cap.bytesWritten < CAPTURE_MAX_FILE_BYTES) {
+          cap.stream.write(data);
+          cap.bytesWritten += Buffer.byteLength(data);
+        } else if (!cap.truncated) {
+          cap.truncated = true;
+        }
+      }
+    }
+  }
+
+  /** Read a task's capture file from disk. Returns null if not found. */
+  async readCapture(taskId: string, clean: boolean = true): Promise<{ output: string; status: string; truncated: boolean } | null> {
+    const filePath = join(this.captureDir, `${taskId}.capture`);
+    const gzPath = filePath + '.gz';
+
+    let raw: Buffer;
+    if (existsSync(filePath)) {
+      raw = await readFile(filePath);
+    } else if (existsSync(gzPath)) {
+      const compressed = await readFile(gzPath);
+      raw = gunzipSync(compressed);
+    } else {
+      return null;
+    }
+
+    // Determine status and truncation from task registry + active captures
+    let status = 'unknown';
+    let truncated = false;
+    for (const [, tasks] of this.taskRegistry) {
+      const task = tasks.find(t => t.taskId === taskId);
+      if (task) { status = task.status; break; }
+    }
+    // Check active capture for truncation flag
+    for (const [, captures] of this.activeCaptures) {
+      const cap = captures.find(c => c.taskId === taskId);
+      if (cap) { truncated = cap.truncated; break; }
+    }
+
+    let output = raw.toString('utf-8');
+    if (clean) {
+      output = stripAnsiCodes(output);
+      output = stripAgentNoise(output);
+    }
+
+    return { output, status, truncated };
+  }
+
+  /** Check if a capture file exists for a task. */
+  hasCaptureFile(taskId: string): boolean {
+    const filePath = join(this.captureDir, `${taskId}.capture`);
+    return existsSync(filePath) || existsSync(filePath + '.gz');
+  }
+
+  /** Find the latest task between MAIN and SUB. Prefers pending, then latest done. */
+  findLatestTask(sourceSessionId: string, targetSessionId: string): TaskEntry | null {
+    const tasks = this.taskRegistry.get(sourceSessionId);
+    if (!tasks) return null;
+
+    const matching = tasks.filter(t => t.targetSessionId === targetSessionId);
+    if (matching.length === 0) return null;
+
+    // Prefer latest pending
+    const pending = matching.filter(t => t.status === 'pending');
+    if (pending.length > 0) return pending[pending.length - 1];
+
+    // Otherwise latest done
+    return matching[matching.length - 1];
+  }
+
+  /** Schedule gzip compression of a completed capture file. */
+  private scheduleCompress(taskId: string, filePath: string): void {
+    const timer = setTimeout(async () => {
+      this.compressTimers.delete(taskId);
+      try {
+        if (!existsSync(filePath)) return;
+        const gzPath = filePath + '.gz';
+        await pipeline(
+          createReadStream(filePath),
+          createGzip(),
+          createWriteStream(gzPath),
+        );
+        unlinkSync(filePath);
+      } catch (err) {
+        console.error(`Capture compress error for ${taskId}:`, err);
+      }
+    }, CAPTURE_COMPRESS_DELAY_MS);
+    this.compressTimers.set(taskId, timer);
+  }
+
+  /** Enforce total capture quota by removing oldest completed files. Called before starting new captures. */
+  private enforceCaptureQuota(): void {
+    try {
+      if (!existsSync(this.captureDir)) return;
+      const files = readdirSync(this.captureDir);
+      let totalSize = 0;
+      const entries: { path: string; mtime: number; size: number }[] = [];
+
+      for (const f of files) {
+        if (!f.endsWith('.capture') && !f.endsWith('.capture.gz')) continue;
+        const fullPath = join(this.captureDir, f);
+        try {
+          const st = statSync(fullPath);
+          entries.push({ path: fullPath, mtime: st.mtimeMs, size: st.size });
+          totalSize += st.size;
+        } catch { continue; }
+      }
+
+      if (totalSize <= CAPTURE_MAX_TOTAL_BYTES) return;
+
+      // Remove oldest files first until under quota
+      entries.sort((a, b) => a.mtime - b.mtime);
+      for (const e of entries) {
+        if (totalSize <= CAPTURE_MAX_TOTAL_BYTES) break;
+        // Skip files that are actively being written
+        const taskId = e.path.replace(/\.capture(\.gz)?$/, '').split('/').pop()!;
+        let isActive = false;
+        for (const [, captures] of this.activeCaptures) {
+          if (captures.find(c => c.taskId === taskId)) { isActive = true; break; }
+        }
+        if (isActive) continue;
+        try { unlinkSync(e.path); totalSize -= e.size; } catch {}
+      }
+    } catch (err) {
+      console.error('Capture quota enforcement error:', err);
+    }
+  }
+
+  /** Remove stale capture files (TTL + quota enforcement). Called on startup. */
+  private cleanupStaleCaptures(): void {
+    try {
+      if (!existsSync(this.captureDir)) return;
+      const files = readdirSync(this.captureDir);
+      const now = Date.now();
+
+      const entries: { path: string; mtime: number; size: number }[] = [];
+      for (const f of files) {
+        if (!f.endsWith('.capture') && !f.endsWith('.capture.gz')) continue;
+        const fullPath = join(this.captureDir, f);
+        try {
+          const st = statSync(fullPath);
+          entries.push({ path: fullPath, mtime: st.mtimeMs, size: st.size });
+        } catch { continue; }
+      }
+      entries.sort((a, b) => a.mtime - b.mtime);
+
+      // Pass 1: remove files older than TTL
+      let totalSize = 0;
+      for (const e of entries) {
+        if (now - e.mtime > CAPTURE_TTL_MS) {
+          try { unlinkSync(e.path); } catch {}
+        } else {
+          totalSize += e.size;
+        }
+      }
+
+      // Pass 2: enforce total size limit (oldest first)
+      const remaining = entries.filter(e => now - e.mtime <= CAPTURE_TTL_MS);
+      for (const e of remaining) {
+        if (totalSize <= CAPTURE_MAX_TOTAL_BYTES) break;
+        try { unlinkSync(e.path); totalSize -= e.size; } catch {}
+      }
+    } catch (err) {
+      console.error('Capture cleanup error:', err);
+    }
   }
 }

@@ -161,13 +161,15 @@ app.post('/api/links', (req, res) => {
     `    tt peer read --since-send        Read output since last sent task (recommended)`,
     `    tt peer read [lines]             Read last N lines of terminal output`,
     `    tt peer read --all               Read all available terminal output`,
+    `    tt peer read --full              Read full task output from disk (no buffer limit)`,
     ``,
     `  Protocol:`,
     `    Sub will send: tt peer notify "DONE: [summary] | Changed: [files]"`,
     `    Notifications are queued and delivered when you return to prompt.`,
     `    If no DONE notification arrives, do not assume completion.`,
     `    Check tt tasks before making decisions that depend on sub-agent results.`,
-    `    After receiving a DONE notification, read the full result with: tt peer read --since-send`,
+    `    After receiving a DONE notification, read the result with: tt peer read --since-send`,
+    `    If the output was too long and got truncated, use: tt peer read --full`,
     ``
   ].join('\n');
 
@@ -188,10 +190,79 @@ app.post('/api/links', (req, res) => {
     ``
   ].join('\n');
 
-  ptyManager.write(sourceId, mainContext + '\r');
-  ptyManager.write(targetId, subContext + '\r');
+  // Send prompt text first, then submit with a delayed Enter
+  // so Claude Code doesn't swallow the \r inside a pasted block.
+  const submitDelay = 500;
+  for (const [id, ctx] of [[sourceId, mainContext], [targetId, subContext]] as const) {
+    ptyManager.write(id, ctx);
+    setTimeout(() => ptyManager.write(id, '\r'), submitDelay);
+  }
 
   res.json({ ok: true });
+});
+
+// Reconnect: link a new session as a replacement for a disconnected peer
+app.post('/api/links/reconnect', (req, res) => {
+  const { sourceId, newTargetId, asName } = req.body || {};
+  if (!sourceId || !newTargetId || !asName) {
+    res.status(400).json({ error: 'sourceId, newTargetId, and asName are required' });
+    return;
+  }
+
+  const resolvedSource = resolveSession(sourceId);
+  const resolvedTarget = resolveSession(newTargetId);
+  if (!resolvedSource) {
+    res.status(404).json({ error: `Source session not found: ${sourceId}` });
+    return;
+  }
+
+  if (!resolvedTarget) {
+    res.status(404).json({ error: `Target session not found: ${newTargetId}` });
+    return;
+  }
+
+  // Find the disconnected peer entry
+  const disconnected = ptyManager.findDisconnectedPeer(resolvedSource, asName);
+
+  // Set name on new target
+  ptyManager.setName(resolvedTarget, asName);
+
+  // Create the link
+  ptyManager.addLink(resolvedSource, resolvedTarget);
+
+  // Clear disconnected peer entry if found
+  if (disconnected) {
+    ptyManager.clearRecentDisconnect(resolvedSource, disconnected.sessionId);
+  }
+
+  // Notify MAIN about reconnection
+  const shortId = resolvedTarget.slice(0, 8);
+  ptyManager.enqueueNotification(resolvedSource, resolvedTarget, `SYSTEM: Peer "${asName}" reconnected (new session: ${shortId})`);
+
+  // Inject sub context into new terminal
+  const sourceName = ptyManager.getName(resolvedSource) || resolvedSource.slice(0, 8);
+  const subContext = [
+    `[tboard] Terminal link established with "${sourceName}" (reconnected as "${asName}").`,
+    ``,
+    `  COMPLETION PROTOCOL (mandatory):`,
+    `    When you finish ANY task received on this terminal, you MUST run:`,
+    `    tt peer notify "DONE: [one-line summary] | Changed: [file1, file2, ...]"`,
+    `    If no files changed, write: Changed: none`,
+    `    A task is NOT complete until this command has been executed.`,
+    `    Do NOT end your turn without sending the notification.`,
+    `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
+    ``,
+    `  Other commands:`,
+    `    tt peer send "message"       Send a message to the linked terminal`,
+    `    tt peer notify "message"     Send a notification to the linked terminal`,
+    ``
+  ].join('\n');
+
+  const submitDelay = 500;
+  ptyManager.write(resolvedTarget, subContext);
+  setTimeout(() => ptyManager.write(resolvedTarget, '\r'), submitDelay);
+
+  res.json({ ok: true, name: asName, sessionId: resolvedTarget });
 });
 
 // Remove a link
@@ -374,15 +445,31 @@ app.post('/api/notifications/send', (req, res) => {
   res.json({ ok: true, notificationId, sessionId: resolved });
 });
 
-// Get notifications for a session
+// Get notifications for a session (supports ?since=<seq> for unread-only)
 app.get('/api/notifications/:sessionId', (req, res) => {
   const resolved = resolveSession(req.params.sessionId);
   if (!resolved) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-  const notifications = ptyManager.getNotifications(resolved);
-  res.json({ sessionId: resolved, notifications });
+  const sinceParam = req.query.since as string | undefined;
+  const sinceSeq = sinceParam !== undefined ? parseInt(sinceParam, 10) : undefined;
+  const notifications = ptyManager.getNotifications(resolved, sinceSeq);
+  const lastReadSeq = ptyManager.getLastReadSeq(resolved);
+  const totalCount = ptyManager.getNotifications(resolved).length;
+  res.json({ sessionId: resolved, notifications, lastReadSeq, totalCount });
+});
+
+// Mark notifications as read for a session
+app.post('/api/notifications/:sessionId/read', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  ptyManager.markNotificationsRead(resolved);
+  const lastReadSeq = ptyManager.getLastReadSeq(resolved);
+  res.json({ ok: true, lastReadSeq });
 });
 
 // Clear notifications for a session
@@ -419,6 +506,30 @@ app.get('/api/tasks/:sessionId', (req, res) => {
 
   const summary = ptyManager.getTaskSummary(resolved);
   res.json({ sessionId: resolved, tasks: enriched, summary });
+});
+
+// Read full task capture from disk (latest task between MAIN and SUB)
+app.get('/api/captures/latest/:sourceSessionId/:targetSessionId', async (req, res) => {
+  const sourceResolved = resolveSession(req.params.sourceSessionId);
+  const targetResolved = resolveSession(req.params.targetSessionId);
+  if (!sourceResolved || !targetResolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const clean = req.query.clean !== 'false';
+
+  const task = ptyManager.findLatestTask(sourceResolved, targetResolved);
+  if (!task) {
+    res.status(404).json({ error: 'No task found between these sessions' });
+    return;
+  }
+
+  const result = await ptyManager.readCapture(task.taskId, clean);
+  if (!result) {
+    res.status(404).json({ error: 'Capture file not found' });
+    return;
+  }
+  res.json({ taskId: task.taskId, output: result.output, status: result.status, truncated: result.truncated, command: task.command });
 });
 
 // Get rendered terminal content (via headless xterm, no animation artifacts)
@@ -777,6 +888,8 @@ const cleanup = () => {
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 process.on('exit', () => ptyManager.killAll());
+
+ptyManager.initCaptures();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Terminal Board server listening on http://127.0.0.1:${PORT}`);
