@@ -4,6 +4,8 @@
 // Inter-terminal communication tool for use within terminal-board sessions.
 // Environment: TBOARD_URL (server URL), TBOARD_SESSION (own session ID)
 
+import { readFileSync, existsSync } from 'fs';
+
 let BASE = process.env.TBOARD_URL || '';
 const SELF = process.env.TBOARD_SESSION || '';
 
@@ -65,6 +67,14 @@ async function main() {
       return showSelf();
     case 'status':
       return showStatus(args[0]);
+    case 'notify':
+      return sendNotification(args);
+    case 'notifications':
+      return showNotifications(...args);
+    case 'tasks':
+      return showTasks(args[0]);
+    case 'link':
+      return linkReconnect(args);
     default:
       printHelp();
   }
@@ -112,7 +122,7 @@ async function listTerminals() {
 
 async function sendCommand(args) {
   if (args.length < 2) {
-    console.error('Usage: tt send <id|name> <command...>');
+    console.error('Usage: tt send <id|name> [--file <path>] <command...>');
     process.exit(1);
   }
 
@@ -125,7 +135,22 @@ async function sendCommand(args) {
     commandArgs = commandArgs.slice(1);
   }
 
-  const command = commandArgs.join(' ');
+  let command;
+  const fileIdx = commandArgs.indexOf('--file');
+  if (fileIdx !== -1) {
+    const filePath = commandArgs[fileIdx + 1];
+    if (!filePath) {
+      console.error('Error: --file requires a path argument.');
+      process.exit(1);
+    }
+    if (!existsSync(filePath)) {
+      console.error(`Error: File not found: ${filePath}`);
+      process.exit(1);
+    }
+    command = readFileSync(filePath, 'utf-8').trimEnd();
+  } else {
+    command = commandArgs.join(' ');
+  }
 
   // --raw: write directly to PTY without auto-Enter
   // normal: use IPC endpoint which auto-appends CR
@@ -134,7 +159,7 @@ async function sendCommand(args) {
     : `${BASE}/api/ipc/send`;
   const body = noNewline
     ? JSON.stringify({ data: command })
-    : JSON.stringify({ target, message: command });
+    : JSON.stringify({ target, message: command, sourceSessionId: SELF || undefined });
 
   const res = await fetch(url, {
     method: 'POST',
@@ -152,7 +177,7 @@ async function sendCommand(args) {
 
 async function readOutput(target, ...extraArgs) {
   if (!target) {
-    console.error('Usage: tt read <id|name> [lines] [--wait] [--buffer]');
+    console.error('Usage: tt read <id|name> [lines] [--since-send] [--all] [--full] [--wait] [--buffer]');
     process.exit(1);
   }
 
@@ -161,6 +186,9 @@ async function readOutput(target, ...extraArgs) {
   let wait = false;
   let timeout = 0; // 0 = no timeout (hidden --timeout=N still accepted)
   let useBuffer = false;
+  let sinceSend = false;
+  let all = false;
+  let full = false;
 
   for (const arg of extraArgs) {
     if (arg === undefined) continue;
@@ -168,11 +196,21 @@ async function readOutput(target, ...extraArgs) {
     if (timeoutMatch) { timeout = parseInt(timeoutMatch[1]); continue; }
     if (arg === '--wait') { wait = true; continue; }
     if (arg === '--buffer') { useBuffer = true; continue; }
+    if (arg === '--since-send') { sinceSend = true; continue; }
+    if (arg === '--all') { all = true; continue; }
+    if (arg === '--full') { full = true; continue; }
     const parsed = parseInt(arg);
     if (!isNaN(parsed)) { lines = parsed; continue; }
   }
 
   const enc = encodeURIComponent(target);
+
+  // Build query string based on flags
+  const buildRenderedUrl = () => {
+    if (sinceSend) return `${BASE}/api/terminals/${enc}/rendered?sinceSend=true&clean=true`;
+    if (all) return `${BASE}/api/terminals/${enc}/rendered?clean=true`;
+    return `${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`;
+  };
 
   // Mode: wait for completion then read
   if (wait) {
@@ -181,7 +219,7 @@ async function readOutput(target, ...extraArgs) {
     const deadline = timeout > 0 ? Date.now() + timeout * 1000 : 0;
     while (true) {
       if (deadline > 0 && Date.now() >= deadline) break;
-      const res = await fetch(`${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`);
+      const res = await fetch(buildRenderedUrl());
       const result = await res.json();
       if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
       lastOutput = result.output || '';
@@ -193,8 +231,50 @@ async function readOutput(target, ...extraArgs) {
       }
       await new Promise(r => setTimeout(r, 2000));
     }
+    // If --full is also set, read from disk capture after wait completes
+    if (full) {
+      const captureUrl = `${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`;
+      try {
+        const res = await fetch(captureUrl);
+        if (res.ok) {
+          const result = await res.json();
+          lastOutput = result.output || '';
+          if (result.truncated) {
+            process.stderr.write('(capture was truncated at 50MB limit)\n');
+          }
+        }
+      } catch {}
+    }
     process.stdout.write(lastOutput);
     if (lastOutput && !lastOutput.endsWith('\n')) process.stdout.write('\n');
+    return;
+  }
+
+  // Mode: full task capture from disk (no buffer limit)
+  if (full) {
+    const captureUrl = `${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`;
+    try {
+      const res = await fetch(captureUrl);
+      if (res.ok) {
+        const result = await res.json();
+        process.stdout.write(result.output || '');
+        if (result.output && !result.output.endsWith('\n')) process.stdout.write('\n');
+        if (result.truncated) {
+          process.stderr.write('(capture was truncated at 50MB limit)\n');
+        }
+        if (result.status === 'pending') {
+          process.stderr.write('(task still in progress -- capture may be incomplete)\n');
+        }
+        return;
+      }
+    } catch {}
+    // Fallback to rendered output
+    process.stderr.write('No capture available, falling back to rendered output.\n');
+    const fallbackRes = await fetch(buildRenderedUrl());
+    const fallbackResult = await fallbackRes.json();
+    if (fallbackResult.error) { console.error(`Error: ${fallbackResult.error}`); process.exit(1); }
+    process.stdout.write(fallbackResult.output || '');
+    if (fallbackResult.output && !fallbackResult.output.endsWith('\n')) process.stdout.write('\n');
     return;
   }
 
@@ -209,7 +289,7 @@ async function readOutput(target, ...extraArgs) {
   }
 
   // Default: rendered output (clean, noise-stripped)
-  const res = await fetch(`${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`);
+  const res = await fetch(buildRenderedUrl());
   const result = await res.json();
   if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
   process.stdout.write(result.output || '');
@@ -265,6 +345,11 @@ async function ipcSendAndWait(args) {
     );
     const poll = await pollRes.json();
     lastOutput = poll.output || '';
+
+    if (poll.timedOut) {
+      process.stderr.write('Error: IPC turn timed out (no response within 10 minutes).\n');
+      process.exit(1);
+    }
 
     if (!poll.isProcessing) {
       settled++;
@@ -454,6 +539,240 @@ async function showStatus(target) {
   console.log(JSON.stringify(resolved, null, 2));
 }
 
+function formatAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
+
+async function showPeerStatus(target) {
+  // Fetch terminal status
+  const statusRes = await fetch(`${BASE}/api/terminals/status`);
+  const { statuses } = await statusRes.json();
+  const status = statuses.find(
+    (s) => s.sessionId === target || s.sessionId.startsWith(target) || s.name === target
+  );
+  if (!status) {
+    console.error(`Terminal not found: ${target}`);
+    process.exit(1);
+  }
+
+  // Fetch latest task for this peer
+  const sessionId = SELF || '';
+  let taskInfo = '';
+  let taskElapsed = '';
+  if (sessionId) {
+    try {
+      const taskRes = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
+      const taskResult = await taskRes.json();
+      const tasks = taskResult.tasks || [];
+      // Find latest task targeting this peer
+      const peerTask = [...tasks].reverse().find(t =>
+        t.targetSessionId === status.sessionId || t.targetName === (status.name || status.sessionId.slice(0, 8))
+      );
+      if (peerTask) {
+        const cmd = peerTask.command.length > 50 ? peerTask.command.slice(0, 47) + '...' : peerTask.command;
+        taskInfo = cmd;
+        taskElapsed = formatDuration(Date.now() - peerTask.createdAt);
+      }
+    } catch {}
+  }
+
+  // Determine state
+  let state, stateIcon;
+  if (status.isProcessing) {
+    state = 'working';
+    stateIcon = '⟳';
+  } else if (status.isRunning) {
+    state = 'running';
+    stateIcon = '▶';
+  } else {
+    state = 'idle';
+    stateIcon = '●';
+  }
+
+  // Last output ago
+  const lastOutputAgo = status.lastOutputAt ? formatAgo(status.lastOutputAt) : 'unknown';
+
+  // Build output line
+  const name = status.name || status.sessionId.slice(0, 8);
+  let line = `${stateIcon} ${name}: ${state}`;
+  if (taskElapsed) line += ` (${taskElapsed})`;
+  if (taskInfo) line += ` | Task: "${taskInfo}"`;
+  line += ` | Last output: ${lastOutputAgo}`;
+
+  console.log(line);
+}
+
+function formatDuration(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return `${min}m ${sec}s`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m`;
+}
+
+async function showTasks(target) {
+  const sessionId = target || SELF;
+  if (!sessionId) {
+    console.error('Usage: tt tasks [id|name]');
+    process.exit(1);
+  }
+
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  const tasks = result.tasks || [];
+  if (tasks.length === 0) {
+    console.log('No delegated tasks.');
+    return;
+  }
+
+  // Show incomplete tasks in detail, then last 5 completed
+  const incomplete = tasks.filter(t => t.displayStatus !== 'done');
+  const completed = tasks.filter(t => t.displayStatus === 'done');
+
+  for (const t of incomplete) {
+    const name = (t.targetName || '').padEnd(10);
+    const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+    const cmdPad = cmd.padEnd(32);
+    if (t.displayStatus === 'working') {
+      console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+    } else {
+      console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+    }
+  }
+
+  const recentDone = completed.slice(-5);
+  if (recentDone.length > 0) {
+    if (incomplete.length > 0) console.log('');
+    if (completed.length > recentDone.length) {
+      console.log(`  (${completed.length - recentDone.length} older completed tasks hidden)`);
+    }
+    for (const t of recentDone) {
+      const name = (t.targetName || '').padEnd(10);
+      const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+      const cmdPad = cmd.padEnd(32);
+      const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
+      console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
+    }
+  }
+
+  if (result.summary) {
+    console.log(`\n${result.summary.summary}`);
+  }
+}
+
+async function sendNotification(args) {
+  if (args.length < 2) {
+    console.error('Usage: tt notify <id|name> <message...>');
+    process.exit(1);
+  }
+  const target = args[0];
+  const message = args.slice(1).join(' ');
+
+  const res = await fetch(`${BASE}/api/notifications/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, message, sourceSessionId: SELF || undefined }),
+  });
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+  process.stderr.write(`Notification sent (${result.notificationId}).\n`);
+}
+
+async function showNotifications(...args) {
+  let target = null;
+  let doClear = false;
+  let newOnly = false;
+  for (const a of args) {
+    if (a === '--clear') doClear = true;
+    else if (a === '--new') newOnly = true;
+    else if (!target) target = a;
+  }
+  const sessionId = target || SELF;
+  if (!sessionId) {
+    console.error('Usage: tt notifications [id|name] [--new] [--clear]');
+    process.exit(1);
+  }
+
+  const enc = encodeURIComponent(sessionId);
+
+  const res = await fetch(`${BASE}/api/notifications/${enc}`);
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  let notifications = result.notifications || [];
+  if (newOnly) {
+    const lastReadSeq = result.lastReadSeq || 0;
+    notifications = notifications.filter(n => n.seq > lastReadSeq);
+  }
+  if (notifications.length === 0) {
+    console.log(newOnly ? 'No new notifications.' : 'No notifications.');
+    return;
+  }
+
+  for (const n of notifications) {
+    const time = new Date(n.timestamp).toLocaleTimeString();
+    const statusMark = n.status === 'queued' ? ' [queued]' : '';
+    console.log(`[${time}] from "${n.sourceName}"${statusMark}: ${n.message}`);
+  }
+  const label = newOnly ? 'new notification(s)' : 'notification(s)';
+  const totalInfo = newOnly && result.totalCount > notifications.length
+    ? ` (${result.totalCount} total)` : '';
+  console.log(`\n${notifications.length} ${label}.${totalInfo}`);
+
+  // Mark as read after displaying
+  await fetch(`${BASE}/api/notifications/${enc}/read`, { method: 'POST' }).catch(() => {});
+
+  // Append task summary — only show details for incomplete tasks
+  try {
+    const taskRes = await fetch(`${BASE}/api/tasks/${enc}`);
+    const taskResult = await taskRes.json();
+    const tasks = taskResult.tasks || [];
+    if (tasks.length > 0) {
+      const incomplete = tasks.filter(t => t.displayStatus !== 'done');
+      if (incomplete.length > 0) {
+        console.log('');
+        for (const t of incomplete) {
+          const name = (t.targetName || '').padEnd(10);
+          const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
+          const cmdPad = cmd.padEnd(32);
+          if (t.displayStatus === 'working') {
+            console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+          } else {
+            console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+          }
+        }
+      }
+      if (taskResult.summary) {
+        console.log(`\n${taskResult.summary.summary}`);
+      }
+    }
+  } catch {}
+
+  if (doClear) {
+    await fetch(`${BASE}/api/notifications/${enc}`, { method: 'DELETE' });
+    process.stderr.write('Notifications cleared.\n');
+  }
+}
+
 async function listPeers() {
   if (!SELF) {
     console.error('Not running inside a terminal-board session.');
@@ -468,10 +787,11 @@ async function listPeers() {
     return;
   }
 
-  console.log(pad('ID', 10) + 'NAME');
-  console.log('-'.repeat(30));
+  console.log(pad('ID', 10) + pad('NAME', 12) + 'STATUS');
+  console.log('-'.repeat(36));
   for (const p of peers) {
-    console.log(pad(p.shortId, 10) + (p.name || '-'));
+    const status = p.disconnected ? 'disconnected' : 'active';
+    console.log(pad(p.shortId, 10) + pad(p.name || '-', 12) + status);
   }
 }
 
@@ -483,7 +803,7 @@ async function peerCommand(args) {
 
   const subCmd = args[0];
   if (!subCmd) {
-    console.error('Usage: tt peer <send|ipc|read|last|history> [args...]');
+    console.error('Usage: tt peer <send|notify|tasks|read|last|history> [args...]');
     process.exit(1);
   }
 
@@ -523,9 +843,23 @@ async function peerCommand(args) {
       const { target } = resolvePeerTarget(peers, args.slice(1));
       return showHistory(target);
     }
+    case 'notify': {
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      if (rest.length === 0) {
+        console.error('Usage: tt peer notify [id|name] <message...>');
+        process.exit(1);
+      }
+      return sendNotification([target, ...rest]);
+    }
+    case 'status': {
+      const { target } = resolvePeerTarget(peers, args.slice(1));
+      return showPeerStatus(target);
+    }
+    case 'tasks':
+      return showTasks(SELF);
     default:
       console.error(`Unknown peer subcommand: ${subCmd}`);
-      console.error('Available: send, ipc, read, last, history');
+      console.error('Available: send, notify, status, tasks, read, last, history');
       process.exit(1);
   }
 }
@@ -537,20 +871,50 @@ async function getPeers() {
 }
 
 /**
- * Resolve the peer target. If only one peer, use it automatically.
+ * Resolve the peer target. If only one active peer, use it automatically.
  * Otherwise, the first arg must be a peer id/name.
+ * Errors if the specified target matches a recently-disconnected peer.
  */
 function resolvePeerTarget(peers, args) {
-  if (peers.length === 1) {
-    // Single peer — use it, all args are the command/message
-    const target = peers[0].name || peers[0].shortId;
+  const activePeers = peers.filter(p => !p.disconnected);
+  const disconnectedPeers = peers.filter(p => p.disconnected);
+
+  // Check if first arg explicitly matches a disconnected peer → error
+  if (args.length > 0 && disconnectedPeers.length > 0) {
+    const dc = disconnectedPeers.find(p =>
+      p.name === args[0] || p.shortId === args[0] || p.sessionId.startsWith(args[0])
+    );
+    if (dc) {
+      console.error(`Error: Peer "${dc.name || dc.shortId}" is disconnected.`);
+      process.exit(1);
+    }
+  }
+
+  // Check if first arg explicitly matches an active peer → consume it
+  if (args.length > 0 && activePeers.length > 0) {
+    const match = activePeers.find(p =>
+      p.name === args[0] || p.shortId === args[0] || p.sessionId.startsWith(args[0])
+    );
+    if (match) {
+      return { target: match.name || match.shortId, rest: args.slice(1) };
+    }
+  }
+
+  if (activePeers.length === 1) {
+    // Single active peer — use it, all args are the command/message
+    const target = activePeers[0].name || activePeers[0].shortId;
     return { target, rest: args };
   }
 
-  // Multiple peers — first arg must identify the peer
+  if (activePeers.length === 0) {
+    console.error('No active peers. All linked peers have disconnected.');
+    process.exit(1);
+  }
+
+  // Multiple active peers — first arg must identify the peer
   if (args.length === 0) {
     console.error('Multiple peers linked. Specify which one:');
-    for (const p of peers) {
+    for (const p of activePeers) {
       console.error(`  ${p.shortId}  ${p.name || ''}`);
     }
     process.exit(1);
@@ -559,28 +923,81 @@ function resolvePeerTarget(peers, args) {
   return { target: args[0], rest: args.slice(1) };
 }
 
+async function linkReconnect(args) {
+  if (!SELF) {
+    console.error('Not running inside a terminal-board session.');
+    process.exit(1);
+  }
+
+  // Parse: tt link <new-session-id> --as <name>
+  let newTarget = null;
+  let asName = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--as' && args[i + 1]) {
+      asName = args[i + 1];
+      i++;
+    } else if (!newTarget) {
+      newTarget = args[i];
+    }
+  }
+
+  if (!newTarget || !asName) {
+    console.error('Usage: tt link <new-session-id|name> --as <peer-name>');
+    process.exit(1);
+  }
+
+  const res = await fetch(`${BASE}/api/links/reconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceId: SELF, newTargetId: newTarget, asName }),
+  });
+
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+  console.log(`Linked ${result.sessionId.slice(0, 8)} as "${asName}".`);
+}
+
 function printHelp() {
   console.log(`tt - Terminal Board CLI
 
 Usage:
   tt ls                              List all terminals (* = self, + = peer)
   tt send <id|name> <command>        Send command (auto-appends Enter)
+  tt send <id|name> --file <path>   Send file contents as command
   tt send <id|name> --raw <text>     Send text without Enter
-  tt ipc <id|name> <message>         Send message & wait for response
+  tt ipc <id|name> <message>         (deprecated) Send message & wait for response
   tt last <id|name>                  Read the last response from an agent
   tt last <id|name> --wait           Wait for agent to finish, then read response
   tt history <id|name>               Show IPC conversation history
   tt read <id|name> [lines]          Read terminal output (clean)
+  tt read <id|name> --since-send     Read output since last sent task
+  tt read <id|name> --all            Read all available output
+  tt read <id|name> --full           Read full task output from disk (no buffer limit)
   tt read <id|name> --wait           Wait until agent finishes, then read
   tt name <id|name> <new-name>       Name a terminal for easy reference
+  tt notify <id|name> <message>       Send notification (fire-and-forget)
+  tt notifications [id|name]         Show notifications (auto marks read)
+  tt notifications [id|name] --new   Show only unread notifications
+  tt tasks [id|name]                  Show delegated task status
+  tt link <id|name> --as <name>     Reconnect a new session as a disconnected peer
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
 
 Peer commands (linked terminals):
   tt peers                           List linked peers
   tt peer send [id|name] <command>   Send command to peer
-  tt peer ipc [id|name] <message>    Send IPC message to peer & wait
+  tt peer send [id|name] --file <p> Send file contents to peer
+  tt peer status [id|name]           Show peer's working status (1-line)
+  tt peer ipc [id|name] <message>    (deprecated) Send IPC message to peer & wait
+  tt peer notify [id|name] <message> Send notification to peer (non-blocking)
+  tt peer tasks                        Show delegated task status
   tt peer read [id|name] [lines]     Read peer's terminal output (clean)
+  tt peer read [id|name] --since-send Read output since last sent task
+  tt peer read [id|name] --all       Read all available peer output
+  tt peer read [id|name] --full      Read full task output from disk (no buffer limit)
   tt peer read [id|name] --wait      Wait for peer to finish, then read
   tt peer last [id|name]             Read peer's last response
   tt peer last [id|name] --wait      Wait for peer to finish, then read response
@@ -592,14 +1009,16 @@ With one peer linked, "tt peer" commands auto-target it (no id needed).
 Examples:
   tt ls                              See all terminals
   tt send sub-1 "npm test"           Run npm test in sub-1
-  tt ipc sub-1 "run the tests"       Send to Claude agent & get response
+  tt notify sub-1 "DONE: summary"    Send notification to sub-1
   tt read sub-1 50                   Read last 50 lines (clean)
   tt read sub-1 --wait               Wait for sub-1 to finish processing
-  tt history sub-1                   See IPC conversation history
+  tt notifications sub-1             Check notifications from sub-1
+  tt tasks                            See delegated task progress
   tt peers                           See linked peers
-  tt peer ipc "run the tests"        Send to linked peer (single peer)
+  tt peer send "run the tests"       Send to linked peer (single peer)
+  tt peer notify "DONE: summary"     Notify linked peer
   tt peer read 50                    Read 50 lines from linked peer
-  tt peer history                    See peer's IPC history
+  tt peer read --since-send          Read peer output since last task sent
 `);
 }
 
