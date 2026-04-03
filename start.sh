@@ -41,6 +41,9 @@ ensure_linux_node() {
   fi
 }
 
+# Make tt CLI available in spawned terminals
+export PATH="$(pwd)/bin:$PATH"
+
 echo "Starting tboard ..."
 echo "  Frontend : ${URL}"
 echo "  Backend  : http://127.0.0.1:${PORT}"

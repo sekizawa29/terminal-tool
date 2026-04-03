@@ -2,16 +2,62 @@
 
 // tt - Terminal Board CLI
 // Inter-terminal communication tool for use within terminal-board sessions.
-// Environment: TBOARD_URL (server URL), TBOARD_SESSION (own session ID)
+// Environment: TBOARD_SOCKET (unix socket path, preferred), TBOARD_URL (server URL), TBOARD_SESSION (own session ID)
 
 import { readFileSync, existsSync } from 'fs';
+import http from 'http';
 
 let BASE = process.env.TBOARD_URL || '';
+const SOCKET_PATH = process.env.TBOARD_SOCKET || '';
 const SELF = process.env.TBOARD_SESSION || '';
+
+// Unix socket fetch: uses http.request with socketPath
+function socketFetch(path, options = {}) {
+  return new Promise((resolve, reject) => {
+    const method = options.method || 'GET';
+    const body = options.body || null;
+    const req = http.request({
+      socketPath: SOCKET_PATH,
+      path,
+      method,
+      headers: options.headers || {},
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          json: () => Promise.resolve(JSON.parse(data)),
+          text: () => Promise.resolve(data),
+        });
+      });
+    });
+    req.on('error', reject);
+    if (options.signal) {
+      options.signal.addEventListener('abort', () => {
+        req.destroy();
+        reject(new Error('aborted'));
+      });
+    }
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+// Unified fetch: use Unix socket if available, otherwise HTTP
+function ttFetch(urlOrPath, options = {}) {
+  if (SOCKET_PATH) {
+    // Extract pathname from full URL or use as-is
+    const path = urlOrPath.startsWith('http') ? new URL(urlOrPath).pathname + (new URL(urlOrPath).search || '') : urlOrPath;
+    return socketFetch(path, options);
+  }
+  return fetch(urlOrPath, options);
+}
 
 // Auto-detect server URL if not set (scan common ports)
 async function detectBase() {
-  if (BASE) return;
+  if (SOCKET_PATH || BASE) return;
   // Check PORT env as explicit override
   if (process.env.PORT) {
     BASE = `http://127.0.0.1:${process.env.PORT}`;
@@ -81,7 +127,7 @@ async function main() {
 }
 
 async function listTerminals() {
-  const res = await fetch(`${BASE}/api/terminals/status`);
+  const res = await ttFetch(`${BASE}/api/terminals/status`);
   const { statuses } = await res.json();
 
   if (statuses.length === 0) {
@@ -93,7 +139,7 @@ async function listTerminals() {
   let peerIds = new Set();
   if (SELF) {
     try {
-      const peerRes = await fetch(`${BASE}/api/links/peers/${SELF}`);
+      const peerRes = await ttFetch(`${BASE}/api/links/peers/${SELF}`);
       const peerData = await peerRes.json();
       peerIds = new Set((peerData.peers || []).map((p) => p.sessionId));
     } catch {}
@@ -280,7 +326,7 @@ async function readOutput(target, ...extraArgs) {
 
   // Mode: legacy buffer (escape hatch)
   if (useBuffer) {
-    const res = await fetch(`${BASE}/api/terminals/${enc}/buffer?lines=${lines}`);
+    const res = await ttFetch(`${BASE}/api/terminals/${enc}/buffer?lines=${lines}`);
     const result = await res.json();
     if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
     process.stdout.write(result.output || '');
@@ -315,7 +361,7 @@ async function ipcSendAndWait(args) {
   const message = msgParts.join(' ');
 
   // Send via IPC endpoint with sourceSessionId for history tracking
-  const sendRes = await fetch(`${BASE}/api/ipc/send`, {
+  const sendRes = await ttFetch(`${BASE}/api/ipc/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target, message, sourceSessionId: SELF || undefined }),
@@ -400,7 +446,7 @@ async function readLast(target, ...extraArgs) {
     let settled = 0;
     let lastResult = null;
     while (true) {
-      const res = await fetch(`${BASE}/api/ipc/last/${enc}`);
+      const res = await ttFetch(`${BASE}/api/ipc/last/${enc}`);
       lastResult = await res.json();
       if (lastResult.error) { console.error(`Error: ${lastResult.error}`); process.exit(1); }
       if (!lastResult.isProcessing) {
@@ -422,7 +468,7 @@ async function readLast(target, ...extraArgs) {
   }
 
   // Default: immediate read
-  const res = await fetch(`${BASE}/api/ipc/last/${enc}`);
+  const res = await ttFetch(`${BASE}/api/ipc/last/${enc}`);
   const result = await res.json();
   if (result.error) {
     console.error(`Error: ${result.error}`);
@@ -489,7 +535,7 @@ async function setName(target, name) {
     process.exit(1);
   }
 
-  const res = await fetch(`${BASE}/api/terminals/${encodeURIComponent(target)}/name`, {
+  const res = await ttFetch(`${BASE}/api/terminals/${encodeURIComponent(target)}/name`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
@@ -521,7 +567,7 @@ async function showStatus(target) {
     target = SELF;
   }
 
-  const res = await fetch(`${BASE}/api/terminals/status`);
+  const res = await ttFetch(`${BASE}/api/terminals/status`);
   const { statuses } = await res.json();
 
   const resolved = statuses.find(
@@ -551,7 +597,7 @@ function formatAgo(timestamp) {
 
 async function showPeerStatus(target) {
   // Fetch terminal status
-  const statusRes = await fetch(`${BASE}/api/terminals/status`);
+  const statusRes = await ttFetch(`${BASE}/api/terminals/status`);
   const { statuses } = await statusRes.json();
   const status = statuses.find(
     (s) => s.sessionId === target || s.sessionId.startsWith(target) || s.name === target
@@ -567,7 +613,7 @@ async function showPeerStatus(target) {
   let taskElapsed = '';
   if (sessionId) {
     try {
-      const taskRes = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
+      const taskRes = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
       const taskResult = await taskRes.json();
       const tasks = taskResult.tasks || [];
       // Find latest task targeting this peer
@@ -625,7 +671,7 @@ async function showTasks(target) {
     process.exit(1);
   }
 
-  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
+  const res = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(sessionId)}`);
   const result = await res.json();
   if (result.error) {
     console.error(`Error: ${result.error}`);
@@ -681,7 +727,7 @@ async function sendNotification(args) {
   const target = args[0];
   const message = args.slice(1).join(' ');
 
-  const res = await fetch(`${BASE}/api/notifications/send`, {
+  const res = await ttFetch(`${BASE}/api/notifications/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target, message, sourceSessionId: SELF || undefined }),
@@ -711,7 +757,7 @@ async function showNotifications(...args) {
 
   const enc = encodeURIComponent(sessionId);
 
-  const res = await fetch(`${BASE}/api/notifications/${enc}`);
+  const res = await ttFetch(`${BASE}/api/notifications/${enc}`);
   const result = await res.json();
   if (result.error) {
     console.error(`Error: ${result.error}`);
@@ -739,11 +785,11 @@ async function showNotifications(...args) {
   console.log(`\n${notifications.length} ${label}.${totalInfo}`);
 
   // Mark as read after displaying
-  await fetch(`${BASE}/api/notifications/${enc}/read`, { method: 'POST' }).catch(() => {});
+  await ttFetch(`${BASE}/api/notifications/${enc}/read`, { method: 'POST' }).catch(() => {});
 
   // Append task summary — only show details for incomplete tasks
   try {
-    const taskRes = await fetch(`${BASE}/api/tasks/${enc}`);
+    const taskRes = await ttFetch(`${BASE}/api/tasks/${enc}`);
     const taskResult = await taskRes.json();
     const tasks = taskResult.tasks || [];
     if (tasks.length > 0) {
@@ -768,7 +814,7 @@ async function showNotifications(...args) {
   } catch {}
 
   if (doClear) {
-    await fetch(`${BASE}/api/notifications/${enc}`, { method: 'DELETE' });
+    await ttFetch(`${BASE}/api/notifications/${enc}`, { method: 'DELETE' });
     process.stderr.write('Notifications cleared.\n');
   }
 }
@@ -779,7 +825,7 @@ async function listPeers() {
     process.exit(1);
   }
 
-  const res = await fetch(`${BASE}/api/links/peers/${SELF}`);
+  const res = await ttFetch(`${BASE}/api/links/peers/${SELF}`);
   const { peers } = await res.json();
 
   if (!peers || peers.length === 0) {
@@ -865,7 +911,7 @@ async function peerCommand(args) {
 }
 
 async function getPeers() {
-  const res = await fetch(`${BASE}/api/links/peers/${SELF}`);
+  const res = await ttFetch(`${BASE}/api/links/peers/${SELF}`);
   const { peers } = await res.json();
   return peers || [];
 }
@@ -946,7 +992,7 @@ async function linkReconnect(args) {
     process.exit(1);
   }
 
-  const res = await fetch(`${BASE}/api/links/reconnect`, {
+  const res = await ttFetch(`${BASE}/api/links/reconnect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sourceId: SELF, newTargetId: newTarget, asName }),

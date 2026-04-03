@@ -4,11 +4,13 @@ import { WebSocketServer } from 'ws';
 import { randomBytes } from 'crypto';
 import { resolve, dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync } from 'fs';
+import { existsSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
 import { PtyManager } from './pty-manager.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3001', 10);
+const SOCKET_PATH = join(tmpdir(), `tboard-${PORT}.sock`);
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -20,7 +22,7 @@ const wss = new WebSocketServer({ server });
 const binDir = resolve(__dirname, '../bin');
 const binDirResolved = existsSync(binDir) ? binDir : resolve(__dirname, '../../bin');
 
-const ptyManager = new PtyManager(PORT, binDirResolved);
+const ptyManager = new PtyManager(PORT, binDirResolved, SOCKET_PATH);
 
 // Resolve session ID from full ID, short prefix, or name
 function resolveSession(idOrName: string): string | null {
@@ -877,17 +879,30 @@ wss.on('connection', (ws, req) => {
   }
 });
 
+// Unix socket server for CLI (sandbox-safe IPC)
+const cliServer = createServer(app);
+// Clean up stale socket file from previous run
+try { unlinkSync(SOCKET_PATH); } catch {}
+cliServer.listen(SOCKET_PATH, () => {
+  console.log(`CLI socket listening on ${SOCKET_PATH}`);
+});
+
 // Cleanup
 const cleanup = () => {
   console.log('Shutting down, killing all PTY sessions...');
   ptyManager.killAll();
   server.close();
+  cliServer.close();
+  try { unlinkSync(SOCKET_PATH); } catch {}
   process.exit(0);
 };
 
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
-process.on('exit', () => ptyManager.killAll());
+process.on('exit', () => {
+  ptyManager.killAll();
+  try { unlinkSync(SOCKET_PATH); } catch {}
+});
 
 ptyManager.initCaptures();
 

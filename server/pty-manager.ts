@@ -1,7 +1,7 @@
 import * as pty from 'node-pty';
 import { randomBytes } from 'crypto';
 import {
-  readFileSync, readlinkSync,
+  readFileSync, readlinkSync, writeFileSync,
   createWriteStream, createReadStream,
   mkdirSync, readdirSync, unlinkSync, statSync, existsSync,
   type WriteStream,
@@ -271,10 +271,36 @@ export class PtyManager {
   private compressTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private serverPort: number;
   private binDir: string;
+  private socketPath: string;
+  private zdotdir: string | null = null;
 
-  constructor(port: number = 3001, binDir: string = '') {
+  constructor(port: number = 3001, binDir: string = '', socketPath: string = '') {
     this.serverPort = port;
     this.binDir = binDir;
+    this.socketPath = socketPath;
+    if (binDir && platform() === 'darwin') {
+      this.zdotdir = this.setupZdotdir();
+    }
+  }
+
+  /**
+   * Create a custom ZDOTDIR so that PATH survives macOS path_helper.
+   * zsh init order: /etc/zshenv → ~/.zshenv → /etc/zprofile(path_helper) → ~/.zprofile → /etc/zshrc → ~/.zshrc
+   * By proxying user rc files and appending PATH in .zshrc, the bin dir
+   * is added AFTER path_helper has run.
+   */
+  private setupZdotdir(): string {
+    const dir = join(tmpdir(), 'tboard-zdot');
+    mkdirSync(dir, { recursive: true });
+    const home = process.env.ZDOTDIR || process.env.HOME || '';
+    for (const rc of ['.zshenv', '.zprofile', '.zshrc', '.zlogin']) {
+      let body = `[[ -f "${home}/${rc}" ]] && source "${home}/${rc}"\n`;
+      if (rc === '.zshrc') {
+        body += `export PATH="${this.binDir}:$PATH"\n`;
+      }
+      writeFileSync(join(dir, rc), body);
+    }
+    return dir;
   }
 
   create(cols: number, rows: number, cwd?: string, shell?: string): string {
@@ -287,10 +313,16 @@ export class PtyManager {
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       TBOARD_URL: `http://127.0.0.1:${this.serverPort}`,
+      TBOARD_SOCKET: this.socketPath,
       TBOARD_SESSION: sessionId,
     };
     if (this.binDir) {
       env.PATH = `${this.binDir}:${env.PATH || ''}`;
+      env.TBOARD_BIN = this.binDir;
+    }
+    // Use custom ZDOTDIR so PATH survives macOS path_helper
+    if (this.zdotdir && resolvedShell.includes('zsh')) {
+      env.ZDOTDIR = this.zdotdir;
     }
 
     const p = pty.spawn(resolvedShell, [], {
