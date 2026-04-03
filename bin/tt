@@ -207,7 +207,7 @@ async function sendCommand(args) {
     ? JSON.stringify({ data: command })
     : JSON.stringify({ target, message: command, sourceSessionId: SELF || undefined });
 
-  const res = await fetch(url, {
+  const res = await ttFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
@@ -265,7 +265,7 @@ async function readOutput(target, ...extraArgs) {
     const deadline = timeout > 0 ? Date.now() + timeout * 1000 : 0;
     while (true) {
       if (deadline > 0 && Date.now() >= deadline) break;
-      const res = await fetch(buildRenderedUrl());
+      const res = await ttFetch(buildRenderedUrl());
       const result = await res.json();
       if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
       lastOutput = result.output || '';
@@ -281,7 +281,7 @@ async function readOutput(target, ...extraArgs) {
     if (full) {
       const captureUrl = `${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`;
       try {
-        const res = await fetch(captureUrl);
+        const res = await ttFetch(captureUrl);
         if (res.ok) {
           const result = await res.json();
           lastOutput = result.output || '';
@@ -300,7 +300,7 @@ async function readOutput(target, ...extraArgs) {
   if (full) {
     const captureUrl = `${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`;
     try {
-      const res = await fetch(captureUrl);
+      const res = await ttFetch(captureUrl);
       if (res.ok) {
         const result = await res.json();
         process.stdout.write(result.output || '');
@@ -316,7 +316,7 @@ async function readOutput(target, ...extraArgs) {
     } catch {}
     // Fallback to rendered output
     process.stderr.write('No capture available, falling back to rendered output.\n');
-    const fallbackRes = await fetch(buildRenderedUrl());
+    const fallbackRes = await ttFetch(buildRenderedUrl());
     const fallbackResult = await fallbackRes.json();
     if (fallbackResult.error) { console.error(`Error: ${fallbackResult.error}`); process.exit(1); }
     process.stdout.write(fallbackResult.output || '');
@@ -335,7 +335,7 @@ async function readOutput(target, ...extraArgs) {
   }
 
   // Default: rendered output (clean, noise-stripped)
-  const res = await fetch(buildRenderedUrl());
+  const res = await ttFetch(buildRenderedUrl());
   const result = await res.json();
   if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
   process.stdout.write(result.output || '');
@@ -386,7 +386,7 @@ async function ipcSendAndWait(args) {
   while (true) {
     if (deadline > 0 && Date.now() >= deadline) break;
     await sleep(1500);
-    const pollRes = await fetch(
+    const pollRes = await ttFetch(
       `${BASE}/api/ipc/response/${sessionId}?message=${encodedMsg}${encodedTurnId}`
     );
     const poll = await pollRes.json();
@@ -417,7 +417,7 @@ async function pollResponse(target, messageArg) {
     process.exit(1);
   }
   const encodedMsg = encodeURIComponent(messageArg);
-  const res = await fetch(
+  const res = await ttFetch(
     `${BASE}/api/ipc/response/${encodeURIComponent(target)}?message=${encodedMsg}`
   );
   const result = await res.json();
@@ -492,7 +492,7 @@ async function showHistory(target) {
     process.exit(1);
   }
 
-  const res = await fetch(
+  const res = await ttFetch(
     `${BASE}/api/ipc/history/${encodeURIComponent(target)}`
   );
   const result = await res.json();
@@ -925,10 +925,15 @@ function resolvePeerTarget(peers, args) {
   const activePeers = peers.filter(p => !p.disconnected);
   const disconnectedPeers = peers.filter(p => p.disconnected);
 
-  // Check if first arg explicitly matches a disconnected peer → error
-  if (args.length > 0 && disconnectedPeers.length > 0) {
+  // Separate flags/numeric args from potential peer identifiers
+  const isFlag = (a) => String(a).startsWith('--') || /^\d+$/.test(String(a));
+  const peerArgs = args.filter(a => !isFlag(a));
+  const firstPeerArg = peerArgs[0];
+
+  // Check if first non-flag arg explicitly matches a disconnected peer → error
+  if (firstPeerArg && disconnectedPeers.length > 0) {
     const dc = disconnectedPeers.find(p =>
-      p.name === args[0] || p.shortId === args[0] || p.sessionId.startsWith(args[0])
+      p.name === firstPeerArg || p.shortId === firstPeerArg || p.sessionId.startsWith(firstPeerArg)
     );
     if (dc) {
       console.error(`Error: Peer "${dc.name || dc.shortId}" is disconnected.`);
@@ -936,13 +941,14 @@ function resolvePeerTarget(peers, args) {
     }
   }
 
-  // Check if first arg explicitly matches an active peer → consume it
-  if (args.length > 0 && activePeers.length > 0) {
+  // Check if first non-flag arg explicitly matches an active peer → consume it
+  if (firstPeerArg && activePeers.length > 0) {
     const match = activePeers.find(p =>
-      p.name === args[0] || p.shortId === args[0] || p.sessionId.startsWith(args[0])
+      p.name === firstPeerArg || p.shortId === firstPeerArg || p.sessionId.startsWith(firstPeerArg)
     );
     if (match) {
-      return { target: match.name || match.shortId, rest: args.slice(1) };
+      const idx = args.indexOf(firstPeerArg);
+      return { target: match.name || match.shortId, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
     }
   }
 
@@ -957,8 +963,8 @@ function resolvePeerTarget(peers, args) {
     process.exit(1);
   }
 
-  // Multiple active peers — first arg must identify the peer
-  if (args.length === 0) {
+  // Multiple active peers — first non-flag arg must identify the peer
+  if (!firstPeerArg) {
     console.error('Multiple peers linked. Specify which one:');
     for (const p of activePeers) {
       console.error(`  ${p.shortId}  ${p.name || ''}`);
@@ -966,7 +972,8 @@ function resolvePeerTarget(peers, args) {
     process.exit(1);
   }
 
-  return { target: args[0], rest: args.slice(1) };
+  const idx = args.indexOf(firstPeerArg);
+  return { target: firstPeerArg, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
 }
 
 async function linkReconnect(args) {
