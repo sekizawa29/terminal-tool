@@ -3,14 +3,14 @@ import { randomBytes } from 'crypto';
 import {
   readFileSync, readlinkSync, writeFileSync,
   createWriteStream, createReadStream,
-  mkdirSync, readdirSync, unlinkSync, statSync, existsSync,
+  mkdirSync, readdirSync, realpathSync, rmSync, unlinkSync, statSync, existsSync,
   type WriteStream,
 } from 'fs';
 import { readFile } from 'fs/promises';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
 import { platform, tmpdir } from 'os';
-import { basename, join } from 'path';
+import { basename, join, resolve as pathResolve } from 'path';
 import { gunzipSync, createGzip } from 'zlib';
 import { pipeline } from 'stream/promises';
 import type { WebSocket } from 'ws';
@@ -253,6 +253,7 @@ interface PtySession {
   headlessTerm: InstanceType<typeof HeadlessTerminal>; // for IPC: renders PTY output properly
   pendingIpcCount: number;   // number of in-flight IPC turns targeting this session
   lastIpcSentAt: number;     // timestamp of most recent IPC send to this session
+  outputDir?: string;        // peer output directory for clean text artifacts
 }
 
 export class PtyManager {
@@ -1752,6 +1753,84 @@ export class PtyManager {
       }
     } catch (err) {
       console.error('Capture cleanup error:', err);
+    }
+  }
+
+  // ── Peer output directory ──────────────────────────────────────────
+
+  /**
+   * Ensure an output directory exists for a peer session.
+   * Path: <tmpdir>/tboard-output-<mainSessionId先頭12文字>/<peerName>/
+   * Falls back to shortId if peer name is not yet set.
+   */
+  ensureOutputDir(mainSessionId: string, peerSessionId: string): string {
+    const peerName = this.getName(peerSessionId) || peerSessionId.slice(0, 8);
+    const dir = join(tmpdir(), `tboard-output-${mainSessionId.slice(0, 12)}`, peerName);
+    mkdirSync(dir, { recursive: true });
+    const session = this.sessions.get(peerSessionId);
+    if (session) session.outputDir = dir;
+    return dir;
+  }
+
+  /** Get the output directory for a session (if set). */
+  getOutputDir(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.outputDir;
+  }
+
+  /** List files in a session's output directory. */
+  listOutputFiles(sessionId: string): { name: string; size: number; mtime: string }[] | null {
+    const dir = this.getOutputDir(sessionId);
+    if (!dir || !existsSync(dir)) return null;
+    const entries = readdirSync(dir, { withFileTypes: true });
+    return entries
+      .filter(e => e.isFile())
+      .map(e => {
+        const st = statSync(join(dir, e.name));
+        return { name: e.name, size: st.size, mtime: st.mtime.toISOString() };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Read a file from a session's output directory. Returns null if not found or path escapes. */
+  readOutputFile(sessionId: string, filename: string): string | null {
+    const dir = this.getOutputDir(sessionId);
+    if (!dir || !existsSync(dir)) return null;
+    const filePath = pathResolve(dir, filename);
+    // Prevent path traversal: check resolved path is under dir
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) return null;
+    // Resolve symlinks and verify real path is still under the output directory
+    try {
+      const realDir = realpathSync(dir);
+      const realFile = realpathSync(filePath);
+      const normalizedDir = realDir.endsWith('/') ? realDir : `${realDir}/`;
+      if (realFile !== realDir && !realFile.startsWith(normalizedDir)) return null;
+    } catch {
+      return null;
+    }
+    return readFileSync(filePath, 'utf-8');
+  }
+
+  /**
+   * Sweep old tboard-output-* directories from tmpdir.
+   * Removes directories older than 3 days.
+   */
+  sweepOldOutputDirs(): void {
+    try {
+      const tmp = tmpdir();
+      const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+      const entries = readdirSync(tmp, { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory() || !e.name.startsWith('tboard-output-')) continue;
+        const dirPath = join(tmp, e.name);
+        try {
+          const st = statSync(dirPath);
+          if (st.mtime.getTime() < cutoff) {
+            rmSync(dirPath, { recursive: true, force: true });
+          }
+        } catch {}
+      }
+    } catch (err) {
+      console.error('Output dir sweep error:', err);
     }
   }
 }

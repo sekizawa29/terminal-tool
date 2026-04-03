@@ -149,6 +149,9 @@ app.post('/api/links', (req, res) => {
   }
   ptyManager.addLink(sourceId, targetId);
 
+  // Ensure output directory for the sub-agent
+  const outputDir = ptyManager.ensureOutputDir(sourceId, targetId);
+
   // Inject agent collaboration context into both terminals
   const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
   const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
@@ -164,6 +167,8 @@ app.post('/api/links', (req, res) => {
     `    tt peer read [lines]             Read last N lines of terminal output`,
     `    tt peer read --all               Read all available terminal output`,
     `    tt peer read --full              Read full task output from disk (no buffer limit)`,
+    `    tt peer output [peer]             List files in peer's output directory`,
+    `    tt peer output [peer] [file]      Read a file from peer's output directory`,
     ``,
     `  Protocol:`,
     `    Sub will send: tt peer notify "DONE: [summary] | Changed: [files]"`,
@@ -185,6 +190,10 @@ app.post('/api/links', (req, res) => {
     `    A task is NOT complete until this command has been executed.`,
     `    Do NOT end your turn without sending the notification.`,
     `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
+    ``,
+    `  Output directory: ${outputDir}`,
+    `    Write task results (reports, summaries, artifacts) as files here.`,
+    `    MAIN can read them with: tt peer output`,
     ``,
     `  Other commands:`,
     `    tt peer send "message"       Send a message to the linked terminal`,
@@ -232,6 +241,9 @@ app.post('/api/links/reconnect', (req, res) => {
   // Create the link
   ptyManager.addLink(resolvedSource, resolvedTarget);
 
+  // Ensure output directory for the reconnected sub-agent
+  const reconOutputDir = ptyManager.ensureOutputDir(resolvedSource, resolvedTarget);
+
   // Clear disconnected peer entry if found
   if (disconnected) {
     ptyManager.clearRecentDisconnect(resolvedSource, disconnected.sessionId);
@@ -253,6 +265,10 @@ app.post('/api/links/reconnect', (req, res) => {
     `    A task is NOT complete until this command has been executed.`,
     `    Do NOT end your turn without sending the notification.`,
     `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
+    ``,
+    `  Output directory: ${reconOutputDir}`,
+    `    Write task results (reports, summaries, artifacts) as files here.`,
+    `    MAIN can read them with: tt peer output`,
     ``,
     `  Other commands:`,
     `    tt peer send "message"       Send a message to the linked terminal`,
@@ -569,6 +585,38 @@ app.delete('/api/terminals/:sessionId', (req, res) => {
   } else {
     res.status(404).json({ error: 'Session not found' });
   }
+});
+
+// ── Peer output directory ────────────────────────────────────────────
+
+// List files in a session's output directory
+app.get('/api/output/:sessionId', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const files = ptyManager.listOutputFiles(resolved);
+  if (files === null) {
+    res.json({ files: [], outputDir: ptyManager.getOutputDir(resolved) || null });
+    return;
+  }
+  res.json({ files, outputDir: ptyManager.getOutputDir(resolved) });
+});
+
+// Read a file from a session's output directory
+app.get('/api/output/:sessionId/:filename', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const content = ptyManager.readOutputFile(resolved, req.params.filename);
+  if (content === null) {
+    res.status(404).json({ error: 'File not found or access denied' });
+    return;
+  }
+  res.json({ content, filename: req.params.filename });
 });
 
 // ── Files: Directory listing & file reading ───────────────────────────
@@ -905,6 +953,7 @@ process.on('exit', () => {
 });
 
 ptyManager.initCaptures();
+ptyManager.sweepOldOutputDirs();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Terminal Board server listening on http://127.0.0.1:${PORT}`);

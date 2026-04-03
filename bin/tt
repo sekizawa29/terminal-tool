@@ -819,6 +819,50 @@ async function showNotifications(...args) {
   }
 }
 
+async function showPeerOutput(target, filename) {
+  if (!target) {
+    console.error('Usage: tt peer output [peer] [filename]');
+    process.exit(1);
+  }
+
+  const enc = encodeURIComponent(target);
+
+  if (filename) {
+    // Read specific file
+    const res = await ttFetch(`${BASE}/api/output/${enc}/${encodeURIComponent(filename)}`);
+    const result = await res.json();
+    if (result.error) {
+      console.error(`Error: ${result.error}`);
+      process.exit(1);
+    }
+    process.stdout.write(result.content);
+    if (result.content && !result.content.endsWith('\n')) process.stdout.write('\n');
+    return;
+  }
+
+  // List files
+  const res = await ttFetch(`${BASE}/api/output/${enc}`);
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+
+  const files = result.files || [];
+  if (files.length === 0) {
+    console.log(`No output files.${result.outputDir ? ` (dir: ${result.outputDir})` : ''}`);
+    return;
+  }
+
+  console.log(pad('FILE', 30) + pad('SIZE', 10) + 'MODIFIED');
+  console.log('-'.repeat(60));
+  for (const f of files) {
+    const size = f.size < 1024 ? `${f.size}B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)}K` : `${(f.size / 1048576).toFixed(1)}M`;
+    const date = new Date(f.mtime).toLocaleString();
+    console.log(pad(f.name, 30) + pad(size, 10) + date);
+  }
+}
+
 async function listPeers() {
   if (!SELF) {
     console.error('Not running inside a terminal-board session.');
@@ -901,11 +945,15 @@ async function peerCommand(args) {
       const { target } = resolvePeerTarget(peers, args.slice(1));
       return showPeerStatus(target);
     }
+    case 'output': {
+      const { target, rest } = resolvePeerTarget(peers, args.slice(1));
+      return showPeerOutput(target, rest[0]);
+    }
     case 'tasks':
       return showTasks(SELF);
     default:
       console.error(`Unknown peer subcommand: ${subCmd}`);
-      console.error('Available: send, notify, status, tasks, read, last, history');
+      console.error('Available: send, notify, status, tasks, read, last, history, output');
       process.exit(1);
   }
 }
