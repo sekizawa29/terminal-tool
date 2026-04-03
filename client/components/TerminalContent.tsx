@@ -101,6 +101,28 @@ export default function TerminalContent({
 
     term.open(container);
 
+    // Handle OSC 52 — terminal apps (e.g. Claude Code) use this to write to
+    // the system clipboard.  Format: \x1b]52;Pc;Pd\x07
+    // Pc = selection target (ignored), Pd = base64-encoded text or "?" (query)
+    // When OSC 52 fires, set a flag so the next right-click is treated as
+    // "copy done" (skip paste) to match the select → right-click → copy flow.
+    let osc52Pending = false;
+    term.parser.registerOscHandler(52, (data: string) => {
+      const idx = data.indexOf(';');
+      if (idx === -1) return true;
+      const payload = data.slice(idx + 1);
+      if (payload === '?') return true;
+      try {
+        const bin = atob(payload);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const text = new TextDecoder().decode(bytes);
+        navigator.clipboard.writeText(text).catch(() => {});
+        osc52Pending = true;
+      } catch { /* invalid base64 */ }
+      return true;
+    });
+
     // Fix mouse coordinate offset caused by CSS transform: scale() on ancestor.
     // xterm.js computes cell width via OffscreenCanvas (unscaled), but mouse
     // coordinates from getBoundingClientRect are in screen space (scaled).
@@ -137,13 +159,19 @@ export default function TerminalContent({
     // Re-measure after fonts load to ensure correct character dimensions
     document.fonts.ready.then(() => doFit());
 
-    // Right-click: copy selection if any, otherwise paste
+    // Right-click: copy selection if any, otherwise paste.
+    // OSC 52 already copies to clipboard, so the first right-click after
+    // an OSC 52 write is treated as "copy" (no paste). Next right-click pastes.
     const onContextMenu = (e: Event) => {
       e.preventDefault();
       const sel = term.getSelection();
       if (sel) {
         navigator.clipboard.writeText(sel).catch(() => {});
         term.clearSelection();
+        osc52Pending = false;
+      } else if (osc52Pending) {
+        // OSC 52 already copied — consume the flag, don't paste
+        osc52Pending = false;
       } else {
         navigator.clipboard.readText().then((text) => {
           sendPaste(text);
