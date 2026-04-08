@@ -45,14 +45,23 @@ function socketFetch(path, options = {}) {
   });
 }
 
-// Unified fetch: use Unix socket if available, otherwise HTTP
-function ttFetch(urlOrPath, options = {}) {
-  if (SOCKET_PATH) {
-    // Extract pathname from full URL or use as-is
+// Unified fetch: try Unix socket first, fall back to HTTP on connection error
+// (e.g. PowerShell on Windows cannot access WSL Unix sockets)
+let socketFailed = false;
+async function ttFetch(urlOrPath, options = {}) {
+  if (SOCKET_PATH && !socketFailed) {
     const path = urlOrPath.startsWith('http') ? new URL(urlOrPath).pathname + (new URL(urlOrPath).search || '') : urlOrPath;
-    return socketFetch(path, options);
+    try {
+      return await socketFetch(path, options);
+    } catch (err) {
+      // Socket unreachable (EPERM, ENOENT, ECONNREFUSED) — fall back to HTTP
+      socketFailed = true;
+    }
   }
-  return fetch(urlOrPath, options);
+  // HTTP fallback: ensure BASE is set
+  if (!BASE) await detectBase();
+  const url = urlOrPath.startsWith('http') ? urlOrPath : `${BASE}${urlOrPath}`;
+  return fetch(url, options);
 }
 
 // Auto-detect server URL if not set (scan common ports)
