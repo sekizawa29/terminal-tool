@@ -204,7 +204,7 @@ async function sendCommand(args) {
     ? `${BASE}/api/terminals/${encodeURIComponent(target)}/write`
     : `${BASE}/api/ipc/send`;
   const body = noNewline
-    ? JSON.stringify({ data: command })
+    ? JSON.stringify({ data: command, sourceSessionId: SELF || undefined })
     : JSON.stringify({ target, message: command, sourceSessionId: SELF || undefined });
 
   const res = await ttFetch(url, {
@@ -310,6 +310,8 @@ async function readOutput(target, ...extraArgs) {
         }
         if (result.status === 'pending') {
           process.stderr.write('(task still in progress -- capture may be incomplete)\n');
+        } else if (result.status === 'draining') {
+          process.stderr.write('(task completed but capture is still recording final output)\n');
         }
         return;
       }
@@ -996,14 +998,14 @@ function resolvePeerTarget(peers, args) {
     );
     if (match) {
       const idx = args.indexOf(firstPeerArg);
-      return { target: match.name || match.shortId, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
+      // Use full sessionId to avoid name collisions in resolveSession
+      return { target: match.sessionId, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
     }
   }
 
   if (activePeers.length === 1) {
-    // Single active peer — use it, all args are the command/message
-    const target = activePeers[0].name || activePeers[0].shortId;
-    return { target, rest: args };
+    // Single active peer — use full sessionId to avoid name collisions
+    return { target: activePeers[0].sessionId, rest: args };
   }
 
   if (activePeers.length === 0) {

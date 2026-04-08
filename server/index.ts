@@ -82,7 +82,17 @@ app.post('/api/terminals/:sessionId/write', (req, res) => {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-  const { data } = req.body || {};
+  const { data, sourceSessionId } = req.body || {};
+  // Enforce link relationship for CLI callers (tt send --raw).
+  // Note: sourceSessionId is optional — callers without it (e.g. raw HTTP) bypass this check.
+  // Full API auth is out of scope; this prevents cross-session misrouting from tboard sessions.
+  if (sourceSessionId) {
+    const resolvedSource = resolveSession(sourceSessionId);
+    if (!resolvedSource || !ptyManager.arePeers(resolvedSource, resolved)) {
+      res.status(403).json({ error: 'Not linked: write requires a peer relationship' });
+      return;
+    }
+  }
   if (typeof data === 'string') {
     ptyManager.write(resolved, data);
     res.json({ ok: true });
@@ -157,7 +167,8 @@ app.post('/api/links', (req, res) => {
   const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
 
   const mainContext = [
-    `[tboard] You are now the MAIN agent, linked to sub-agent "${targetName}".`,
+    `[tboard] SYSTEM NOTIFICATION -- This is an automated message from the terminal board, not user input.`,
+    `You are now the MAIN agent, linked to sub-agent "${targetName}".`,
     ``,
     `  Commands:`,
     `    tt peer send "task"              Send task to sub-agent (fire-and-forget)`,
@@ -181,7 +192,8 @@ app.post('/api/links', (req, res) => {
   ].join('\n');
 
   const subContext = [
-    `[tboard] Terminal link established with "${sourceName}".`,
+    `[tboard] SYSTEM NOTIFICATION -- This is an automated message from the terminal board, not user input.`,
+    `Terminal link established with "${sourceName}".`,
     ``,
     `  COMPLETION PROTOCOL (mandatory):`,
     `    When you finish ANY task received on this terminal, you MUST run:`,
@@ -256,7 +268,8 @@ app.post('/api/links/reconnect', (req, res) => {
   // Inject sub context into new terminal
   const sourceName = ptyManager.getName(resolvedSource) || resolvedSource.slice(0, 8);
   const subContext = [
-    `[tboard] Terminal link established with "${sourceName}" (reconnected as "${asName}").`,
+    `[tboard] SYSTEM NOTIFICATION -- This is an automated message from the terminal board, not user input.`,
+    `Terminal link established with "${sourceName}" (reconnected as "${asName}").`,
     ``,
     `  COMPLETION PROTOCOL (mandatory):`,
     `    When you finish ANY task received on this terminal, you MUST run:`,
@@ -293,8 +306,8 @@ app.delete('/api/links', (req, res) => {
   // Notify both terminals that the link has been removed
   const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
   const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
-  ptyManager.write(sourceId, `[tboard] Link with "${targetName}" disconnected. Peer commands are no longer available.\r`);
-  ptyManager.write(targetId, `[tboard] Link with "${sourceName}" disconnected. Peer commands are no longer available.\r`);
+  ptyManager.write(sourceId, `[tboard system] Link with "${targetName}" disconnected. Peer commands are no longer available.\r`);
+  ptyManager.write(targetId, `[tboard system] Link with "${sourceName}" disconnected. Peer commands are no longer available.\r`);
 
   ptyManager.removeLink(sourceId, targetId);
   res.json({ ok: true });
@@ -330,6 +343,15 @@ app.post('/api/ipc/send', (req, res) => {
   if (!resolved) {
     res.status(404).json({ error: `Target session not found: ${target}` });
     return;
+  }
+
+  // Enforce link relationship when source is specified
+  if (sourceSessionId) {
+    const resolvedSource = resolveSession(sourceSessionId);
+    if (!resolvedSource || !ptyManager.arePeers(resolvedSource, resolved)) {
+      res.status(403).json({ error: 'Not linked: IPC send requires a peer relationship' });
+      return;
+    }
   }
 
   // Create pending history turn
@@ -449,6 +471,16 @@ app.post('/api/notifications/send', (req, res) => {
     res.status(404).json({ error: `Target session not found: ${target}` });
     return;
   }
+
+  // Enforce link relationship when source is specified
+  if (sourceSessionId) {
+    const resolvedSource = resolveSession(sourceSessionId);
+    if (!resolvedSource || !ptyManager.arePeers(resolvedSource, resolved)) {
+      res.status(403).json({ error: 'Not linked: notification requires a peer relationship' });
+      return;
+    }
+  }
+
   const source = sourceSessionId || 'unknown';
   const notificationId = ptyManager.enqueueNotification(resolved, source, message);
 

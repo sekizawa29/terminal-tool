@@ -226,6 +226,10 @@ const CAPTURE_MAX_TOTAL_BYTES = 1024 * 1024 * 1024; // 1GB total
 const CAPTURE_TTL_MS = 24 * 60 * 60 * 1000;         // 24h
 const CAPTURE_COMPRESS_DELAY_MS = 5 * 60 * 1000;    // 5min after completion
 
+// Capture drain settings — how long to keep recording after task completion
+const CAPTURE_DRAIN_QUIET_MS = 5000;   // close after 5s of no PTY output
+const CAPTURE_DRAIN_MAX_MS = 30000;    // hard max 30s after DONE
+
 interface CaptureHandle {
   taskId: string;
   targetSessionId: string;
@@ -233,7 +237,7 @@ interface CaptureHandle {
   filePath: string;
   bytesWritten: number;
   startedAt: number;
-  status: 'active' | 'closed' | 'interrupted';
+  status: 'active' | 'closed' | 'interrupted' | 'draining';
   truncated: boolean;
 }
 
@@ -270,6 +274,8 @@ export class PtyManager {
   private activeCaptures = new Map<string, CaptureHandle[]>(); // targetSessionId → active captures
   private captureDir = CAPTURE_DIR;
   private compressTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private drainQuietTimers = new Map<string, ReturnType<typeof setTimeout>>(); // taskId → quiet timer
+  private drainMaxTimers = new Map<string, ReturnType<typeof setTimeout>>();   // taskId → max timer
   private serverPort: number;
   private binDir: string;
   private socketPath: string;
@@ -558,6 +564,7 @@ export class PtyManager {
   }
 
   killAll(): void {
+    this.clearAllDrainTimers();
     for (const timer of this.compressTimers.values()) {
       clearTimeout(timer);
     }
@@ -1321,8 +1328,8 @@ export class PtyManager {
     // Inject a single summary line (safe, fixed format — no raw user content)
     const count = queued.length;
     let summary = count === 1
-      ? `[tboard] 1 notification from "${queued[0].sourceName}". Run: tt notifications`
-      : `[tboard] ${count} notifications pending. Run: tt notifications`;
+      ? `[tboard system] 1 notification from "${queued[0].sourceName}". Run: tt notifications`
+      : `[tboard system] ${count} notifications pending. Run: tt notifications`;
 
     // Append task summary if this session has delegated tasks
     const taskSummary = this.getTaskSummary(sessionId);
@@ -1453,12 +1460,19 @@ export class PtyManager {
     return taskId;
   }
 
-  /** Complete the oldest pending task from a specific SUB. Returns true if matched. */
+  /** Complete the latest pending task from a specific SUB (LIFO — most recent task completes first). */
   completeTask(sourceSessionId: string, targetSessionId: string, result: string): boolean {
     const tasks = this.taskRegistry.get(sourceSessionId);
     if (!tasks) return false;
 
-    const task = tasks.find(t => t.targetSessionId === targetSessionId && t.status === 'pending');
+    // LIFO: find the most recently created pending task for this SUB
+    let task: TaskEntry | undefined;
+    for (let i = tasks.length - 1; i >= 0; i--) {
+      if (tasks[i].targetSessionId === targetSessionId && tasks[i].status === 'pending') {
+        task = tasks[i];
+        break;
+      }
+    }
     if (!task) return false;
 
     let truncatedResult = result;
@@ -1470,8 +1484,8 @@ export class PtyManager {
     task.result = truncatedResult;
     task.completedAt = Date.now();
 
-    // Close disk capture for this task
-    this.stopCapture(task.taskId, task.targetSessionId);
+    // Start draining capture instead of immediate close
+    this.drainCapture(task.taskId, task.targetSessionId);
 
     return true;
   }
@@ -1510,6 +1524,9 @@ export class PtyManager {
 
   /** Start recording PTY output for a task to disk. */
   private startCapture(taskId: string, targetSessionId: string): void {
+    // Close any draining captures for this target first (prevents output mixing)
+    this.closeDrainingCaptures(targetSessionId);
+
     // Enforce total quota before creating a new capture
     this.enforceCaptureQuota();
 
@@ -1557,12 +1574,81 @@ export class PtyManager {
     this.scheduleCompress(taskId, handle.filePath);
   }
 
+  /** Transition capture to draining mode: keep recording until quiet or max timeout. */
+  private drainCapture(taskId: string, targetSessionId: string): void {
+    const captures = this.activeCaptures.get(targetSessionId);
+    if (!captures) return;
+
+    const cap = captures.find(c => c.taskId === taskId);
+    if (!cap || cap.status !== 'active') return;
+
+    cap.status = 'draining';
+
+    // Start quiet timer (closes after CAPTURE_DRAIN_QUIET_MS of no PTY output)
+    this.resetDrainQuietTimer(taskId, targetSessionId);
+
+    // Start max timer (hard limit)
+    const maxTimer = setTimeout(() => {
+      this.drainMaxTimers.delete(taskId);
+      this.finalizeDrain(taskId, targetSessionId);
+    }, CAPTURE_DRAIN_MAX_MS);
+    this.drainMaxTimers.set(taskId, maxTimer);
+  }
+
+  /** Reset the quiet-period timer for a draining capture (called on new PTY output). */
+  private resetDrainQuietTimer(taskId: string, targetSessionId: string): void {
+    const existing = this.drainQuietTimers.get(taskId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.drainQuietTimers.delete(taskId);
+      this.finalizeDrain(taskId, targetSessionId);
+    }, CAPTURE_DRAIN_QUIET_MS);
+    this.drainQuietTimers.set(taskId, timer);
+  }
+
+  /** Finalize a draining capture: close stream and schedule compression. */
+  private finalizeDrain(taskId: string, targetSessionId: string): void {
+    // Clear both timers
+    const qt = this.drainQuietTimers.get(taskId);
+    if (qt) { clearTimeout(qt); this.drainQuietTimers.delete(taskId); }
+    const mt = this.drainMaxTimers.get(taskId);
+    if (mt) { clearTimeout(mt); this.drainMaxTimers.delete(taskId); }
+
+    // Close the capture via stopCapture (handles stream end + compression)
+    this.stopCapture(taskId, targetSessionId);
+  }
+
+  /** Close any draining captures for a target session. Called when a new task starts. */
+  private closeDrainingCaptures(targetSessionId: string): void {
+    const captures = this.activeCaptures.get(targetSessionId);
+    if (!captures) return;
+    const draining = captures.filter(c => c.status === 'draining');
+    for (const cap of draining) {
+      this.finalizeDrain(cap.taskId, cap.targetSessionId);
+    }
+  }
+
+  /** Clean up all drain timers (for shutdown). */
+  private clearAllDrainTimers(): void {
+    for (const [, t] of this.drainQuietTimers) clearTimeout(t);
+    for (const [, t] of this.drainMaxTimers) clearTimeout(t);
+    this.drainQuietTimers.clear();
+    this.drainMaxTimers.clear();
+  }
+
   /** Close all captures for a session (abrupt terminal close). Files remain readable. */
   private interruptCaptures(sessionId: string): void {
     const captures = this.activeCaptures.get(sessionId);
     if (!captures) return;
 
     for (const handle of captures) {
+      // Clean up drain timers if any
+      const qt = this.drainQuietTimers.get(handle.taskId);
+      if (qt) { clearTimeout(qt); this.drainQuietTimers.delete(handle.taskId); }
+      const mt = this.drainMaxTimers.get(handle.taskId);
+      if (mt) { clearTimeout(mt); this.drainMaxTimers.delete(handle.taskId); }
+
       handle.status = 'interrupted';
       handle.stream.end();
     }
@@ -1584,17 +1670,21 @@ export class PtyManager {
     }
   }
 
-  /** Write PTY data to all active captures for a session. Called from onData. */
+  /** Write PTY data to all active/draining captures for a session. Called from onData. */
   private writeToCapturesIfActive(sessionId: string, data: string): void {
     const captures = this.activeCaptures.get(sessionId);
     if (!captures) return;
     for (const cap of captures) {
-      if (cap.status === 'active') {
+      if (cap.status === 'active' || cap.status === 'draining') {
         if (cap.bytesWritten < CAPTURE_MAX_FILE_BYTES) {
           cap.stream.write(data);
           cap.bytesWritten += Buffer.byteLength(data);
         } else if (!cap.truncated) {
           cap.truncated = true;
+        }
+        // Reset quiet timer for draining captures (new output arrived)
+        if (cap.status === 'draining') {
+          this.resetDrainQuietTimer(cap.taskId, cap.targetSessionId);
         }
       }
     }
@@ -1622,10 +1712,16 @@ export class PtyManager {
       const task = tasks.find(t => t.taskId === taskId);
       if (task) { status = task.status; break; }
     }
-    // Check active capture for truncation flag
+    // Check active capture for truncation flag and draining status
     for (const [, captures] of this.activeCaptures) {
       const cap = captures.find(c => c.taskId === taskId);
-      if (cap) { truncated = cap.truncated; break; }
+      if (cap) {
+        truncated = cap.truncated;
+        // Override task registry status if capture is still draining
+        if (cap.status === 'draining') status = 'draining';
+        else if (cap.status === 'active') status = 'pending';
+        break;
+      }
     }
 
     let output = raw.toString('utf-8');
