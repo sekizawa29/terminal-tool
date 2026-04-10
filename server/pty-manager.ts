@@ -1394,16 +1394,22 @@ export class PtyManager {
       return;
     }
 
-    // Inject a single summary line (safe, fixed format — no raw user content)
-    const count = queued.length;
-    let summary = count === 1
-      ? `[tboard system] 1 notification from "${queued[0].sourceName}". Run: tt notifications`
-      : `[tboard system] ${count} notifications pending. Run: tt notifications`;
-
-    // Append task summary if this session has delegated tasks
+    // Build rich notification summary — include actual message content so MAIN
+    // can understand the result without running `tt notifications`
     const taskSummary = this.getTaskSummary(sessionId);
-    if (taskSummary) {
-      summary += ` | ${taskSummary.summary}`;
+    const taskPart = taskSummary ? ` | ${taskSummary.summary}` : '';
+
+    let summary: string;
+    if (queued.length === 1) {
+      // Single notification: show source + message content (truncated)
+      const n = queued[0];
+      const msg = n.message.length > 200 ? n.message.slice(0, 197) + '...' : n.message;
+      summary = `[tboard system] ${n.sourceName}: ${msg}${taskPart}`;
+    } else {
+      // Multiple notifications: show latest message + count
+      const latest = queued[queued.length - 1];
+      const msg = latest.message.length > 150 ? latest.message.slice(0, 147) + '...' : latest.message;
+      summary = `[tboard system] ${queued.length} notifications (latest: ${latest.sourceName}: ${msg})${taskPart}`;
     }
 
     this.pasteAndSubmit(sessionId, summary, { retryNeedle: summary });
