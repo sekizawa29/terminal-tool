@@ -1121,14 +1121,14 @@ With one peer linked, "tt peer" commands auto-target it (no id needed).
 Examples:
   tt ls                              See all terminals
   tt send sub-1 "npm test"           Run npm test in sub-1
-  tt notify sub-1 "DONE: summary"    Send notification to sub-1
+  tt notify sub-1 "DONE: summary | Changed: file.ts | Unresolved: none"
   tt read sub-1 50                   Read last 50 lines (clean)
   tt read sub-1 --wait               Wait for sub-1 to finish processing
   tt notifications sub-1             Check notifications from sub-1
   tt tasks                            See delegated task progress
   tt peers                           See linked peers
   tt peer send "run the tests"       Send to linked peer (single peer)
-  tt peer notify "DONE: summary"     Notify linked peer
+  tt peer notify "DONE: summary | Changed: none | Unresolved: none"
   tt peer read 50                    Read 50 lines from linked peer
   tt peer read --since-send          Read peer output since last task sent
 `);
