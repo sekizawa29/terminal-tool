@@ -412,9 +412,14 @@ app.get('/api/ipc/response/:sessionId', (req, res) => {
     return;
   }
 
-  // Idempotently finalize the turn when processing is done and we have output
-  if (turnId && !result.isProcessing && result.output) {
-    ptyManager.finalizeTurn(resolved, turnId, result.output);
+  // Idempotently finalize the turn when processing is done and we have output,
+  // or when the turn is complete with an empty response (prevents pendingIpcCount leaks)
+  if (turnId) {
+    if (!result.isProcessing && result.output) {
+      ptyManager.finalizeTurn(resolved, turnId, result.output);
+    } else if (ptyManager.isIpcTurnComplete(resolved, turnId)) {
+      ptyManager.finalizeTurn(resolved, turnId, result.output || '');
+    }
   }
 
   const status = ptyManager.getSessionStatus(resolved);
@@ -986,6 +991,7 @@ process.on('exit', () => {
 
 ptyManager.initCaptures();
 ptyManager.sweepOldOutputDirs();
+ptyManager.startStaleTurnSweep();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Terminal Board server listening on http://127.0.0.1:${PORT}`);

@@ -276,6 +276,7 @@ export class PtyManager {
   private compressTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private drainQuietTimers = new Map<string, ReturnType<typeof setTimeout>>(); // taskId → quiet timer
   private drainMaxTimers = new Map<string, ReturnType<typeof setTimeout>>();   // taskId → max timer
+  private staleTurnSweepTimer: ReturnType<typeof setInterval> | null = null;
   private serverPort: number;
   private binDir: string;
   private socketPath: string;
@@ -564,6 +565,7 @@ export class PtyManager {
   }
 
   killAll(): void {
+    this.stopStaleTurnSweep();
     this.clearAllDrainTimers();
     for (const timer of this.compressTimers.values()) {
       clearTimeout(timer);
@@ -1190,6 +1192,24 @@ export class PtyManager {
     return true;
   }
 
+  /** Check if an IPC turn has completed (agent responded and returned to prompt). */
+  isIpcTurnComplete(sessionId: string, turnId: string): boolean {
+    const entries = this.ipcHistory.get(sessionId);
+    if (!entries) return false;
+    const entry = entries.find(e => e.turnId === turnId);
+    if (!entry || entry.status === 'complete') return false;
+
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const hasPrompt = this.hasPromptAtEnd(sessionId);
+    const now = Date.now();
+    const hasRecentOutput = now - session.lastOutputAt < 2000;
+    const hasOutputSinceSend = session.lastOutputAt > entry.startedAt;
+
+    return hasPrompt && !hasRecentOutput && hasOutputSinceSend;
+  }
+
   /** Get IPC history entries for a session. */
   getIpcHistory(sessionId: string): IpcHistoryEntry[] {
     return this.ipcHistory.get(sessionId) || [];
@@ -1215,6 +1235,24 @@ export class PtyManager {
           }
         }
       }
+    }
+  }
+
+  /** Start periodic sweep of stale IPC turns (independent of polling). */
+  startStaleTurnSweep(): void {
+    this.stopStaleTurnSweep();
+    this.staleTurnSweepTimer = setInterval(() => {
+      for (const sessionId of this.ipcHistory.keys()) {
+        this.expireStaleTurns(sessionId);
+      }
+    }, 60_000); // every 60 seconds
+  }
+
+  /** Stop the periodic stale turn sweep. */
+  private stopStaleTurnSweep(): void {
+    if (this.staleTurnSweepTimer) {
+      clearInterval(this.staleTurnSweepTimer);
+      this.staleTurnSweepTimer = null;
     }
   }
 
@@ -1302,6 +1340,44 @@ export class PtyManager {
     return notificationId;
   }
 
+  /** Check if it's safe to auto-inject text into a session's terminal.
+   *  Decoupled from isProcessing/IPC state — uses output activity + prompt visibility. */
+  private canAutoInject(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const now = Date.now();
+
+    // Don't inject during active human typing
+    if (now - session.lastInputAt < 3000) return false;
+
+    // Don't inject while output is actively flowing
+    const hasRecentOutput = now - session.lastOutputAt < 2000;
+    const isSustainedBurst = session.lastOutputAt - session.outputBurstStart > 800;
+    if (hasRecentOutput && isSustainedBurst) return false;
+
+    // Check prompt state (3 cases):
+    // - null: no prompt detected (agent output, or prompt scrolled off)
+    // - '': empty prompt (idle, safe to inject)
+    // - 'text': prompt has text (user typing or agent draft, never inject)
+    const promptText = this.getPromptTextAtEnd(sessionId);
+
+    if (promptText !== null && promptText.length > 0) {
+      // Prompt with text — user or agent is drafting, never inject
+      return false;
+    }
+
+    if (promptText !== null && promptText.length === 0) {
+      // Empty prompt — idle, safe to inject
+      return true;
+    }
+
+    // No prompt detected — fallback: only inject if output has been quiet for 30s+
+    // (conservative: covers tool stalls, branched conversations, non-standard prompts)
+    const outputAge = now - session.lastOutputAt;
+    return session.lastOutputAt > 0 && outputAge > 30_000;
+  }
+
   /** Flush queued notifications to PTY if session is idle. */
   tryFlushNotifications(sessionId: string): void {
     const queue = this.notificationQueues.get(sessionId);
@@ -1313,14 +1389,7 @@ export class PtyManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Only auto-flush if agent is idle AND no recent human input (within 3s)
-    const status = this.getSessionStatus(sessionId);
-    if (status?.isProcessing) {
-      this.scheduleNotificationRetry(sessionId);
-      return;
-    }
-    const now = Date.now();
-    if (now - session.lastInputAt < 3000) {
+    if (!this.canAutoInject(sessionId)) {
       this.scheduleNotificationRetry(sessionId);
       return;
     }
