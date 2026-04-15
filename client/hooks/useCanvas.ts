@@ -54,6 +54,21 @@ export function useCanvas() {
     });
   }, []);
 
+  const setScale = useCallback((newScale: number, anchorX?: number, anchorY?: number) => {
+    setTransform(t => {
+      const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
+      if (clamped === t.scale) return t;
+      const ax = anchorX ?? window.innerWidth / 2;
+      const ay = anchorY ?? window.innerHeight / 2;
+      const scaleChange = clamped / t.scale;
+      return {
+        offsetX: ax - (ax - t.offsetX) * scaleChange,
+        offsetY: ay - (ay - t.offsetY) * scaleChange,
+        scale: clamped,
+      };
+    });
+  }, []);
+
   const setSpaceDown = useCallback((down: boolean) => {
     spaceDown.current = down;
   }, []);
@@ -111,6 +126,7 @@ export function useCanvas() {
     updatePan,
     endPan,
     zoom,
+    setScale,
     focusOn,
     zoomToFit,
     setSpaceDown,
@@ -118,3 +134,5 @@ export function useCanvas() {
     getIsPanning,
   };
 }
+
+export { MIN_SCALE, MAX_SCALE };

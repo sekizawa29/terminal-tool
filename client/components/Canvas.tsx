@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import TerminalWindow from './TerminalWindow.js';
 import LinkLines from './LinkLines.js';
+import ZoomIndicator from './ZoomIndicator.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import type { CanvasTransform } from '../hooks/useCanvas.js';
 
@@ -10,6 +11,7 @@ interface CanvasProps {
   updatePan: (clientX: number, clientY: number) => void;
   endPan: () => void;
   zoom: (deltaY: number, clientX: number, clientY: number) => void;
+  setScale: (scale: number, anchorX?: number, anchorY?: number) => void;
   getIsSpaceDown: () => boolean;
   getIsPanning: () => boolean;
   setSpaceDown: (down: boolean) => void;
@@ -22,6 +24,7 @@ export default function Canvas({
   updatePan,
   endPan,
   zoom,
+  setScale,
   getIsSpaceDown,
   getIsPanning,
   setSpaceDown,
@@ -192,6 +195,8 @@ export default function Canvas({
             />
           ))}
       </div>
+
+      <ZoomIndicator scale={transform.scale} setScale={setScale} />
     </div>
   );
 }

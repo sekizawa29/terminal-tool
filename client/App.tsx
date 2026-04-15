@@ -572,6 +572,7 @@ export default function App() {
           updatePan={canvas.updatePan}
           endPan={canvas.endPan}
           zoom={canvas.zoom}
+          setScale={canvas.setScale}
           getIsSpaceDown={canvas.getIsSpaceDown}
           getIsPanning={canvas.getIsPanning}
           setSpaceDown={canvas.setSpaceDown}
