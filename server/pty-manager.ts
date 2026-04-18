@@ -38,8 +38,15 @@ function normalizeInlineWhitespace(str: string): string {
 
 /**
  * Strip agent TUI chrome from rendered terminal text.
- * With @xterm/headless handling animation rendering correctly,
- * this only needs to remove static TUI elements (prompts, separators, status lines).
+ *
+ * BEST-EFFORT / LEGACY: the regex set below is hard-coded to Claude Code's
+ * current TUI (spinner glyphs, "Esc to interrupt" footer, status separators)
+ * and will drift as agents update. Callers that need authoritative task
+ * output should use task-scoped APIs (Phase 1): `tt task report <id>` or
+ * `tt task manifest <id>` instead of the noise-stripped rendered buffer.
+ *
+ * Retained because `tt peer read` / `/api/terminals/:id/rendered` are still
+ * useful for debug peeks and for agents not yet adapted to the task flow.
  */
 function stripAgentNoise(text: string): string {
   const lines = text.split('\n');
@@ -982,8 +989,16 @@ export class PtyManager {
 
   /**
    * Get rendered output since the last IPC send to this terminal.
-   * Searches for the last [ipc:XXXXXXXX] marker on a prompt echo line (❯)
+   * Searches for the last `[ipc:XXXXXXXX]` marker on a prompt echo line (❯)
    * and returns everything after it.
+   *
+   * LEGACY / DEBUG-ONLY: this is the marker-grep path used by
+   * `tt peer read --since-send` when no task exists between the caller and
+   * the target. Phase 2a no longer adds the `[ipc:...]` marker to task-send
+   * paste, so this method only finds markers from `tt ipc` round-trips.
+   * For the normal task flow, callers should prefer
+   * `GET /api/captures/latest/:source/:target` which returns the task-scoped
+   * capture. See bin/tt `--since-send` for the composite behavior.
    */
   getRenderedBufferSinceSend(sessionId: string, clean: boolean = true): string | null {
     const session = this.sessions.get(sessionId);

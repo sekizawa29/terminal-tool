@@ -210,22 +210,53 @@ async function sendCommand(args) {
     command = commandArgs.join(' ');
   }
 
-  // --raw: write directly to PTY without auto-Enter
-  // normal: use IPC endpoint which auto-appends CR
-  const url = noNewline
-    ? `${BASE}/api/terminals/${encodeURIComponent(target)}/write`
-    : `${BASE}/api/ipc/send`;
+  // Routing (Phase 2a):
+  //   --raw → direct terminal write (no newline, no task/IPC framing)
+  //   normal → POST /api/tasks/send (primary task dispatch path; no IPC marker)
+  // Legacy fallback: if the server predates Phase 2a and returns 404 for
+  // /api/tasks/send, retry against /api/ipc/send so a running Phase-0/1 server
+  // still works. `tt ipc` / `tt peer ipc` (legacy round-trip) always uses
+  // /api/ipc/send via ipcSendAndWait() and does NOT register a task.
   const body = noNewline
     ? JSON.stringify({ data: command, sourceSessionId: SELF || undefined })
     : JSON.stringify({ target, message: command, sourceSessionId: SELF || undefined });
 
-  const res = await ttFetch(url, {
+  let url;
+  if (noNewline) {
+    url = `${BASE}/api/terminals/${encodeURIComponent(target)}/write`;
+  } else {
+    url = `${BASE}/api/tasks/send`;
+  }
+
+  let res = await ttFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
   });
 
-  const result = await res.json();
+  // Legacy server fallback (pre-Phase-2a). An old server either 404s on
+  // /api/tasks/send or — more commonly — lets the SPA catch-all answer 200
+  // with index.html. Detect both by reading the body as text and checking
+  // for HTML when JSON.parse fails. This works on both fetch and socketFetch
+  // (which does not expose response headers).
+  let bodyText = await res.text();
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    parsed = null;
+  }
+  const looksLikeHtml = !parsed && bodyText.trimStart().startsWith('<');
+  if (!noNewline && (res.status === 404 || looksLikeHtml)) {
+    res = await ttFetch(`${BASE}/api/ipc/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    bodyText = await res.text();
+    try { parsed = JSON.parse(bodyText); } catch { parsed = null; }
+  }
+  const result = parsed || { error: `Non-JSON response (status=${res.status}): ${bodyText.slice(0, 200)}` };
   if (result.error) {
     console.error(`Error: ${result.error}`);
     process.exit(1);
@@ -267,14 +298,59 @@ async function readOutput(target, ...extraArgs) {
 
   const enc = encodeURIComponent(target);
 
-  // Build query string based on flags
+  // Build query string based on flags.
+  // Note: the `sinceSend=true` rendered-buffer path uses legacy `[ipc:...]`
+  // marker grep plus hard-coded noise stripping (stripAgentNoise). It is
+  // best-effort only and is preserved for compatibility / true debug use.
+  // Phase 2b: when a task exists between SELF and target, `--since-send`
+  // falls through to the task capture below first.
   const buildRenderedUrl = () => {
     if (sinceSend) return `${BASE}/api/terminals/${enc}/rendered?sinceSend=true&clean=true`;
     if (all) return `${BASE}/api/terminals/${enc}/rendered?clean=true`;
     return `${BASE}/api/terminals/${enc}/rendered?lines=${lines}&clean=true`;
   };
 
-  // Mode: wait for completion then read
+  // Try to read the latest task capture between SELF and target. Returns a
+  // discriminated result so callers can distinguish "no task exists here"
+  // (legitimate fallback to legacy rendered-buffer path) from "something
+  // actually broke" (should be surfaced, not silently masked).
+  //
+  // Server returns 404 with a typed `code` field:
+  //   code=no-task          → genuine absence of a task (legitimate fallback)
+  //   code=session-not-found → source or target cannot resolve (real error)
+  //   code=capture-missing   → task exists but capture file is gone (real error)
+  //
+  // Result shape:
+  //   { kind: 'ok', capture }        — authoritative task capture
+  //   { kind: 'no-task' }            — only the no-task 404 code
+  //   { kind: 'no-self' }            — not running inside a tboard session
+  //   { kind: 'error', message }     — everything else; do NOT fall through
+  const tryLatestTaskCapture = async () => {
+    if (!SELF) return { kind: 'no-self' };
+    let res;
+    try {
+      res = await ttFetch(`${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`);
+    } catch (e) {
+      return { kind: 'error', message: (e && e.message) || String(e) };
+    }
+    let body;
+    try { body = await res.json(); } catch { body = null; }
+    if (res.status === 404) {
+      if (body && body.code === 'no-task') return { kind: 'no-task' };
+      const detail = body && (body.error || body.code) ? `${body.code || ''} ${body.error || ''}`.trim() : 'HTTP 404';
+      return { kind: 'error', message: detail };
+    }
+    if (!res.ok) return { kind: 'error', message: `HTTP ${res.status}` };
+    if (!body) return { kind: 'error', message: 'JSON parse failed' };
+    if (body.error) return { kind: 'error', message: body.error };
+    return { kind: 'ok', capture: body };
+  };
+
+  // Mode: wait for completion then read.
+  // Polling uses the rendered buffer's `isProcessing` signal (independent of
+  // task lifecycle). After the poll settles, if the caller asked for a
+  // task-scoped view (--since-send or --full), read the authoritative task
+  // capture instead of leaving the last rendered snapshot as the result.
   if (wait) {
     let settled = 0;
     let lastOutput = '';
@@ -293,46 +369,46 @@ async function readOutput(target, ...extraArgs) {
       }
       await new Promise(r => setTimeout(r, 2000));
     }
-    // If --full is also set, read from disk capture after wait completes
-    if (full) {
-      const captureUrl = `${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`;
-      try {
-        const res = await ttFetch(captureUrl);
-        if (res.ok) {
-          const result = await res.json();
-          lastOutput = result.output || '';
-          if (result.truncated) {
-            process.stderr.write('(capture was truncated at 50MB limit)\n');
-          }
-        }
-      } catch {}
+    // After the agent settles, prefer the task capture when a task exists
+    // and the caller asked for a task-oriented view. Error surfacing is
+    // symmetric across --full and --since-send: any genuine capture read
+    // failure (transport, server-error, missing capture) exits non-zero.
+    // Only `no-task` / `no-self` keeps the rendered snapshot as a
+    // best-effort legacy fallback (matching the non-wait behavior).
+    if (full || sinceSend) {
+      const attempt = await tryLatestTaskCapture();
+      if (attempt.kind === 'ok') {
+        lastOutput = attempt.capture.output || '';
+        if (attempt.capture.truncated) process.stderr.write('(capture was truncated at 50MB limit)\n');
+      } else if (attempt.kind === 'error') {
+        console.error(`Error reading task capture: ${attempt.message}`);
+        process.exit(1);
+      }
     }
     process.stdout.write(lastOutput);
     if (lastOutput && !lastOutput.endsWith('\n')) process.stdout.write('\n');
     return;
   }
 
-  // Mode: full task capture from disk (no buffer limit)
+  // Mode: full task capture from disk (no buffer limit).
+  // Like --since-send, distinguish "no task" (legitimate fallback) from
+  // "capture read failed" (surface the error).
   if (full) {
-    const captureUrl = `${BASE}/api/captures/latest/${encodeURIComponent(SELF)}/${enc}`;
-    try {
-      const res = await ttFetch(captureUrl);
-      if (res.ok) {
-        const result = await res.json();
-        process.stdout.write(result.output || '');
-        if (result.output && !result.output.endsWith('\n')) process.stdout.write('\n');
-        if (result.truncated) {
-          process.stderr.write('(capture was truncated at 50MB limit)\n');
-        }
-        if (result.status === 'pending') {
-          process.stderr.write('(task still in progress -- capture may be incomplete)\n');
-        } else if (result.status === 'draining') {
-          process.stderr.write('(task completed but capture is still recording final output)\n');
-        }
-        return;
-      }
-    } catch {}
-    // Fallback to rendered output
+    const attempt = await tryLatestTaskCapture();
+    if (attempt.kind === 'ok') {
+      const cap = attempt.capture;
+      process.stdout.write(cap.output || '');
+      if (cap.output && !cap.output.endsWith('\n')) process.stdout.write('\n');
+      if (cap.truncated) process.stderr.write('(capture was truncated at 50MB limit)\n');
+      if (cap.status === 'pending') process.stderr.write('(task still in progress -- capture may be incomplete)\n');
+      else if (cap.status === 'draining') process.stderr.write('(task completed but capture is still recording final output)\n');
+      return;
+    }
+    if (attempt.kind === 'error') {
+      console.error(`Error reading task capture: ${attempt.message}`);
+      process.exit(1);
+    }
+    // kind === 'no-task' or 'no-self' → fall back to rendered output.
     process.stderr.write('No capture available, falling back to rendered output.\n');
     const fallbackRes = await ttFetch(buildRenderedUrl());
     const fallbackResult = await fallbackRes.json();
@@ -352,7 +428,34 @@ async function readOutput(target, ...extraArgs) {
     return;
   }
 
-  // Default: rendered output (clean, noise-stripped)
+  // Phase 2b: --since-send prefers the latest task capture over the rendered
+  // buffer marker-grep. Capture is authoritative (no heuristics, no spinner
+  // noise), matches what `tt task report` / `tt task manifest` describe, and
+  // contains everything the SUB produced during the task. Fall back to the
+  // legacy rendered path only when we can prove there is no task to anchor on.
+  // Transient errors surface instead of being masked as stale rendered output.
+  if (sinceSend) {
+    const attempt = await tryLatestTaskCapture();
+    if (attempt.kind === 'ok') {
+      const cap = attempt.capture;
+      process.stdout.write(cap.output || '');
+      if (cap.output && !cap.output.endsWith('\n')) process.stdout.write('\n');
+      if (cap.truncated) process.stderr.write('(capture was truncated at 50MB limit)\n');
+      if (cap.status === 'pending') process.stderr.write('(task still in progress -- capture may be incomplete)\n');
+      else if (cap.status === 'draining') process.stderr.write('(task completed but capture is still recording final output)\n');
+      return;
+    }
+    if (attempt.kind === 'error') {
+      console.error(`Error reading task capture: ${attempt.message}`);
+      process.exit(1);
+    }
+    // kind === 'no-task' or 'no-self' → fall through to rendered-buffer
+    // marker-grep (debug-only path). This is the only legitimate fallback.
+  }
+
+  // Default: rendered output (clean, noise-stripped).
+  // When --since-send reaches here, it is the best-effort legacy path; the
+  // task-based preferred path is above.
   const res = await ttFetch(buildRenderedUrl());
   const result = await res.json();
   if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
@@ -1330,6 +1433,7 @@ Usage:
   tt history <id|name>               Show IPC conversation history
   tt read <id|name> [lines]          Read terminal output (clean)
   tt read <id|name> --since-send     Read output since last sent task
+                                     (prefers task capture when linked; rendered-buffer fallback otherwise)
   tt read <id|name> --all            Read all available output
   tt read <id|name> --full           Read full task output from disk (no buffer limit)
   tt read <id|name> --wait           Wait until agent finishes, then read
@@ -1361,7 +1465,7 @@ Peer commands (linked terminals):
   tt peer notify [id|name] <message> Send notification to peer (non-blocking)
   tt peer tasks                        Show delegated task status
   tt peer read [id|name] [lines]     Read peer's terminal output (clean)
-  tt peer read [id|name] --since-send Read output since last sent task
+  tt peer read [id|name] --since-send Read output since last sent task (task capture preferred)
   tt peer read [id|name] --all       Read all available peer output
   tt peer read [id|name] --full      Read full task output from disk (no buffer limit)
   tt peer read [id|name] --wait      Wait for peer to finish, then read

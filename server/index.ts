@@ -359,9 +359,52 @@ app.get('/api/links', (_req, res) => {
   res.json({ links });
 });
 
-// ── IPC: Agent-to-agent communication ────────────────────────────────
+// ── Task send (Phase 2a) ─────────────────────────────────────────────
+// Primary dispatch path: task_id prefix only, no legacy IPC marker,
+// no pendingTurn/ipcHistory side effects. Use this for every agent-to-agent
+// task hand-off. `/api/ipc/send` below is now kept only for the deprecated
+// `tt ipc` round-trip flow.
+app.post('/api/tasks/send', (req, res) => {
+  const { target, message, sourceSessionId } = req.body || {};
+  if (!target || typeof message !== 'string') {
+    res.status(400).json({ error: 'target and message (string) are required' });
+    return;
+  }
+  const resolved = resolveSession(target);
+  if (!resolved) {
+    res.status(404).json({ error: `Target session not found: ${target}` });
+    return;
+  }
 
-// Send a message to another terminal's PTY (auto-appends CR for Enter)
+  if (sourceSessionId) {
+    const resolvedSource = resolveSession(sourceSessionId);
+    if (!resolvedSource || !ptyManager.arePeers(resolvedSource, resolved)) {
+      res.status(403).json({ error: 'Not linked: task send requires a peer relationship' });
+      return;
+    }
+  }
+
+  let taskId: string | undefined;
+  if (sourceSessionId && ptyManager.isMainToSub(sourceSessionId, resolved)) {
+    taskId = ptyManager.registerTask(sourceSessionId, resolved, message);
+  }
+
+  // Paste carries ONLY the task_id prefix — no `[ipc:xxxx]` marker and no
+  // IPC pending-turn bookkeeping. The SUB closes the task with
+  // `tt task complete <task_id>`, and readers use task-scoped capture / report
+  // rather than echo-grep on the rendered buffer.
+  const taskPrefix = taskId ? `[tboard task_id=${taskId}] ` : '';
+  const paste = `${taskPrefix}${message}`;
+  ptyManager.pasteAndSubmit(resolved, paste, { retryNeedle: paste });
+
+  res.json({ ok: true, sessionId: resolved, message, taskId });
+});
+
+// ── IPC: Agent-to-agent communication (deprecated, kept for `tt ipc`) ─
+// Only `tt ipc` / `tt peer ipc` should hit this endpoint now. It still
+// appends the legacy marker and creates a pending turn so rendered-buffer
+// echo matching works. It does NOT register a task — task dispatch goes
+// through POST /api/tasks/send above.
 app.post('/api/ipc/send', (req, res) => {
   const { target, message, sourceSessionId } = req.body || {};
   if (!target || typeof message !== 'string') {
@@ -374,7 +417,6 @@ app.post('/api/ipc/send', (req, res) => {
     return;
   }
 
-  // Enforce link relationship when source is specified
   if (sourceSessionId) {
     const resolvedSource = resolveSession(sourceSessionId);
     if (!resolvedSource || !ptyManager.arePeers(resolvedSource, resolved)) {
@@ -383,29 +425,14 @@ app.post('/api/ipc/send', (req, res) => {
     }
   }
 
-  // Create pending history turn
+  // Legacy IPC: create pending turn + marker so `/api/ipc/response` can
+  // extract the response via echo-grep. No task registration here.
   const turnId = ptyManager.createPendingTurn(resolved, message, sourceSessionId || undefined);
-
-  // Append marker at end for reliable echo matching (less disruptive to agent)
   const marker = `[ipc:${turnId.slice(0, 8)}]`;
-
-  // Auto-register task only when MAIN sends to its SUB (not reverse direction)
-  let taskId: string | undefined;
-  if (sourceSessionId && ptyManager.isMainToSub(sourceSessionId, resolved)) {
-    taskId = ptyManager.registerTask(sourceSessionId, resolved, message);
-  }
-
-  // Embed task_id as an inline prefix on the SAME line as the marker, so that the
-  // marker-at-end-of-prompt-echo detection (getIpcResponse / getRenderedBufferSinceSend)
-  // still works. The SUB agent reads the prefix from its input buffer and closes the
-  // exact task via `tt task complete <task_id>`.
-  const taskPrefix = taskId ? `[tboard task_id=${taskId}] ` : '';
-  const markedMessage = `${taskPrefix}${message} ${marker}`;
-
-  // Paste first, then submit with a guarded retry if the prompt still holds the draft.
+  const markedMessage = `${message} ${marker}`;
   ptyManager.pasteAndSubmit(resolved, markedMessage, { retryNeedle: markedMessage });
 
-  res.json({ ok: true, sessionId: resolved, message, turnId, marker, taskId });
+  res.json({ ok: true, sessionId: resolved, message, turnId, marker });
 });
 
 // Poll for IPC response — extracts rendered response by matching the sent message's echo
@@ -730,23 +757,27 @@ app.get('/api/tasks/:sessionId', (req, res) => {
 
 // Read full task capture from disk (latest task between MAIN and SUB)
 app.get('/api/captures/latest/:sourceSessionId/:targetSessionId', async (req, res) => {
+  // 404 responses include a typed `code` so clients (notably bin/tt's
+  // `--since-send` / `--full`) can distinguish "no task exists" (legitimate
+  // fallback to rendered buffer) from "session resolution failed" or
+  // "capture file missing" (real errors that must be surfaced).
   const sourceResolved = resolveSession(req.params.sourceSessionId);
   const targetResolved = resolveSession(req.params.targetSessionId);
   if (!sourceResolved || !targetResolved) {
-    res.status(404).json({ error: 'Session not found' });
+    res.status(404).json({ error: 'Session not found', code: 'session-not-found' });
     return;
   }
   const clean = req.query.clean !== 'false';
 
   const task = ptyManager.findLatestTask(sourceResolved, targetResolved);
   if (!task) {
-    res.status(404).json({ error: 'No task found between these sessions' });
+    res.status(404).json({ error: 'No task found between these sessions', code: 'no-task' });
     return;
   }
 
   const result = await ptyManager.readCapture(task.taskId, clean);
   if (!result) {
-    res.status(404).json({ error: 'Capture file not found' });
+    res.status(404).json({ error: 'Capture file not found', code: 'capture-missing' });
     return;
   }
   res.json({ taskId: task.taskId, output: result.output, status: result.status, truncated: result.truncated, command: task.command });
