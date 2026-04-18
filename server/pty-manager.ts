@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 import {
   readFileSync, readlinkSync, writeFileSync,
   createWriteStream, createReadStream,
-  mkdirSync, readdirSync, realpathSync, rmSync, unlinkSync, statSync, existsSync,
+  mkdirSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, statSync, existsSync,
   type WriteStream,
 } from 'fs';
 import { readFile } from 'fs/promises';
@@ -216,6 +216,12 @@ export interface TaskEntry {
   unresolved?: string[];
   createdAt: number;
   completedAt?: number;
+  // Phase 1: absolute path of this task's artifact directory. Frozen at
+  // registerTask time so reads remain stable across session rename / disconnect.
+  outputDir?: string;
+  // Phase 1: surfaces a manifest.json write failure to MAIN tooling so that a
+  // task marked `done` but without a readable manifest is not silently trusted.
+  manifestError?: string;
 }
 
 export interface TaskCompletionFields {
@@ -227,7 +233,6 @@ export interface TaskCompletionFields {
   result?: string;
 }
 
-const TASK_MAX_ENTRIES = 100;
 const TASK_COMMAND_MAX_BYTES = 512;
 const TASK_RESULT_MAX_BYTES = 1024;
 
@@ -1311,16 +1316,49 @@ export class PtyManager {
     }
   }
 
-  /** Remove all IPC history for a session. */
+  /**
+   * Clean up volatile IPC / notification state for a session.
+   *
+   * Task handling (Phase 1): terminal tasks (done / failed) are KEPT so that
+   * `tt task manifest/report` stay addressable via their frozen outputDir even
+   * after disconnect. Pending tasks that targeted this SUB are auto-failed with
+   * a `peer_disconnected` reason so MAIN unblocks rather than waiting forever.
+   */
   private cleanupHistory(sessionId: string): void {
     this.ipcHistory.delete(sessionId);
     this.notificationQueues.delete(sessionId);
     this.notificationReadSeq.delete(sessionId);
-    this.taskRegistry.delete(sessionId);
-    // Also remove tasks targeting this session (it was a SUB)
+
+    // The dying session's OWN taskRegistry slot (as a MAIN) holds tasks it
+    // dispatched. Keep terminal entries so that a later MAIN in the same
+    // process can still resolve the IDs via in-memory lookup.
+    const ownTasks = this.taskRegistry.get(sessionId);
+    if (ownTasks) {
+      // Fail any remaining pending tasks dispatched by this MAIN — its target
+      // SUBs may still be alive, but the MAIN context is gone so the ack will
+      // never arrive. Structured completion keeps their manifest on disk.
+      for (const task of ownTasks) {
+        if (task.status === 'pending') {
+          this.completeTaskById(task.taskId, {
+            status: 'failed',
+            summary: 'MAIN session ended before completion',
+            result: 'MAIN session ended before completion',
+          });
+        }
+      }
+    }
+
+    // Fail any pending tasks that TARGETED this SUB, and leave terminal ones
+    // in place for later reads.
     for (const [, tasks] of this.taskRegistry) {
-      for (let i = tasks.length - 1; i >= 0; i--) {
-        if (tasks[i].targetSessionId === sessionId) tasks.splice(i, 1);
+      for (const task of tasks) {
+        if (task.targetSessionId === sessionId && task.status === 'pending') {
+          this.completeTaskById(task.taskId, {
+            status: 'failed',
+            summary: 'SUB session ended before completion',
+            result: 'SUB session ended before completion',
+          });
+        }
       }
     }
   }
@@ -1546,6 +1584,18 @@ export class PtyManager {
       truncatedCmd = Buffer.from(truncatedCmd, 'utf-8').subarray(0, TASK_COMMAND_MAX_BYTES).toString('utf-8');
     }
 
+    // Compute and freeze the task's output directory at registration time so
+    // subsequent reads are stable across session rename / disconnect. The path
+    // uses the targetName snapshot captured above.
+    const peerRoot = this.getOutputDir(targetSessionId)
+      || this.ensureOutputDir(sourceSessionId, targetSessionId);
+    const frozenOutputDir = join(peerRoot, taskId);
+    try {
+      mkdirSync(frozenOutputDir, { recursive: true });
+    } catch (err) {
+      console.error(`registerTask: failed to create task dir ${frozenOutputDir}:`, err);
+    }
+
     if (!this.taskRegistry.has(sourceSessionId)) {
       this.taskRegistry.set(sourceSessionId, []);
     }
@@ -1558,18 +1608,14 @@ export class PtyManager {
       command: truncatedCmd,
       status: 'pending',
       createdAt: Date.now(),
+      outputDir: frozenOutputDir,
     });
 
-    // Enforce max entries: evict oldest terminal tasks first (done or failed),
-    // then oldest pending as a last resort.
-    while (tasks.length > TASK_MAX_ENTRIES) {
-      const terminalIdx = tasks.findIndex(t => t.status === 'done' || t.status === 'failed');
-      if (terminalIdx >= 0) {
-        tasks.splice(terminalIdx, 1);
-      } else {
-        tasks.shift();
-      }
-    }
+    // Phase 1: never evict pending tasks. A pending task has no manifest on disk
+    // yet (it hasn't completed), so dropping it from the registry makes the
+    // task permanently unsettleable via its task_id. Terminal entries are also
+    // retained so their manifest / report pointer survives session churn.
+    // Memory cost per entry is a few hundred bytes, acceptable for a dev tool.
 
     // Start disk capture for this task
     this.startCapture(taskId, targetSessionId);
@@ -1577,11 +1623,82 @@ export class PtyManager {
     return taskId;
   }
 
-  /** Find a task by its ID across all MAIN registries. Returns null if not found. */
+  /**
+   * Find a task by its ID. Checks the in-memory registry first, then falls back
+   * to scanning the tboard-output tree for a manifest.json whose task_id matches.
+   * This keeps `task_id` a stable lookup key even after disconnect, server
+   * restart, or other events where the registry could drop an entry.
+   *
+   * Results from the filesystem fallback are cached back into `taskRegistry`
+   * under the sourceSessionId from the manifest, so subsequent lookups do not
+   * repeat the scan.
+   */
   findTaskById(taskId: string): TaskEntry | null {
     for (const tasks of this.taskRegistry.values()) {
       const task = tasks.find(t => t.taskId === taskId);
       if (task) return task;
+    }
+    // Filesystem fallback: scan /tmp/tboard-output-<...>/<peer>/<taskId>/manifest.json
+    const root = tmpdir();
+    let rootReal: string;
+    try { rootReal = realpathSync(root); } catch { return null; }
+
+    try {
+      const rootEntries = readdirSync(root, { withFileTypes: true });
+      for (const e of rootEntries) {
+        if (!e.isDirectory() || !e.name.startsWith('tboard-output-')) continue;
+        const mainDir = join(root, e.name);
+        let peerEntries: import('fs').Dirent[];
+        try { peerEntries = readdirSync(mainDir, { withFileTypes: true }); } catch { continue; }
+        for (const p of peerEntries) {
+          if (!p.isDirectory()) continue;
+          const taskDir = join(mainDir, p.name, taskId);
+          const manifestPath = join(taskDir, 'manifest.json');
+          if (!existsSync(manifestPath)) continue;
+
+          // Realpath containment: the resolved manifest must still live under the
+          // expected tboard-output root. Rejects symlink escape.
+          try {
+            const manifestReal = realpathSync(manifestPath);
+            const normalizedRoot = rootReal.endsWith('/') ? rootReal : `${rootReal}/`;
+            if (!manifestReal.startsWith(normalizedRoot)) continue;
+          } catch { continue; }
+
+          try {
+            const raw = readFileSync(manifestPath, 'utf-8');
+            const m = JSON.parse(raw) as Record<string, unknown>;
+            if (m.task_id !== taskId) continue;
+            const hydrated: TaskEntry = {
+              taskId,
+              sourceSessionId: String(m.source_session_id || ''),
+              targetSessionId: String(m.target_session_id || ''),
+              targetName: String(m.target_name || p.name),
+              command: String(m.command || ''),
+              status: (m.status === 'failed' || m.status === 'pending') ? m.status : 'done',
+              result: m.result ? String(m.result) : undefined,
+              summary: m.summary ? String(m.summary) : undefined,
+              reportFile: m.report_file ? String(m.report_file) : undefined,
+              changed: Array.isArray(m.changed) ? m.changed.map(String) : undefined,
+              unresolved: Array.isArray(m.unresolved) ? m.unresolved.map(String) : undefined,
+              createdAt: m.created_at ? Date.parse(String(m.created_at)) : 0,
+              completedAt: m.completed_at ? Date.parse(String(m.completed_at)) : undefined,
+              outputDir: taskDir,
+            };
+
+            // Cache the rehydrated entry so subsequent lookups are O(1).
+            const bucketKey = hydrated.sourceSessionId || '__orphan__';
+            if (!this.taskRegistry.has(bucketKey)) this.taskRegistry.set(bucketKey, []);
+            const bucket = this.taskRegistry.get(bucketKey)!;
+            if (!bucket.some(t => t.taskId === taskId)) bucket.push(hydrated);
+
+            return hydrated;
+          } catch {
+            // Skip manifests that can't be parsed; keep scanning.
+          }
+        }
+      }
+    } catch {
+      // tmpdir scan failed — treat as not found.
     }
     return null;
   }
@@ -1629,6 +1746,19 @@ export class PtyManager {
 
     // Start draining capture instead of immediate close
     this.drainCapture(task.taskId, task.targetSessionId);
+
+    // Write manifest.json atomically (.tmp → rename) so MAIN readers never see
+    // a half-written file. If the write fails, record the error on the task so
+    // `tt task show` surfaces it — callers must not silently trust "done" when
+    // the manifest artifact is missing.
+    try {
+      this.writeTaskManifest(task.taskId);
+      task.manifestError = undefined;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`writeTaskManifest failed for ${task.taskId}:`, err);
+      task.manifestError = msg;
+    }
 
     return { ok: true, task };
   }
@@ -2003,12 +2133,134 @@ export class PtyManager {
     }
   }
 
-  // ── Peer output directory ──────────────────────────────────────────
+  // ── Task output directory (Phase 1: task-scoped artifacts) ─────────
+
+  /**
+   * Return the task's output directory. Uses the frozen `outputDir` snapshot
+   * from registerTask (stable across session rename / disconnect). Falls back
+   * to deriving from current session state only for pre-Phase-1 tasks that
+   * lack the snapshot (defensive).
+   */
+  getTaskOutputDir(taskId: string): string | null {
+    const task = this.findTaskById(taskId);
+    if (!task) return null;
+    if (task.outputDir) return task.outputDir;
+    const peerRoot = this.getOutputDir(task.targetSessionId);
+    if (!peerRoot) return null;
+    return join(peerRoot, taskId);
+  }
+
+  /** Ensure the task output dir exists. Returns the path (or null if task unknown). */
+  ensureTaskOutputDir(taskId: string): string | null {
+    const dir = this.getTaskOutputDir(taskId);
+    if (!dir) return null;
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /**
+   * Write the task manifest atomically (.tmp → rename) after completion.
+   * The manifest is the Phase 1 source of truth that a task is done and
+   * points at its report file.
+   */
+  writeTaskManifest(taskId: string): string | null {
+    const task = this.findTaskById(taskId);
+    if (!task) return null;
+    const dir = this.ensureTaskOutputDir(taskId);
+    if (!dir) return null;
+
+    const manifest = {
+      protocol_version: 1,
+      task_id: task.taskId,
+      source_session_id: task.sourceSessionId,
+      target_session_id: task.targetSessionId,
+      target_name: task.targetName,
+      command: task.command,
+      status: task.status,
+      summary: task.summary || null,
+      report_file: task.reportFile || null,
+      changed: task.changed || [],
+      unresolved: task.unresolved || [],
+      result: task.result || null,
+      created_at: new Date(task.createdAt).toISOString(),
+      completed_at: task.completedAt ? new Date(task.completedAt).toISOString() : null,
+    };
+
+    const manifestPath = join(dir, 'manifest.json');
+    const tmpPath = `${manifestPath}.tmp`;
+    const body = JSON.stringify(manifest, null, 2);
+    writeFileSync(tmpPath, body, 'utf-8');
+    renameSync(tmpPath, manifestPath);
+    return manifestPath;
+  }
+
+  /**
+   * Read the raw manifest.json for a task, or null if missing.
+   * Applies the same realpath containment check as `readTaskReport` so that a
+   * symlinked task directory cannot escape the expected output tree.
+   */
+  readTaskManifest(taskId: string): string | null {
+    const dir = this.getTaskOutputDir(taskId);
+    if (!dir) return null;
+    const manifestPath = join(dir, 'manifest.json');
+    if (!existsSync(manifestPath)) return null;
+    try {
+      const realDir = realpathSync(dir);
+      const realFile = realpathSync(manifestPath);
+      const normalizedDir = realDir.endsWith('/') ? realDir : `${realDir}/`;
+      if (realFile !== realDir && !realFile.startsWith(normalizedDir)) return null;
+    } catch {
+      return null;
+    }
+    return readFileSync(manifestPath, 'utf-8');
+  }
+
+  /**
+   * Read the task's report file (as declared in manifest.report_file, or the explicit
+   * `--report <name>` passed to `tt task complete`). Path traversal is blocked.
+   */
+  readTaskReport(taskId: string): string | null {
+    const task = this.findTaskById(taskId);
+    if (!task) return null;
+    const dir = this.getTaskOutputDir(taskId);
+    if (!dir || !task.reportFile) return null;
+    const resolved = pathResolve(dir, task.reportFile);
+    try {
+      const realDir = realpathSync(dir);
+      const realFile = realpathSync(resolved);
+      const normalized = realDir.endsWith('/') ? realDir : `${realDir}/`;
+      if (realFile !== realDir && !realFile.startsWith(normalized)) return null;
+    } catch {
+      return null;
+    }
+    if (!existsSync(resolved) || !statSync(resolved).isFile()) return null;
+    return readFileSync(resolved, 'utf-8');
+  }
+
+  /** List files in the task-scoped output directory. */
+  listTaskOutputFiles(taskId: string): { name: string; size: number; mtime: string }[] | null {
+    const dir = this.getTaskOutputDir(taskId);
+    if (!dir || !existsSync(dir)) return null;
+    const entries = readdirSync(dir, { withFileTypes: true });
+    return entries
+      .filter(e => e.isFile())
+      .map(e => {
+        const st = statSync(join(dir, e.name));
+        return { name: e.name, size: st.size, mtime: st.mtime.toISOString() };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // ── Peer output directory (legacy, pre-Phase 1) ─────────────────────
 
   /**
    * Ensure an output directory exists for a peer session.
    * Path: <tmpdir>/tboard-output-<mainSessionId先頭12文字>/<peerName>/
    * Falls back to shortId if peer name is not yet set.
+   *
+   * This is the "peer root" used as a parent for task-scoped dirs (Phase 1).
+   * Legacy callers also read/write files directly under it; those APIs are
+   * still exposed but are being demoted in favour of `tt task report/manifest`.
    */
   ensureOutputDir(mainSessionId: string, peerSessionId: string): string {
     const peerName = this.getName(peerSessionId) || peerSessionId.slice(0, 8);

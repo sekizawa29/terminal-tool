@@ -175,19 +175,21 @@ app.post('/api/links', (req, res) => {
     `    tt tasks                         Check delegated task status (shows task_id)`,
     `    tt task show <task_id>           Show one task's structured detail`,
     ``,
-    `  Read results:`,
-    `    tt peer output [peer]             List files in peer's output directory`,
-    `    tt peer output [peer] [file]      Read a file from peer's output directory`,
-    `    tt peer read --full               Read full task output from disk (no buffer limit)`,
+    `  Read results (task-scoped, preferred):`,
+    `    tt task report <task_id>          Read the report file SUB wrote for this task`,
+    `    tt task manifest <task_id>        Read the structured manifest.json for this task`,
+    `    tt task files <task_id>           List files in the task's output directory`,
+    ``,
+    `  Read results (debug / legacy):`,
     `    tt peer read --since-send         Read terminal output since last sent task`,
+    `    tt peer read --full               Read full task output from disk (no buffer limit)`,
+    `    tt peer output [peer]             List files in peer's output directory (pre-Phase-1)`,
     ``,
     `  Protocol:`,
     `    Each peer send returns a task_id; SUB closes it via \`tt task complete <task_id>\`.`,
     `    Completion is recorded server-side regardless of notification delivery.`,
-    `    UI notifications still arrive as:`,
-    `      [tboard system] sub-1: DONE: [summary] | Changed: [files] | Tasks: N/M done`,
-    `    If a notification mentions "Report: <file>", read it via tt peer output [peer] <file>.`,
-    `    Source of truth: tt tasks / tt task show — not terminal buffer or notifications.`,
+    `    On completion, the server writes an atomic manifest.json under the task output dir.`,
+    `    Source of truth: tt task manifest / tt task report — not terminal buffer or UI notifications.`,
     ``
   ].join('\n');
 
@@ -205,11 +207,18 @@ app.post('/api/links', (req, res) => {
     `    If you did not capture the task_id, recover it with: tt task current`,
     ``,
     `  REPORTING (for substantial tasks — implementation, review, analysis, bug fix):`,
-    `    Write a report to the output directory: ${outputDir}`,
-    `      Implementation/bug fix → result.md  (Summary, Changed Files, Key Decisions, Build Status, Open Issues)`,
-    `      Code review            → review.md  (Verdict: PASS/FAIL, Critical items, Warnings)`,
-    `    Pass --report <filename> to tt task complete so MAIN can open it directly.`,
+    `    Each task gets its OWN output directory. Obtain the path with:`,
+    `      tt task dir <task_id>           Prints the absolute path to this task's output dir`,
+    `    Write your report file inside that directory:`,
+    `      Implementation/bug fix → report.md (Summary, Changed Files, Key Decisions, Build Status, Open Issues)`,
+    `      Code review            → review.md (Verdict: PASS/FAIL, Critical items, Warnings)`,
+    `    Pass --report <filename> (BARE filename, NOT a path) to tt task complete:`,
+    `      tt task complete <id> --summary "..." --report report.md --changed "f1,f2" --unresolved none`,
+    `    The server resolves <filename> under the task dir. MAIN reads it via \`tt task report <id>\`.`,
     `    Skip reports for simple tasks (confirmations, single-file fixes, questions).`,
+    ``,
+    `    Legacy peer-scoped dir (${outputDir}) still exists for debug/backwards-compat,`,
+    `    but do NOT write reports there — reports for completed tasks belong in the task dir.`,
     ``,
     `  UI notifications (informational — do NOT close tasks):`,
     `    tt peer notify "<message>"     Delivers a UI bubble to MAIN. Does not change task state.`,
@@ -289,11 +298,15 @@ app.post('/api/links/reconnect', (req, res) => {
     `    If you did not capture the task_id, recover it with: tt task current`,
     ``,
     `  REPORTING (for substantial tasks — implementation, review, analysis, bug fix):`,
-    `    Write a report to the output directory: ${reconOutputDir}`,
-    `      Implementation/bug fix → result.md  (Summary, Changed Files, Key Decisions, Build Status, Open Issues)`,
-    `      Code review            → review.md  (Verdict: PASS/FAIL, Critical items, Warnings)`,
-    `    Pass --report <filename> to tt task complete so MAIN can open it directly.`,
+    `    Each task gets its OWN output directory. Obtain the path with:`,
+    `      tt task dir <task_id>           Prints the absolute path to this task's output dir`,
+    `    Write your report file inside that directory:`,
+    `      Implementation/bug fix → report.md (Summary, Changed Files, Key Decisions, Build Status, Open Issues)`,
+    `      Code review            → review.md (Verdict: PASS/FAIL, Critical items, Warnings)`,
+    `    Pass --report <filename> (BARE filename) to tt task complete; MAIN reads with \`tt task report <id>\`.`,
     `    Skip reports for simple tasks (confirmations, single-file fixes, questions).`,
+    ``,
+    `    Legacy peer-scoped dir (${reconOutputDir}) still exists but do NOT use it for task reports.`,
     ``,
     `  UI notifications (informational — do NOT close tasks):`,
     `    tt peer notify "<message>"     Delivers a UI bubble to MAIN. Does not change task state.`,
@@ -562,10 +575,22 @@ app.post('/api/tasks/:taskId/complete', (req, res) => {
     return;
   }
 
+  // If reportFile is provided, sanitize: basename only (no paths), reject traversal.
+  // The file is resolved relative to the task output dir by the server, so the client
+  // just passes a bare filename like "report.md".
+  let validatedReport: string | undefined;
+  if (typeof reportFile === 'string' && reportFile.length > 0) {
+    if (reportFile.includes('/') || reportFile.includes('\\') || reportFile.includes('..')) {
+      res.status(400).json({ error: 'reportFile must be a bare filename, no paths' });
+      return;
+    }
+    validatedReport = reportFile;
+  }
+
   const outcome = ptyManager.completeTaskById(taskId, {
     status: status === 'failed' ? 'failed' : 'done',
     summary: typeof summary === 'string' ? summary : undefined,
-    reportFile: typeof reportFile === 'string' ? reportFile : undefined,
+    reportFile: validatedReport,
     changed: Array.isArray(changed) ? changed.map(String) : undefined,
     unresolved: Array.isArray(unresolved) ? unresolved.map(String) : undefined,
     result: typeof result === 'string' ? result : undefined,
@@ -576,6 +601,66 @@ app.post('/api/tasks/:taskId/complete', (req, res) => {
     return;
   }
   res.json({ ok: true, task: outcome.task });
+});
+
+// ── Task-scoped artifact reads (Phase 1) ───────────────────────────
+// These endpoints are keyed on task_id (not sessionId) so they can address
+// a specific task's dir/manifest/report without LIFO heuristics.
+
+// Task detail by task_id (single endpoint replacing bin/tt's session-scan).
+app.get('/api/tasks/by-id/:taskId', (req, res) => {
+  const task = ptyManager.findTaskById(req.params.taskId);
+  if (!task) {
+    res.status(404).json({ error: `Task not found: ${req.params.taskId}` });
+    return;
+  }
+  res.json({ task, dir: ptyManager.getTaskOutputDir(task.taskId) });
+});
+
+// Path of the per-task output directory — SUB uses this to know where to write
+// its report, and MAIN uses it to resolve report/manifest paths.
+app.get('/api/tasks/by-id/:taskId/dir', (req, res) => {
+  const dir = ptyManager.getTaskOutputDir(req.params.taskId);
+  if (!dir) {
+    res.status(404).json({ error: `Task not found or dir unresolvable: ${req.params.taskId}` });
+    return;
+  }
+  res.json({ taskId: req.params.taskId, dir });
+});
+
+// Read manifest.json. Present only after `tt task complete`.
+app.get('/api/tasks/by-id/:taskId/manifest', (req, res) => {
+  const raw = ptyManager.readTaskManifest(req.params.taskId);
+  if (raw === null) {
+    res.status(404).json({ error: `No manifest for task: ${req.params.taskId}` });
+    return;
+  }
+  try {
+    res.json({ taskId: req.params.taskId, manifest: JSON.parse(raw) });
+  } catch {
+    res.status(500).json({ error: 'Manifest exists but is not valid JSON' });
+  }
+});
+
+// Read the report file declared on task.reportFile.
+app.get('/api/tasks/by-id/:taskId/report', (req, res) => {
+  const content = ptyManager.readTaskReport(req.params.taskId);
+  if (content === null) {
+    res.status(404).json({ error: `No report for task: ${req.params.taskId}` });
+    return;
+  }
+  const task = ptyManager.findTaskById(req.params.taskId);
+  res.json({ taskId: req.params.taskId, filename: task?.reportFile || null, content });
+});
+
+// List files in the task's output dir.
+app.get('/api/tasks/by-id/:taskId/files', (req, res) => {
+  const files = ptyManager.listTaskOutputFiles(req.params.taskId);
+  if (files === null) {
+    res.status(404).json({ error: `No output dir for task: ${req.params.taskId}` });
+    return;
+  }
+  res.json({ taskId: req.params.taskId, files, dir: ptyManager.getTaskOutputDir(req.params.taskId) });
 });
 
 // Get notifications for a session (supports ?since=<seq> for unread-only)

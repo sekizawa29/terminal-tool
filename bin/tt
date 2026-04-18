@@ -1056,12 +1056,16 @@ function resolvePeerTarget(peers, args) {
  *                               [--changed "f1,f2"] [--unresolved "..."] [--failed]
  *   tt task current               Show the latest pending task where SELF is the target (SUB view)
  *   tt task show <task_id>        Show full task detail
+ *   tt task dir <task_id>         Print the absolute path of the task's output directory
+ *   tt task report <task_id>      Read the SUB's report file for this task
+ *   tt task manifest <task_id>    Read the structured manifest.json for this task
+ *   tt task files <task_id>       List files in the task's output directory
  *   tt task ls                    List tasks where SELF is MAIN (same as `tt tasks`)
  */
 async function taskCommand(args) {
   const sub = args[0];
   if (!sub) {
-    console.error('Usage: tt task <complete|current|show|ls> [args...]');
+    console.error('Usage: tt task <complete|current|show|dir|report|manifest|files|ls> [args...]');
     process.exit(1);
   }
 
@@ -1072,12 +1076,20 @@ async function taskCommand(args) {
       return taskCurrent();
     case 'show':
       return taskShow(args[1]);
+    case 'dir':
+      return taskDir(args[1]);
+    case 'report':
+      return taskReport(args[1]);
+    case 'manifest':
+      return taskManifest(args[1]);
+    case 'files':
+      return taskFiles(args[1]);
     case 'ls':
     case 'list':
       return showTasks(SELF);
     default:
       console.error(`Unknown task subcommand: ${sub}`);
-      console.error('Available: complete, current, show, ls');
+      console.error('Available: complete, current, show, dir, report, manifest, files, ls');
       process.exit(1);
   }
 }
@@ -1189,25 +1201,82 @@ async function taskShow(taskId) {
     console.error('Usage: tt task show <task_id>');
     process.exit(1);
   }
-
-  // Find the task by scanning every known MAIN's task list.
-  // This is O(sessions) but keeps the server API minimal for Phase 0.
-  const statusRes = await ttFetch(`${BASE}/api/terminals/status`);
-  const { statuses } = await statusRes.json();
-
-  for (const s of statuses) {
-    try {
-      const r = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(s.sessionId)}`);
-      const data = await r.json();
-      const match = (data.tasks || []).find(t => t.taskId === taskId);
-      if (match) {
-        console.log(JSON.stringify(match, null, 2));
-        return;
-      }
-    } catch {}
+  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}`);
+  const data = await res.json();
+  if (data.error) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
   }
-  console.error(`Task not found: ${taskId}`);
-  process.exit(1);
+  console.log(JSON.stringify(data.task, null, 2));
+}
+
+async function taskDir(taskId) {
+  if (!taskId) {
+    console.error('Usage: tt task dir <task_id>');
+    process.exit(1);
+  }
+  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/dir`);
+  const data = await res.json();
+  if (data.error) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
+  }
+  console.log(data.dir);
+}
+
+async function taskReport(taskId) {
+  if (!taskId) {
+    console.error('Usage: tt task report <task_id>');
+    process.exit(1);
+  }
+  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report`);
+  const data = await res.json();
+  if (data.error) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
+  }
+  process.stdout.write(data.content);
+  if (data.content && !data.content.endsWith('\n')) process.stdout.write('\n');
+}
+
+async function taskManifest(taskId) {
+  if (!taskId) {
+    console.error('Usage: tt task manifest <task_id>');
+    process.exit(1);
+  }
+  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/manifest`);
+  const data = await res.json();
+  if (data.error) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
+  }
+  console.log(JSON.stringify(data.manifest, null, 2));
+}
+
+async function taskFiles(taskId) {
+  if (!taskId) {
+    console.error('Usage: tt task files <task_id>');
+    process.exit(1);
+  }
+  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/files`);
+  const data = await res.json();
+  if (data.error) {
+    console.error(`Error: ${data.error}`);
+    process.exit(1);
+  }
+  const files = data.files || [];
+  if (files.length === 0) {
+    console.log(`No files.${data.dir ? ` (dir: ${data.dir})` : ''}`);
+    return;
+  }
+  console.log(pad('FILE', 30) + pad('SIZE', 10) + 'MODIFIED');
+  console.log('-'.repeat(60));
+  for (const f of files) {
+    const size = f.size < 1024 ? `${f.size}B` : f.size < 1048576 ? `${(f.size / 1024).toFixed(1)}K` : `${(f.size / 1048576).toFixed(1)}M`;
+    const date = new Date(f.mtime).toLocaleString();
+    console.log(pad(f.name, 30) + pad(size, 10) + date);
+  }
+  if (data.dir) console.log(`\n(dir: ${data.dir})`);
 }
 
 async function linkReconnect(args) {
@@ -1274,6 +1343,10 @@ Usage:
                                             --changed "f1,f2" --unresolved "..." --failed
   tt task current                    Print task_id for the latest pending task directed at SELF
   tt task show <task_id>             Show structured detail for one task
+  tt task dir <task_id>              Print the output directory for this task (where SUB writes reports)
+  tt task report <task_id>           Read the report file SUB wrote for this task
+  tt task manifest <task_id>         Read the structured manifest.json for this task
+  tt task files <task_id>            List files in the task's output directory
   tt task ls                         List tasks where SELF is MAIN (alias of "tt tasks")
   tt link <id|name> --as <name>     Reconnect a new session as a disconnected peer
   tt status [id|name]                Show terminal status as JSON
@@ -1308,9 +1381,12 @@ Examples:
   tt tasks                            See delegated task progress
   tt peers                           See linked peers
   tt peer send "run the tests"       Send to linked peer — returns task_id
-  tt task complete <task_id> --summary "..." --report result.md --changed "f1,f2" --unresolved none
+  tt task complete <task_id> --summary "..." --report report.md --changed "f1,f2" --unresolved none
                                      Close a task (ONLY way to mark it done — DONE: in notify is UI-only)
   tt task current                    Print task_id currently directed at this terminal
+  tt task dir <task_id>              Get the output dir for the task (SUB writes reports here)
+  tt task report <task_id>           MAIN reads the SUB's report
+  tt task manifest <task_id>         MAIN reads the structured manifest.json for the task
   tt peer notify "message"           Send a UI notification to the linked terminal (no task state)
   tt peer read 50                    Read 50 lines from linked peer
   tt peer read --since-send          Read peer output since last task sent
