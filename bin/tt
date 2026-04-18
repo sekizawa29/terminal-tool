@@ -133,6 +133,8 @@ async function main() {
       return taskCommand(args);
     case 'link':
       return linkReconnect(args);
+    case 'mcp-stdio':
+      return mcpStdioServer();
     default:
       printHelp();
   }
@@ -1382,6 +1384,315 @@ async function taskFiles(taskId) {
   if (data.dir) console.log(`\n(dir: ${data.dir})`);
 }
 
+/**
+ * Phase 3: MCP stdio server. Thin adapter over the existing task API.
+ *
+ * Exposed tools:
+ *   Core task lifecycle (Phase 3a):
+ *     tboard_peer_list       — list linked peers for this session
+ *     tboard_task_send       — dispatch a task to a peer (MAIN→SUB; returns taskId)
+ *     tboard_task_current    — metadata of the pending task targeted at SELF
+ *     tboard_task_get        — full task detail by task_id (includes outputDir)
+ *     tboard_task_complete   — close a task with structured summary / report / etc.
+ *   Convenience reads / notify (Phase 3b):
+ *     tboard_peer_notify     — deliver a UI-only bubble (does NOT change task state)
+ *     tboard_task_report     — read the SUB's report file for a task
+ *     tboard_task_manifest   — read the parsed manifest.json for a task
+ *     tboard_task_files      — list files in the task output directory
+ *
+ * Transport: stdio only. Only JSON-RPC frames on stdout; diagnostics go to stderr.
+ * Auth: reuses the existing TBOARD_TOKEN issued at pty creation. Fail-fast if
+ * TBOARD_SESSION or TBOARD_TOKEN is absent — this server is only meaningful
+ * inside a tboard-managed pty session.
+ */
+async function mcpStdioServer() {
+  // Fail-fast identity guards. Errors go to stderr; stdout stays clean for
+  // JSON-RPC frames even if we never get to connect().
+  if (!SELF) {
+    process.stderr.write('tt mcp-stdio: TBOARD_SESSION is not set; run inside a tboard pty session.\n');
+    process.exit(1);
+  }
+  if (!TOKEN) {
+    process.stderr.write('tt mcp-stdio: TBOARD_TOKEN is not set; run inside a tboard pty session.\n');
+    process.exit(1);
+  }
+  // Probe connectivity so a broken env fails at startup rather than on first tool call.
+  // Resolution order mirrors every other `tt` command:
+  //   1. Unix socket (TBOARD_SOCKET) if set — ttFetch handles that transparently.
+  //   2. TBOARD_URL if set.
+  //   3. Port-scan fallback via detectBase().
+  // We explicitly call detectBase() first so that a socket-only env does not
+  // depend on a hardcoded HTTP port as a probe target.
+  if (!SOCKET_PATH && !BASE) await detectBase();
+  try {
+    const probeBase = BASE || 'http://127.0.0.1:3001'; // only used when ttFetch falls through to HTTP
+    const probe = await ttFetch(`${probeBase}/api/terminals/status`);
+    if (!probe.ok) throw new Error(`probe returned HTTP ${probe.status}`);
+  } catch (e) {
+    process.stderr.write(`tt mcp-stdio: cannot reach tboard server (${(e && e.message) || e}).\n`);
+    process.exit(1);
+  }
+
+  const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+  const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
+  const { z } = await import('zod');
+
+  const server = new McpServer({ name: 'tboard', version: '1.0.0' });
+
+  // Shared JSON parse — body-text first so we can surface non-JSON responses.
+  const asJson = async (res) => {
+    const text = await res.text();
+    try { return { ok: true, data: JSON.parse(text) }; }
+    catch { return { ok: false, error: `Non-JSON response (status=${res.status}): ${text.slice(0, 200)}` }; }
+  };
+
+  // Map HTTP error responses to MCP tool-call errors. The callback wrapper
+  // below catches throws and returns them as `isError: true` results so the
+  // MCP client sees a clean error instead of a crashed connection.
+  const toolError = (message) => ({
+    content: [{ type: 'text', text: message }],
+    isError: true,
+  });
+
+  const runTool = async (fn) => {
+    try { return await fn(); }
+    catch (e) { return toolError((e && e.message) || String(e)); }
+  };
+
+  server.registerTool('tboard_peer_list', {
+    title: 'List linked peers',
+    description: 'Return the peers this session is linked to, with canonical sessionId values. Prefer these IDs for other tools.',
+    inputSchema: {},
+  }, async () => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/links/peers/${encodeURIComponent(SELF)}`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    const peers = parsed.data.peers || [];
+    return {
+      content: [{ type: 'text', text: JSON.stringify(peers, null, 2) }],
+      structuredContent: { peers },
+    };
+  }));
+
+  server.registerTool('tboard_task_send', {
+    title: 'Dispatch a task to a peer (MAIN → SUB)',
+    description: 'Paste a task message into the target peer and register a task. Returns the assigned task_id. Use the canonical sessionId from tboard_peer_list. MAIN-only: the server only registers a task when this session is the MAIN for the target peer; calling this from a SUB results in an error.',
+    inputSchema: {
+      targetSessionId: z.string().min(1).describe('Canonical session id of the target peer'),
+      message: z.string().min(1).describe('Task content to paste into the peer'),
+    },
+  }, async ({ targetSessionId, message }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/tasks/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: targetSessionId, message, sourceSessionId: SELF }),
+    });
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    // The server only returns a taskId when this is a MAIN → SUB dispatch.
+    // For any other direction (peer-to-peer that is not MAIN→SUB) the HTTP
+    // call still pastes text but no structured task exists, which would
+    // silently erode the task protocol. Treat this as a hard error so the
+    // caller does not think a task was registered.
+    if (!parsed.data.taskId) {
+      throw new Error(
+        'No task was registered. tboard_task_send is MAIN→SUB only; this session is not the MAIN for the given targetSessionId. ' +
+        'Use tboard_peer_list to verify the link direction, or reconnect the peers with this session as the MAIN.'
+      );
+    }
+    const out = { taskId: parsed.data.taskId, targetSessionId: parsed.data.sessionId };
+    return {
+      content: [{ type: 'text', text: JSON.stringify(out, null, 2) }],
+      structuredContent: out,
+    };
+  }));
+
+  server.registerTool('tboard_task_current', {
+    title: 'Get the single pending task addressed at this session',
+    description: 'Return metadata for the pending task targeted at this session (this SUB), including taskId, outputDir, sourceSessionId, createdAt, and command. When no task is pending, returns { task: null }. When MULTIPLE tasks are pending, returns an error with the candidate list — callers MUST disambiguate by reading the `[tboard task_id=<id>]` prefix of the specific task they intend to act on and using tboard_task_get, never guess.',
+    inputSchema: {},
+  }, async () => runTool(async () => {
+    const peersRes = await ttFetch(`${BASE}/api/links/peers/${encodeURIComponent(SELF)}`);
+    const peersParsed = await asJson(peersRes);
+    if (!peersParsed.ok) throw new Error(peersParsed.error);
+    if (peersParsed.data.error) throw new Error(peersParsed.data.error);
+    const pending = [];
+    for (const p of peersParsed.data.peers || []) {
+      try {
+        const r = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(p.sessionId)}`);
+        const d = await asJson(r);
+        if (!d.ok || d.data.error) continue;
+        for (const t of d.data.tasks || []) {
+          if (t.targetSessionId === SELF && t.status === 'pending') pending.push(t);
+        }
+      } catch { /* skip peers that fail */ }
+    }
+    if (pending.length === 0) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ task: null }, null, 2) }],
+        structuredContent: { task: null },
+      };
+    }
+    if (pending.length > 1) {
+      // Never guess. The caller must disambiguate using the task_id prefix
+      // embedded in the specific task's paste. Surface as a tool error with
+      // the candidate list so the agent sees exactly what's ambiguous.
+      pending.sort((a, b) => a.createdAt - b.createdAt);
+      const candidates = pending.map(t => ({
+        taskId: t.taskId,
+        createdAt: t.createdAt,
+        command: (t.command || '').slice(0, 120),
+      }));
+      throw new Error(
+        `Ambiguous: ${pending.length} pending tasks are addressed at this session. ` +
+        'Read the `[tboard task_id=<id>]` prefix of the specific task you intend to act on ' +
+        'and pass that id to tboard_task_get / tboard_task_complete. ' +
+        'Candidates: ' + JSON.stringify(candidates)
+      );
+    }
+    const only = pending[0];
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ task: only }, null, 2) }],
+      structuredContent: { task: only },
+    };
+  }));
+
+  server.registerTool('tboard_task_get', {
+    title: 'Get a task by its task_id',
+    description: 'Return the full task object keyed by task_id, including the frozen outputDir and current status. Works even after session churn via the server-side filesystem fallback.',
+    inputSchema: {
+      taskId: z.string().min(1),
+    },
+  }, async ({ taskId }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(parsed.data, null, 2) }],
+      structuredContent: parsed.data,
+    };
+  }));
+
+  server.registerTool('tboard_task_complete', {
+    title: 'Close a task with a structured result',
+    description: 'Mark the task done or failed. reportFile must be a bare filename (no paths); the server resolves it under the task output directory. Changed / unresolved accept arrays of strings.',
+    inputSchema: {
+      taskId: z.string().min(1),
+      summary: z.string().optional(),
+      reportFile: z.string().optional().describe('Bare filename written inside the task output directory'),
+      changed: z.array(z.string()).optional(),
+      unresolved: z.array(z.string()).optional(),
+      status: z.enum(['done', 'failed']).optional().describe('Defaults to "done"'),
+    },
+  }, async ({ taskId, summary, reportFile, changed, unresolved, status }) => runTool(async () => {
+    const body = {
+      sourceSessionId: SELF,
+      status: status || 'done',
+    };
+    if (summary !== undefined) body.summary = summary;
+    if (reportFile !== undefined) body.reportFile = reportFile;
+    if (changed !== undefined) body.changed = changed;
+    if (unresolved !== undefined) body.unresolved = unresolved;
+    const res = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Tboard-Token': TOKEN },
+      body: JSON.stringify(body),
+    });
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ task: parsed.data.task }, null, 2) }],
+      structuredContent: { task: parsed.data.task },
+    };
+  }));
+
+  // ── Phase 3b: convenience read / notify tools ─────────────────────
+  // These are strictly read-only except for tboard_peer_notify, which writes
+  // an informational UI bubble (does NOT change task state). All are keyed on
+  // task_id or canonical sessionId; none accept fuzzy targeting.
+
+  server.registerTool('tboard_peer_notify', {
+    title: 'Send a UI notification to a peer',
+    description: 'Deliver a best-effort UI bubble to the target peer. Informational only — does NOT change task state. Use tboard_task_complete to close tasks.',
+    inputSchema: {
+      targetSessionId: z.string().min(1).describe('Canonical session id of the target peer'),
+      message: z.string().min(1),
+    },
+  }, async ({ targetSessionId, message }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/notifications/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: targetSessionId, message, sourceSessionId: SELF }),
+    });
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    const out = { notificationId: parsed.data.notificationId, targetSessionId: parsed.data.sessionId };
+    return {
+      content: [{ type: 'text', text: JSON.stringify(out, null, 2) }],
+      structuredContent: out,
+    };
+  }));
+
+  server.registerTool('tboard_task_report', {
+    title: 'Read a task report file',
+    description: 'Return the text content of the report file SUB wrote for this task (the file named in task.reportFile, resolved under the task output dir).',
+    inputSchema: {
+      taskId: z.string().min(1),
+    },
+  }, async ({ taskId }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: parsed.data.content || '' }],
+      structuredContent: { taskId, filename: parsed.data.filename, content: parsed.data.content || '' },
+    };
+  }));
+
+  server.registerTool('tboard_task_manifest', {
+    title: 'Read the structured manifest.json for a task',
+    description: 'Return the parsed manifest.json written atomically at task completion. Contains task_id, status, summary, report_file, changed, unresolved, timestamps.',
+    inputSchema: {
+      taskId: z.string().min(1),
+    },
+  }, async ({ taskId }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/manifest`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(parsed.data.manifest, null, 2) }],
+      structuredContent: { taskId, manifest: parsed.data.manifest },
+    };
+  }));
+
+  server.registerTool('tboard_task_files', {
+    title: 'List files in a task output directory',
+    description: 'Return the list of files (name, size, mtime) in the task-scoped output directory. Useful for discovering what SUB wrote beyond the declared report.',
+    inputSchema: {
+      taskId: z.string().min(1),
+    },
+  }, async ({ taskId }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/files`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(parsed.data.files || [], null, 2) }],
+      structuredContent: { taskId, dir: parsed.data.dir, files: parsed.data.files || [] },
+    };
+  }));
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
 async function linkReconnect(args) {
   if (!SELF) {
     console.error('Not running inside a terminal-board session.');
@@ -1455,6 +1766,8 @@ Usage:
   tt link <id|name> --as <name>     Reconnect a new session as a disconnected peer
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
+  tt mcp-stdio                       Run an MCP stdio server exposing the task API
+                                     (for agent integration — opt-in via .mcp.json)
 
 Peer commands (linked terminals):
   tt peers                           List linked peers
