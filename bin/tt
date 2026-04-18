@@ -10,6 +10,7 @@ import http from 'http';
 let BASE = process.env.TBOARD_URL || '';
 const SOCKET_PATH = process.env.TBOARD_SOCKET || '';
 const SELF = process.env.TBOARD_SESSION || '';
+const TOKEN = process.env.TBOARD_TOKEN || '';
 
 // Unix socket fetch: uses http.request with socketPath
 function socketFetch(path, options = {}) {
@@ -128,6 +129,8 @@ async function main() {
       return showNotifications(...args);
     case 'tasks':
       return showTasks(args[0]);
+    case 'task':
+      return taskCommand(args);
     case 'link':
       return linkReconnect(args);
     default:
@@ -227,7 +230,11 @@ async function sendCommand(args) {
     console.error(`Error: ${result.error}`);
     process.exit(1);
   }
-  console.log(`Sent to ${target}.`);
+  if (result.taskId) {
+    console.log(`Sent to ${target} (task=${result.taskId}).`);
+  } else {
+    console.log(`Sent to ${target}.`);
+  }
 }
 
 async function readOutput(target, ...extraArgs) {
@@ -695,33 +702,39 @@ async function showTasks(target) {
     return;
   }
 
-  // Show incomplete tasks in detail, then last 5 completed
-  const incomplete = tasks.filter(t => t.displayStatus !== 'done');
-  const completed = tasks.filter(t => t.displayStatus === 'done');
+  // Show incomplete tasks in detail, then last 5 terminal (done or failed).
+  const isTerminal = (s) => s === 'done' || s === 'failed';
+  const incomplete = tasks.filter(t => !isTerminal(t.displayStatus));
+  const terminal = tasks.filter(t => isTerminal(t.displayStatus));
+
+  const shortTask = (id) => (id || '').slice(0, 8);
 
   for (const t of incomplete) {
+    const tid = shortTask(t.taskId).padEnd(8);
     const name = (t.targetName || '').padEnd(10);
     const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
     const cmdPad = cmd.padEnd(32);
     if (t.displayStatus === 'working') {
-      console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+      console.log(`  ${tid} ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
     } else {
-      console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+      console.log(`  ${tid} ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
     }
   }
 
-  const recentDone = completed.slice(-5);
-  if (recentDone.length > 0) {
+  const recentTerminal = terminal.slice(-5);
+  if (recentTerminal.length > 0) {
     if (incomplete.length > 0) console.log('');
-    if (completed.length > recentDone.length) {
-      console.log(`  (${completed.length - recentDone.length} older completed tasks hidden)`);
+    if (terminal.length > recentTerminal.length) {
+      console.log(`  (${terminal.length - recentTerminal.length} older terminal tasks hidden)`);
     }
-    for (const t of recentDone) {
+    for (const t of recentTerminal) {
+      const tid = shortTask(t.taskId).padEnd(8);
       const name = (t.targetName || '').padEnd(10);
       const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
       const cmdPad = cmd.padEnd(32);
+      const icon = t.displayStatus === 'failed' ? '✗ failed  ' : '✓ done    ';
       const resultText = t.result ? `→ ${t.result.slice(0, 50)}` : '';
-      console.log(`  ${name} ✓ done     ${cmdPad} ${resultText}`);
+      console.log(`  ${tid} ${name} ${icon} ${cmdPad} ${resultText}`);
     }
   }
 
@@ -804,17 +817,19 @@ async function showNotifications(...args) {
     const taskResult = await taskRes.json();
     const tasks = taskResult.tasks || [];
     if (tasks.length > 0) {
-      const incomplete = tasks.filter(t => t.displayStatus !== 'done');
+      const isTerminal = (s) => s === 'done' || s === 'failed';
+      const incomplete = tasks.filter(t => !isTerminal(t.displayStatus));
       if (incomplete.length > 0) {
         console.log('');
         for (const t of incomplete) {
+          const tid = (t.taskId || '').slice(0, 8).padEnd(8);
           const name = (t.targetName || '').padEnd(10);
           const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
           const cmdPad = cmd.padEnd(32);
           if (t.displayStatus === 'working') {
-            console.log(`  ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+            console.log(`  ${tid} ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
           } else {
-            console.log(`  ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+            console.log(`  ${tid} ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
           }
         }
       }
@@ -1035,6 +1050,166 @@ function resolvePeerTarget(peers, args) {
   return { target: firstPeerArg, rest: [...args.slice(0, idx), ...args.slice(idx + 1)] };
 }
 
+/**
+ * `tt task` — structured task lifecycle commands.
+ *   tt task complete <task_id> [--summary "..."] [--report <file>]
+ *                               [--changed "f1,f2"] [--unresolved "..."] [--failed]
+ *   tt task current               Show the latest pending task where SELF is the target (SUB view)
+ *   tt task show <task_id>        Show full task detail
+ *   tt task ls                    List tasks where SELF is MAIN (same as `tt tasks`)
+ */
+async function taskCommand(args) {
+  const sub = args[0];
+  if (!sub) {
+    console.error('Usage: tt task <complete|current|show|ls> [args...]');
+    process.exit(1);
+  }
+
+  switch (sub) {
+    case 'complete':
+      return taskComplete(args.slice(1));
+    case 'current':
+      return taskCurrent();
+    case 'show':
+      return taskShow(args[1]);
+    case 'ls':
+    case 'list':
+      return showTasks(SELF);
+    default:
+      console.error(`Unknown task subcommand: ${sub}`);
+      console.error('Available: complete, current, show, ls');
+      process.exit(1);
+  }
+}
+
+async function taskComplete(args) {
+  if (!args[0] || args[0].startsWith('--')) {
+    console.error('Usage: tt task complete <task_id> [--summary "..."] [--report <file>] [--changed "f1,f2"] [--unresolved "..."] [--failed]');
+    process.exit(1);
+  }
+  const taskId = args[0];
+  let summary, reportFile;
+  let changed, unresolved;
+  let status = 'done';
+
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--summary') { summary = args[++i]; }
+    else if (a === '--report') { reportFile = args[++i]; }
+    else if (a === '--changed') { changed = args[++i]; }
+    else if (a === '--unresolved') { unresolved = args[++i]; }
+    else if (a === '--failed') { status = 'failed'; }
+    else if (a.startsWith('--summary=')) { summary = a.slice('--summary='.length); }
+    else if (a.startsWith('--report=')) { reportFile = a.slice('--report='.length); }
+    else if (a.startsWith('--changed=')) { changed = a.slice('--changed='.length); }
+    else if (a.startsWith('--unresolved=')) { unresolved = a.slice('--unresolved='.length); }
+    else {
+      console.error(`Unknown flag: ${a}`);
+      process.exit(1);
+    }
+  }
+
+  const toList = (v) => {
+    if (v === undefined) return undefined;
+    const t = String(v).trim();
+    if (!t || /^(none|n\/a|-)$/i.test(t)) return [];
+    return t.split(',').map(s => s.trim()).filter(Boolean);
+  };
+
+  const body = {
+    sourceSessionId: SELF || undefined,
+    status,
+    summary,
+    reportFile,
+    changed: toList(changed),
+    unresolved: toList(unresolved),
+  };
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (TOKEN) headers['X-Tboard-Token'] = TOKEN;
+  const res = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}/complete`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  const result = await res.json();
+  if (result.error) {
+    console.error(`Error: ${result.error}`);
+    process.exit(1);
+  }
+  const t = result.task || {};
+  console.log(`Task ${taskId} marked ${t.status || status}.`);
+}
+
+async function taskCurrent() {
+  if (!SELF) {
+    console.error('Not running inside a terminal-board session.');
+    process.exit(1);
+  }
+
+  // Scan tasks from each MAIN peer for pending tasks addressed to SELF.
+  const peers = await getPeers().catch(() => []);
+  const pending = [];
+  for (const p of peers) {
+    try {
+      const res = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(p.sessionId)}`);
+      const data = await res.json();
+      for (const t of data.tasks || []) {
+        if (t.targetSessionId === SELF && t.status === 'pending') pending.push(t);
+      }
+    } catch {}
+  }
+
+  if (pending.length === 0) {
+    console.log('No pending task directed at this terminal.');
+    return;
+  }
+
+  pending.sort((a, b) => a.createdAt - b.createdAt); // oldest first
+  if (pending.length === 1) {
+    console.log(pending[0].taskId);
+    return;
+  }
+
+  // Multiple pending — refuse to guess. Candidates go to stderr only so that
+  // shell substitutions like $(tt task current) stay empty rather than get
+  // a contaminated multi-line value.
+  console.error(`Warning: ${pending.length} pending tasks directed at this terminal.`);
+  console.error('Use the task_id from the "[tboard task_id=<id>]" prefix of the specific task.');
+  console.error('Candidates:');
+  for (const t of pending) {
+    const cmd = (t.command || '').replace(/\s+/g, ' ').slice(0, 60);
+    console.error(`  ${t.taskId}  ${cmd}`);
+  }
+  process.exit(2);
+}
+
+async function taskShow(taskId) {
+  if (!taskId) {
+    console.error('Usage: tt task show <task_id>');
+    process.exit(1);
+  }
+
+  // Find the task by scanning every known MAIN's task list.
+  // This is O(sessions) but keeps the server API minimal for Phase 0.
+  const statusRes = await ttFetch(`${BASE}/api/terminals/status`);
+  const { statuses } = await statusRes.json();
+
+  for (const s of statuses) {
+    try {
+      const r = await ttFetch(`${BASE}/api/tasks/${encodeURIComponent(s.sessionId)}`);
+      const data = await r.json();
+      const match = (data.tasks || []).find(t => t.taskId === taskId);
+      if (match) {
+        console.log(JSON.stringify(match, null, 2));
+        return;
+      }
+    } catch {}
+  }
+  console.error(`Task not found: ${taskId}`);
+  process.exit(1);
+}
+
 async function linkReconnect(args) {
   if (!SELF) {
     console.error('Not running inside a terminal-board session.');
@@ -1094,6 +1269,12 @@ Usage:
   tt notifications [id|name]         Show notifications (auto marks read)
   tt notifications [id|name] --new   Show only unread notifications
   tt tasks [id|name]                  Show delegated task status
+  tt task complete <id> [flags]      Mark a task done/failed (primary completion path)
+                                     Flags: --summary "..." --report <file>
+                                            --changed "f1,f2" --unresolved "..." --failed
+  tt task current                    Print task_id for the latest pending task directed at SELF
+  tt task show <task_id>             Show structured detail for one task
+  tt task ls                         List tasks where SELF is MAIN (alias of "tt tasks")
   tt link <id|name> --as <name>     Reconnect a new session as a disconnected peer
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
@@ -1121,16 +1302,25 @@ With one peer linked, "tt peer" commands auto-target it (no id needed).
 Examples:
   tt ls                              See all terminals
   tt send sub-1 "npm test"           Run npm test in sub-1
-  tt notify sub-1 "DONE: summary | Changed: file.ts | Unresolved: none"
   tt read sub-1 50                   Read last 50 lines (clean)
   tt read sub-1 --wait               Wait for sub-1 to finish processing
   tt notifications sub-1             Check notifications from sub-1
   tt tasks                            See delegated task progress
   tt peers                           See linked peers
-  tt peer send "run the tests"       Send to linked peer (single peer)
-  tt peer notify "DONE: summary | Changed: none | Unresolved: none"
+  tt peer send "run the tests"       Send to linked peer — returns task_id
+  tt task complete <task_id> --summary "..." --report result.md --changed "f1,f2" --unresolved none
+                                     Close a task (ONLY way to mark it done — DONE: in notify is UI-only)
+  tt task current                    Print task_id currently directed at this terminal
+  tt peer notify "message"           Send a UI notification to the linked terminal (no task state)
   tt peer read 50                    Read 50 lines from linked peer
   tt peer read --since-send          Read peer output since last task sent
+
+Threat model:
+  tboard trusts processes running INSIDE its own pty sessions (they receive TBOARD_TOKEN
+  via env). Same-user processes OUTSIDE tboard pty sessions are considered untrusted
+  in intent but able to read /proc/<pid>/environ on typical Linux — treat this as a
+  shared-user machine caveat, not a hardened boundary. For multi-user / untrusted
+  co-tenant use, run tboard on an isolated user account.
 `);
 }
 

@@ -170,22 +170,24 @@ app.post('/api/links', (req, res) => {
     `[tboard] SYSTEM NOTIFICATION -- This is an automated message from the terminal board, not user input.`,
     `You are now the MAIN agent, linked to sub-agent "${targetName}".`,
     ``,
-    `  Commands:`,
-    `    tt peer send "task"              Send task to sub-agent (fire-and-forget)`,
-    `    tt notifications                 Check pending completion notifications`,
-    `    tt tasks                         Check delegated task status`,
-    `    tt peer read --since-send        Read output since last sent task (recommended)`,
-    `    tt peer read --full              Read full task output from disk (no buffer limit)`,
+    `  Dispatch:`,
+    `    tt peer send "task"              Send task (output: "Sent to <name> (task=<id>).")`,
+    `    tt tasks                         Check delegated task status (shows task_id)`,
+    `    tt task show <task_id>           Show one task's structured detail`,
+    ``,
+    `  Read results:`,
     `    tt peer output [peer]             List files in peer's output directory`,
     `    tt peer output [peer] [file]      Read a file from peer's output directory`,
+    `    tt peer read --full               Read full task output from disk (no buffer limit)`,
+    `    tt peer read --since-send         Read terminal output since last sent task`,
     ``,
     `  Protocol:`,
-    `    Completion notifications are delivered directly to your prompt with content:`,
+    `    Each peer send returns a task_id; SUB closes it via \`tt task complete <task_id>\`.`,
+    `    Completion is recorded server-side regardless of notification delivery.`,
+    `    UI notifications still arrive as:`,
     `      [tboard system] sub-1: DONE: [summary] | Changed: [files] | Tasks: N/M done`,
-    `    If the notification mentions "Report: <file>", read it: tt peer output [peer] <file>`,
-    `    For details beyond the notification, use: tt peer read --since-send`,
-    `    If no DONE notification arrives, do not assume completion.`,
-    `    Check tt tasks before making decisions that depend on sub-agent results.`,
+    `    If a notification mentions "Report: <file>", read it via tt peer output [peer] <file>.`,
+    `    Source of truth: tt tasks / tt task show — not terminal buffer or notifications.`,
     ``
   ].join('\n');
 
@@ -194,25 +196,28 @@ app.post('/api/links', (req, res) => {
     `Terminal link established with "${sourceName}".`,
     ``,
     `  COMPLETION PROTOCOL (mandatory):`,
-    `    When you finish ANY task received on this terminal, you MUST run:`,
-    `    tt peer notify "DONE: [one-line summary] | Changed: [files] | Unresolved: [issues or none]"`,
-    `    If no files changed: Changed: none. If no open issues: Unresolved: none`,
-    `    A task is NOT complete until this command has been executed.`,
-    `    Do NOT end your turn without sending the notification.`,
-    `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
+    `    Every delegated task paste begins with an inline prefix on the first line:`,
+    `      [tboard task_id=<id>] <task content...>`,
+    `    When you finish the task you MUST run:`,
+    `      tt task complete <task_id> --summary "one-line" --changed "f1,f2" --unresolved "none" [--report <file>]`,
+    `    Use --changed none / --unresolved none when there are no items.`,
+    `    Use --failed if the task could not be completed (still sets task state, so MAIN unblocks).`,
+    `    If you did not capture the task_id, recover it with: tt task current`,
     ``,
     `  REPORTING (for substantial tasks — implementation, review, analysis, bug fix):`,
     `    Write a report to the output directory: ${outputDir}`,
     `      Implementation/bug fix → result.md  (Summary, Changed Files, Key Decisions, Build Status, Open Issues)`,
     `      Code review            → review.md  (Verdict: PASS/FAIL, Critical items, Warnings)`,
-    `    Add Report: <filename> to your DONE notification.`,
-    `    Example: tt peer notify "DONE: Phase 1 DB schema | Changed: 3 files | Unresolved: none | Report: result.md"`,
+    `    Pass --report <filename> to tt task complete so MAIN can open it directly.`,
     `    Skip reports for simple tasks (confirmations, single-file fixes, questions).`,
-    `    MAIN reads reports with: tt peer output`,
+    ``,
+    `  UI notifications (informational — do NOT close tasks):`,
+    `    tt peer notify "<message>"     Delivers a UI bubble to MAIN. Does not change task state.`,
+    `    A \`DONE:\` prefix is no longer parsed — run \`tt task complete <task_id>\` to close the task.`,
     ``,
     `  Other commands:`,
     `    tt peer send "message"       Send a message to the linked terminal`,
-    `    tt peer notify "message"     Send a notification to the linked terminal`,
+    `    tt peer notify "message"     Send a UI notification to the linked terminal`,
     ``
   ].join('\n');
 
@@ -275,25 +280,28 @@ app.post('/api/links/reconnect', (req, res) => {
     `Terminal link established with "${sourceName}" (reconnected as "${asName}").`,
     ``,
     `  COMPLETION PROTOCOL (mandatory):`,
-    `    When you finish ANY task received on this terminal, you MUST run:`,
-    `    tt peer notify "DONE: [one-line summary] | Changed: [files] | Unresolved: [issues or none]"`,
-    `    If no files changed: Changed: none. If no open issues: Unresolved: none`,
-    `    A task is NOT complete until this command has been executed.`,
-    `    Do NOT end your turn without sending the notification.`,
-    `    If the command fails, retry once. If still failing, say NOTIFY_FAILED.`,
+    `    Every delegated task paste begins with an inline prefix on the first line:`,
+    `      [tboard task_id=<id>] <task content...>`,
+    `    When you finish the task you MUST run:`,
+    `      tt task complete <task_id> --summary "one-line" --changed "f1,f2" --unresolved "none" [--report <file>]`,
+    `    Use --changed none / --unresolved none when there are no items.`,
+    `    Use --failed if the task could not be completed (still sets task state, so MAIN unblocks).`,
+    `    If you did not capture the task_id, recover it with: tt task current`,
     ``,
     `  REPORTING (for substantial tasks — implementation, review, analysis, bug fix):`,
     `    Write a report to the output directory: ${reconOutputDir}`,
     `      Implementation/bug fix → result.md  (Summary, Changed Files, Key Decisions, Build Status, Open Issues)`,
     `      Code review            → review.md  (Verdict: PASS/FAIL, Critical items, Warnings)`,
-    `    Add Report: <filename> to your DONE notification.`,
-    `    Example: tt peer notify "DONE: Phase 1 DB schema | Changed: 3 files | Unresolved: none | Report: result.md"`,
+    `    Pass --report <filename> to tt task complete so MAIN can open it directly.`,
     `    Skip reports for simple tasks (confirmations, single-file fixes, questions).`,
-    `    MAIN reads reports with: tt peer output`,
+    ``,
+    `  UI notifications (informational — do NOT close tasks):`,
+    `    tt peer notify "<message>"     Delivers a UI bubble to MAIN. Does not change task state.`,
+    `    A \`DONE:\` prefix is no longer parsed — run \`tt task complete <task_id>\` to close the task.`,
     ``,
     `  Other commands:`,
     `    tt peer send "message"       Send a message to the linked terminal`,
-    `    tt peer notify "message"     Send a notification to the linked terminal`,
+    `    tt peer notify "message"     Send a UI notification to the linked terminal`,
     ``
   ].join('\n');
 
@@ -367,17 +375,24 @@ app.post('/api/ipc/send', (req, res) => {
 
   // Append marker at end for reliable echo matching (less disruptive to agent)
   const marker = `[ipc:${turnId.slice(0, 8)}]`;
-  const markedMessage = `${message} ${marker}`;
 
   // Auto-register task only when MAIN sends to its SUB (not reverse direction)
+  let taskId: string | undefined;
   if (sourceSessionId && ptyManager.isMainToSub(sourceSessionId, resolved)) {
-    ptyManager.registerTask(sourceSessionId, resolved, message);
+    taskId = ptyManager.registerTask(sourceSessionId, resolved, message);
   }
+
+  // Embed task_id as an inline prefix on the SAME line as the marker, so that the
+  // marker-at-end-of-prompt-echo detection (getIpcResponse / getRenderedBufferSinceSend)
+  // still works. The SUB agent reads the prefix from its input buffer and closes the
+  // exact task via `tt task complete <task_id>`.
+  const taskPrefix = taskId ? `[tboard task_id=${taskId}] ` : '';
+  const markedMessage = `${taskPrefix}${message} ${marker}`;
 
   // Paste first, then submit with a guarded retry if the prompt still holds the draft.
   ptyManager.pasteAndSubmit(resolved, markedMessage, { retryNeedle: markedMessage });
 
-  res.json({ ok: true, sessionId: resolved, message, turnId, marker });
+  res.json({ ok: true, sessionId: resolved, message, turnId, marker, taskId });
 });
 
 // Poll for IPC response — extracts rendered response by matching the sent message's echo
@@ -497,15 +512,70 @@ app.post('/api/notifications/send', (req, res) => {
   const source = sourceSessionId || 'unknown';
   const notificationId = ptyManager.enqueueNotification(resolved, source, message);
 
-  // Auto-complete task if this is a DONE notification from a linked peer
-  if (message.startsWith('DONE:') && source !== 'unknown') {
-    const resolvedSource = resolveSession(source);
-    if (resolvedSource && ptyManager.arePeers(resolvedSource, resolved)) {
-      ptyManager.completeTask(resolved, resolvedSource, message.slice(5).trim());
-    }
-  }
+  // Notifications are UI-only as of Phase 0. A legacy `DONE:` prefix no longer
+  // closes tasks — the sender must call `POST /api/tasks/:taskId/complete` (or
+  // `tt task complete <task_id>`) for task state to change. This closes two
+  // holes that could not be fixed while keeping the notification shortcut:
+  //   * auth bypass: notifications had no token check, so any local process
+  //     could spoof sourceSessionId and close tasks via DONE:.
+  //   * stale race: a late DONE: from a prior task could close the next task
+  //     registered to the same SUB, because the legacy path has no task_id.
 
   res.json({ ok: true, notificationId, sessionId: resolved });
+});
+
+// Structured task completion — SUB calls this to close a specific task by ID.
+// This is the primary completion path; `DONE:` notification parsing above is legacy.
+app.post('/api/tasks/:taskId/complete', (req, res) => {
+  const { taskId } = req.params;
+  const { sourceSessionId, status, summary, reportFile, changed, unresolved, result } = req.body || {};
+
+  const task = ptyManager.findTaskById(taskId);
+  if (!task) {
+    res.status(404).json({ error: `Task not found: ${taskId}` });
+    return;
+  }
+
+  // Enforce auth: caller must prove session identity with the capability token
+  // (X-Tboard-Token header) issued to that pty at creation. This binds the HTTP
+  // call to a specific session rather than trusting a self-declared sourceSessionId.
+  // Scope: within the declared threat model (processes inside tboard pty sessions
+  // are trusted; same-user processes outside are NOT a hardened boundary since they
+  // can read /proc/<pid>/environ). See token generation comment in pty-manager.ts.
+  if (!sourceSessionId) {
+    res.status(401).json({ error: 'sourceSessionId is required' });
+    return;
+  }
+  const resolvedCaller = resolveSession(sourceSessionId);
+  if (!resolvedCaller) {
+    res.status(401).json({ error: 'Unknown sourceSessionId' });
+    return;
+  }
+  const headerToken = req.headers['x-tboard-token'];
+  const token = Array.isArray(headerToken) ? headerToken[0] : headerToken;
+  if (!ptyManager.verifySessionToken(resolvedCaller, token)) {
+    res.status(401).json({ error: 'Invalid or missing X-Tboard-Token for sourceSessionId' });
+    return;
+  }
+  if (resolvedCaller !== task.targetSessionId && resolvedCaller !== task.sourceSessionId) {
+    res.status(403).json({ error: 'Not authorized to complete this task' });
+    return;
+  }
+
+  const outcome = ptyManager.completeTaskById(taskId, {
+    status: status === 'failed' ? 'failed' : 'done',
+    summary: typeof summary === 'string' ? summary : undefined,
+    reportFile: typeof reportFile === 'string' ? reportFile : undefined,
+    changed: Array.isArray(changed) ? changed.map(String) : undefined,
+    unresolved: Array.isArray(unresolved) ? unresolved.map(String) : undefined,
+    result: typeof result === 'string' ? result : undefined,
+  });
+
+  if (!outcome.ok) {
+    res.status(409).json({ error: outcome.error });
+    return;
+  }
+  res.json({ ok: true, task: outcome.task });
 });
 
 // Get notifications for a session (supports ?since=<seq> for unread-only)
@@ -555,7 +625,9 @@ app.get('/api/tasks/:sessionId', (req, res) => {
   }
   const tasks = ptyManager.getTasks(resolved);
 
-  // Enrich with live processing status for display
+  // Enrich with live processing status for display. Terminal statuses (done, failed)
+  // pass through unchanged; only `pending` can upgrade to `working` when the SUB PTY
+  // is actively producing output.
   const enriched = tasks.map(t => {
     let displayStatus: string = t.status;
     if (t.status === 'pending') {

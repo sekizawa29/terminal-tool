@@ -208,10 +208,23 @@ export interface TaskEntry {
   targetSessionId: string;  // SUB who is working
   targetName: string;
   command: string;
-  status: 'pending' | 'done';
+  status: 'pending' | 'done' | 'failed';
   result?: string;
+  summary?: string;
+  reportFile?: string;
+  changed?: string[];
+  unresolved?: string[];
   createdAt: number;
   completedAt?: number;
+}
+
+export interface TaskCompletionFields {
+  status?: 'done' | 'failed';
+  summary?: string;
+  reportFile?: string;
+  changed?: string[];
+  unresolved?: string[];
+  result?: string;
 }
 
 const TASK_MAX_ENTRIES = 100;
@@ -258,6 +271,7 @@ interface PtySession {
   pendingIpcCount: number;   // number of in-flight IPC turns targeting this session
   lastIpcSentAt: number;     // timestamp of most recent IPC send to this session
   outputDir?: string;        // peer output directory for clean text artifacts
+  sessionToken: string;      // per-session capability token injected as TBOARD_TOKEN
 }
 
 export class PtyManager {
@@ -313,6 +327,15 @@ export class PtyManager {
 
   create(cols: number, rows: number, cwd?: string, shell?: string): string {
     const sessionId = randomBytes(16).toString('hex');
+    // Per-session capability token, injected as TBOARD_TOKEN into this pty's env.
+    // Threat model: tboard trusts processes inside its own pty sessions. The token
+    // proves the HTTP caller is that pty. It is NOT hardened against same-user
+    // attackers who can read /proc/<pid>/environ — such attackers were already able
+    // to hit the localhost HTTP/Unix-socket APIs before this change, so the token
+    // raises the bar without claiming multi-tenant isolation. Stronger isolation
+    // (Unix socket peer credentials, private sockets per session) is out of scope
+    // for Phase 0 and is tracked as a Phase 3 / hardening concern.
+    const sessionToken = randomBytes(24).toString('hex');
     const resolvedShell = getDefaultShell(shell);
     const shellName = normalizeProcessName(resolvedShell);
     const winShell = isWindowsShell(resolvedShell);
@@ -323,6 +346,7 @@ export class PtyManager {
       TBOARD_URL: `http://127.0.0.1:${this.serverPort}`,
       TBOARD_SOCKET: this.socketPath,
       TBOARD_SESSION: sessionId,
+      TBOARD_TOKEN: sessionToken,
     };
     if (this.binDir) {
       env.PATH = `${this.binDir}:${env.PATH || ''}`;
@@ -359,6 +383,7 @@ export class PtyManager {
       headlessTerm,
       pendingIpcCount: 0,
       lastIpcSentAt: 0,
+      sessionToken,
     };
 
     // Always buffer all output (for replay on reconnect)
@@ -1495,6 +1520,22 @@ export class PtyManager {
     return this.linkMainToSubs.get(sourceId)?.has(targetId) ?? false;
   }
 
+  /**
+   * Verify that `token` is the capability token issued to `sessionId` at creation.
+   * Within the declared threat model (see token generation in create()), this binds
+   * the HTTP caller to a specific pty session. Timing-safe comparison.
+   */
+  verifySessionToken(sessionId: string, token: string | undefined | null): boolean {
+    if (!token) return false;
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    const expected = session.sessionToken;
+    if (!expected || expected.length !== token.length) return false;
+    let diff = 0;
+    for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ token.charCodeAt(i);
+    return diff === 0;
+  }
+
   /** Register a delegated task. Returns taskId. */
   registerTask(sourceSessionId: string, targetSessionId: string, command: string): string {
     const taskId = randomBytes(8).toString('hex');
@@ -1519,11 +1560,12 @@ export class PtyManager {
       createdAt: Date.now(),
     });
 
-    // Enforce max entries: evict oldest completed first, then oldest pending
+    // Enforce max entries: evict oldest terminal tasks first (done or failed),
+    // then oldest pending as a last resort.
     while (tasks.length > TASK_MAX_ENTRIES) {
-      const doneIdx = tasks.findIndex(t => t.status === 'done');
-      if (doneIdx >= 0) {
-        tasks.splice(doneIdx, 1);
+      const terminalIdx = tasks.findIndex(t => t.status === 'done' || t.status === 'failed');
+      if (terminalIdx >= 0) {
+        tasks.splice(terminalIdx, 1);
       } else {
         tasks.shift();
       }
@@ -1535,34 +1577,60 @@ export class PtyManager {
     return taskId;
   }
 
-  /** Complete the latest pending task from a specific SUB (LIFO — most recent task completes first). */
-  completeTask(sourceSessionId: string, targetSessionId: string, result: string): boolean {
-    const tasks = this.taskRegistry.get(sourceSessionId);
-    if (!tasks) return false;
-
-    // LIFO: find the most recently created pending task for this SUB
-    let task: TaskEntry | undefined;
-    for (let i = tasks.length - 1; i >= 0; i--) {
-      if (tasks[i].targetSessionId === targetSessionId && tasks[i].status === 'pending') {
-        task = tasks[i];
-        break;
-      }
+  /** Find a task by its ID across all MAIN registries. Returns null if not found. */
+  findTaskById(taskId: string): TaskEntry | null {
+    for (const tasks of this.taskRegistry.values()) {
+      const task = tasks.find(t => t.taskId === taskId);
+      if (task) return task;
     }
-    if (!task) return false;
+    return null;
+  }
 
-    let truncatedResult = result;
-    if (Buffer.byteLength(truncatedResult, 'utf-8') > TASK_RESULT_MAX_BYTES) {
-      truncatedResult = Buffer.from(truncatedResult, 'utf-8').subarray(0, TASK_RESULT_MAX_BYTES).toString('utf-8');
+  /**
+   * Complete a task by its task_id. This is the primary completion path —
+   * SUB calls `tt task complete <task_id>` which routes here.
+   * Returns the updated task or an error.
+   */
+  completeTaskById(
+    taskId: string,
+    fields: TaskCompletionFields = {}
+  ): { ok: boolean; task?: TaskEntry; error?: string } {
+    const task = this.findTaskById(taskId);
+    if (!task) return { ok: false, error: `Task not found: ${taskId}` };
+    if (task.status !== 'pending') {
+      return { ok: false, error: `Task already ${task.status}: ${taskId}` };
     }
 
-    task.status = 'done';
-    task.result = truncatedResult;
+    const nextStatus: 'done' | 'failed' = fields.status === 'failed' ? 'failed' : 'done';
+
+    const truncate = (s: string) =>
+      Buffer.byteLength(s, 'utf-8') > TASK_RESULT_MAX_BYTES
+        ? Buffer.from(s, 'utf-8').subarray(0, TASK_RESULT_MAX_BYTES).toString('utf-8')
+        : s;
+
+    if (fields.summary !== undefined) task.summary = truncate(fields.summary);
+    if (fields.reportFile !== undefined) task.reportFile = fields.reportFile;
+    if (fields.changed !== undefined) task.changed = fields.changed;
+    if (fields.unresolved !== undefined) task.unresolved = fields.unresolved;
+    if (fields.result !== undefined) {
+      task.result = truncate(fields.result);
+    } else {
+      // Synthesize a result string from structured fields so legacy UI keeps rendering.
+      const parts: string[] = [];
+      if (task.summary) parts.push(task.summary);
+      if (task.changed && task.changed.length) parts.push(`Changed: ${task.changed.join(', ')}`);
+      if (task.unresolved && task.unresolved.length) parts.push(`Unresolved: ${task.unresolved.join(', ')}`);
+      if (task.reportFile) parts.push(`Report: ${task.reportFile}`);
+      if (parts.length) task.result = truncate(parts.join(' | '));
+    }
+
+    task.status = nextStatus;
     task.completedAt = Date.now();
 
     // Start draining capture instead of immediate close
     this.drainCapture(task.taskId, task.targetSessionId);
 
-    return true;
+    return { ok: true, task };
   }
 
   /** Get all tasks for a source session (MAIN). */
@@ -1570,19 +1638,27 @@ export class PtyManager {
     return this.taskRegistry.get(sourceSessionId) || [];
   }
 
-  /** Get task summary for a source session. Returns null if no tasks. */
-  getTaskSummary(sourceSessionId: string): { total: number; done: number; pending: number; summary: string } | null {
+  /**
+   * Get task summary for a source session. Returns null if no tasks.
+   * `done` and `failed` are both terminal states; only `pending` blocks the MAIN.
+   */
+  getTaskSummary(sourceSessionId: string): {
+    total: number; done: number; failed: number; pending: number; terminal: number; summary: string;
+  } | null {
     const tasks = this.taskRegistry.get(sourceSessionId);
     if (!tasks || tasks.length === 0) return null;
 
     const done = tasks.filter(t => t.status === 'done').length;
+    const failed = tasks.filter(t => t.status === 'failed').length;
     const total = tasks.length;
-    const pending = total - done;
-    const summary = done === total
-      ? `Tasks: ${total}/${total} done (all complete)`
-      : `Tasks: ${done}/${total} done`;
+    const terminal = done + failed;
+    const pending = total - terminal;
+    const failedSuffix = failed > 0 ? `, ${failed} failed` : '';
+    const summary = pending === 0
+      ? `Tasks: ${terminal}/${total} terminal (all settled${failedSuffix})`
+      : `Tasks: ${terminal}/${total} terminal${failedSuffix}`;
 
-    return { total, done, pending, summary };
+    return { total, done, failed, pending, terminal, summary };
   }
 
   // ── Task Capture (disk-backed output recording) ──────────────────────
