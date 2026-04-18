@@ -243,6 +243,25 @@ export interface TaskCompletionFields {
 const TASK_COMMAND_MAX_BYTES = 512;
 const TASK_RESULT_MAX_BYTES = 1024;
 
+/**
+ * Phase 4a: feature flag for PTY notification auto-inject.
+ *
+ * When enabled (current default), notifications delivered to MAIN are pasted
+ * into MAIN's PTY at a "safe" prompt moment with the legacy `canAutoInject`
+ * timing heuristic. When disabled, the notification queue still fills — MAIN
+ * can still read it via `tt notifications`, the HTTP API, or the
+ * `tboard_notifications_list` MCP tool — but nothing touches the PTY stream.
+ *
+ * This is read on every flush attempt so operators can toggle it without
+ * restarting the server.
+ */
+function isAutoInjectEnabled(): boolean {
+  const raw = process.env.TBOARD_AUTO_INJECT;
+  if (raw === undefined) return true; // transition-window default
+  const lowered = raw.toLowerCase();
+  return !(lowered === '0' || lowered === 'false' || lowered === 'off' || lowered === 'no');
+}
+
 // Task capture settings — disk-backed output recording during active tasks
 const CAPTURE_DIR = process.env.TBOARD_CAPTURE_DIR
   || join(process.env.XDG_RUNTIME_DIR || tmpdir(), 'tboard', 'captures');
@@ -1466,6 +1485,21 @@ export class PtyManager {
 
     const session = this.sessions.get(sessionId);
     if (!session) return;
+
+    // Phase 4a: PTY auto-inject is a compatibility-mode UX path, not part of
+    // the core task protocol. It can be disabled via `TBOARD_AUTO_INJECT=0`
+    // (or `false`) — the notification queue still fills and is readable via
+    // the structured API / MCP tools, but nothing is pasted into MAIN's PTY.
+    // Default remains ON during the Phase 4a transition window; Phase 4b
+    // will flip the default.
+    //
+    // Backlog semantics when toggled at runtime: notifications remain in the
+    // `queued` state while disabled. If the flag is later re-enabled, any
+    // still-queued entries become eligible for paste again on the next flush
+    // trigger. If a callsite wants "disable means forget", it should either
+    // mark those entries read or clear the queue explicitly; Phase 4a does
+    // not opine on that to keep the behavior a pure gate.
+    if (!isAutoInjectEnabled()) return;
 
     if (!this.canAutoInject(sessionId)) {
       this.scheduleNotificationRetry(sessionId);

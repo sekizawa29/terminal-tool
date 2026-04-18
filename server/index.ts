@@ -166,30 +166,16 @@ app.post('/api/links', (req, res) => {
   const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
   const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
 
+  // Phase 4a: MAIN-side link paste is now intentionally brief. MAIN is typically
+  // the orchestrator — a capable agent that can discover commands via `tt help`
+  // or MCP `tools/list`. Flooding its PTY with a 20-line protocol dump every
+  // link creation was buffer spam. SUB-side context below remains verbose since
+  // SUB is more often a task-focused agent that benefits from the inline brief.
   const mainContext = [
-    `[tboard] SYSTEM NOTIFICATION -- This is an automated message from the terminal board, not user input.`,
-    `You are now the MAIN agent, linked to sub-agent "${targetName}".`,
-    ``,
-    `  Dispatch:`,
-    `    tt peer send "task"              Send task (output: "Sent to <name> (task=<id>).")`,
-    `    tt tasks                         Check delegated task status (shows task_id)`,
-    `    tt task show <task_id>           Show one task's structured detail`,
-    ``,
-    `  Read results (task-scoped, preferred):`,
-    `    tt task report <task_id>          Read the report file SUB wrote for this task`,
-    `    tt task manifest <task_id>        Read the structured manifest.json for this task`,
-    `    tt task files <task_id>           List files in the task's output directory`,
-    ``,
-    `  Read results (debug / legacy):`,
-    `    tt peer read --since-send         Read terminal output since last sent task`,
-    `    tt peer read --full               Read full task output from disk (no buffer limit)`,
-    `    tt peer output [peer]             List files in peer's output directory (pre-Phase-1)`,
-    ``,
-    `  Protocol:`,
-    `    Each peer send returns a task_id; SUB closes it via \`tt task complete <task_id>\`.`,
-    `    Completion is recorded server-side regardless of notification delivery.`,
-    `    On completion, the server writes an atomic manifest.json under the task output dir.`,
-    `    Source of truth: tt task manifest / tt task report — not terminal buffer or UI notifications.`,
+    `[tboard] You are MAIN, linked to sub-agent "${targetName}".`,
+    `Dispatch: tt peer send "task" → returns task_id. Close: SUB runs \`tt task complete <id>\`.`,
+    `Read results: tt tasks | tt task show <id> | tt task report <id> | tt task manifest <id>.`,
+    `MCP: enable \`tt mcp-stdio\` in your agent's .mcp.json for tool-based access.`,
     ``
   ].join('\n');
 

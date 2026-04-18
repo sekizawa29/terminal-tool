@@ -1399,6 +1399,9 @@ async function taskFiles(taskId) {
  *     tboard_task_report     — read the SUB's report file for a task
  *     tboard_task_manifest   — read the parsed manifest.json for a task
  *     tboard_task_files      — list files in the task output directory
+ *   Notification read path (Phase 4a):
+ *     tboard_notifications_list       — non-PTY notification read (supports unreadOnly)
+ *     tboard_notifications_mark_read  — advance the last-read-seq marker
  *
  * Transport: stdio only. Only JSON-RPC frames on stdout; diagnostics go to stderr.
  * Auth: reuses the existing TBOARD_TOKEN issued at pty creation. Fail-fast if
@@ -1686,6 +1689,51 @@ async function mcpStdioServer() {
     return {
       content: [{ type: 'text', text: JSON.stringify(parsed.data.files || [], null, 2) }],
       structuredContent: { taskId, dir: parsed.data.dir, files: parsed.data.files || [] },
+    };
+  }));
+
+  // Phase 4a: non-PTY notification read path. Lets agents consume incoming UI
+  // notifications through MCP instead of relying on the PTY auto-inject, which
+  // is moving toward compatibility mode (see TBOARD_AUTO_INJECT).
+  server.registerTool('tboard_notifications_list', {
+    title: 'List notifications addressed at this session',
+    description: 'Return notifications queued for THIS session (the caller of mcp-stdio). Pass `unreadOnly: true` to limit to entries whose seq is greater than the last-read marker. Does NOT mark them read — use tboard_notifications_mark_read for that.',
+    inputSchema: {
+      unreadOnly: z.boolean().optional().describe('Filter to entries with seq > lastReadSeq. Default false.'),
+    },
+  }, async ({ unreadOnly }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/notifications/${encodeURIComponent(SELF)}`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    const all = parsed.data.notifications || [];
+    const lastReadSeq = parsed.data.lastReadSeq || 0;
+    const items = unreadOnly ? all.filter(n => (n.seq ?? 0) > lastReadSeq) : all;
+    return {
+      content: [{ type: 'text', text: JSON.stringify(items, null, 2) }],
+      structuredContent: {
+        notifications: items,
+        lastReadSeq,
+        totalCount: parsed.data.totalCount ?? all.length,
+        unreadOnly: !!unreadOnly,
+      },
+    };
+  }));
+
+  server.registerTool('tboard_notifications_mark_read', {
+    title: 'Mark all notifications for this session as read',
+    description: 'Advance the last-read-seq marker to the current tail. Subsequent tboard_notifications_list calls with unreadOnly=true will return nothing until new notifications arrive.',
+    inputSchema: {},
+  }, async () => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/notifications/${encodeURIComponent(SELF)}/read`, {
+      method: 'POST',
+    });
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ lastReadSeq: parsed.data.lastReadSeq }, null, 2) }],
+      structuredContent: { lastReadSeq: parsed.data.lastReadSeq },
     };
   }));
 
