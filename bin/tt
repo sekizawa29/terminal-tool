@@ -873,18 +873,68 @@ async function showNotifications(...args) {
   let target = null;
   let doClear = false;
   let newOnly = false;
-  for (const a of args) {
+  let doWait = false;
+  let sinceSeq = null;        // explicit override; defaults to lastReadSeq when --wait is set
+  let timeoutSec = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
     if (a === '--clear') doClear = true;
     else if (a === '--new') newOnly = true;
+    else if (a === '--wait') doWait = true;
+    else if (a === '--since' && args[i + 1] !== undefined) { sinceSeq = parseInt(args[++i], 10); }
+    else if (a === '--timeout' && args[i + 1] !== undefined) { timeoutSec = parseInt(args[++i], 10); }
     else if (!target) target = a;
   }
   const sessionId = target || SELF;
   if (!sessionId) {
-    console.error('Usage: tt notifications [id|name] [--new] [--clear]');
+    console.error('Usage: tt notifications [id|name] [--new] [--clear] [--wait [--since N] [--timeout SEC]]');
     process.exit(1);
   }
 
   const enc = encodeURIComponent(sessionId);
+
+  // --wait: long-poll the server. Default sinceSeq is the current lastReadSeq
+  // so unread entries are returned immediately, otherwise we block. Loops are
+  // the caller's job — this command runs one wait cycle and exits.
+  if (doWait) {
+    const headRes = await ttFetch(`${BASE}/api/notifications/${enc}`);
+    const head = await headRes.json();
+    if (head.error) {
+      console.error(`Error: ${head.error}`);
+      process.exit(1);
+    }
+    const baselineSeq = sinceSeq !== null ? sinceSeq : (head.lastReadSeq || 0);
+    const params = new URLSearchParams({ sinceSeq: String(baselineSeq) });
+    if (timeoutSec !== null) params.set('timeout', String(timeoutSec * 1000));
+    const waitRes = await ttFetch(`${BASE}/api/notifications/${enc}/wait?${params}`);
+    const waitResult = await waitRes.json();
+    if (waitResult.error) {
+      console.error(`Error: ${waitResult.error}`);
+      process.exit(1);
+    }
+    const items = waitResult.notifications || [];
+    if (items.length === 0) {
+      console.log(`(timeout — no new notifications since seq=${baselineSeq})`);
+      return;
+    }
+    for (const n of items) {
+      const time = new Date(n.timestamp).toLocaleTimeString();
+      const tag = n.kind === 'task:complete' && n.taskId
+        ? ` [task ${String(n.taskId).slice(0, 8)}]`
+        : '';
+      console.log(`[${time}] from "${n.sourceName}"${tag}: ${n.message}`);
+    }
+    const lastSeq = items[items.length - 1]?.seq;
+    const seqHint = lastSeq !== undefined ? ` (lastSeq=${lastSeq})` : '';
+    console.log(`\n${items.length} notification(s).${seqHint}`);
+    // Intentionally no auto-mark-read here. A wait response is a window into
+    // the queue; entries that arrive AFTER the response (but before we'd ack)
+    // would be silently consumed by a tail-advancing mark-read. Callers that
+    // want to ack run `tt notifications [id|name]` (no flag) which acks to
+    // the current tail, or use the next `--wait --since <lastSeq>` to
+    // explicitly continue from where this batch ended.
+    return;
+  }
 
   const res = await ttFetch(`${BASE}/api/notifications/${enc}`);
   const result = await res.json();
@@ -1720,6 +1770,34 @@ async function mcpStdioServer() {
     };
   }));
 
+  server.registerTool('tboard_notifications_wait', {
+    title: 'Long-poll for new notifications addressed at this session',
+    description: 'Block until a notification with seq > sinceSeq arrives, then return all matching entries. Returns empty (timedOut: true) on timeout. One-shot — re-call with the latest seq to keep listening. Pass sinceSeq=0 (default) to receive everything currently queued plus any that arrive within the timeout. Default timeout 25s, max 60s.',
+    inputSchema: {
+      sinceSeq: z.number().int().nonnegative().optional().describe('Return only entries with seq strictly greater than this. Default 0 (everything).'),
+      timeoutSec: z.number().int().positive().max(60).optional().describe('Max seconds to wait when the queue is empty. Default 25, max 60.'),
+    },
+  }, async ({ sinceSeq, timeoutSec }) => runTool(async () => {
+    const params = new URLSearchParams();
+    if (sinceSeq !== undefined) params.set('sinceSeq', String(sinceSeq));
+    if (timeoutSec !== undefined) params.set('timeout', String(timeoutSec * 1000));
+    const url = `${BASE}/api/notifications/${encodeURIComponent(SELF)}/wait${params.toString() ? `?${params}` : ''}`;
+    const res = await ttFetch(url);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data.error) throw new Error(parsed.data.error);
+    const items = parsed.data.notifications || [];
+    return {
+      content: [{ type: 'text', text: JSON.stringify(items, null, 2) }],
+      structuredContent: {
+        notifications: items,
+        lastReadSeq: parsed.data.lastReadSeq ?? 0,
+        totalCount: parsed.data.totalCount ?? items.length,
+        timedOut: !!parsed.data.timedOut,
+      },
+    };
+  }));
+
   server.registerTool('tboard_notifications_mark_read', {
     title: 'Mark all notifications for this session as read',
     description: 'Advance the last-read-seq marker to the current tail. Subsequent tboard_notifications_list calls with unreadOnly=true will return nothing until new notifications arrive.',
@@ -1800,6 +1878,8 @@ Usage:
   tt notify <id|name> <message>       Send notification (fire-and-forget)
   tt notifications [id|name]         Show notifications (auto marks read)
   tt notifications [id|name] --new   Show only unread notifications
+  tt notifications [id|name] --wait  Long-poll for next notification (default 25s)
+                                     Optional: --since <seq> --timeout <sec>
   tt tasks [id|name]                  Show delegated task status
   tt task complete <id> [flags]      Mark a task done/failed (primary completion path)
                                      Flags: --summary "..." --report <file>

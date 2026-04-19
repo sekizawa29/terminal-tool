@@ -204,6 +204,11 @@ export interface NotificationEntry {
   timestamp: number;
   seq: number;            // monotonic sequence for ordering
   status: 'queued' | 'injected';
+  // Optional discriminator + taskId so consumers can recognize task-completion
+  // events and correlate them back to a task. Filled by the auto-enqueue path
+  // in completeTaskById; legacy `tt notify` traffic leaves these undefined.
+  kind?: 'task:complete';
+  taskId?: string;
 }
 
 const NOTIFICATION_MAX_ENTRIES = 50;
@@ -1399,8 +1404,15 @@ export class PtyManager {
 
   // ── Notification Queue ─────────────────────────────────────────────
 
-  /** Enqueue a notification for a target session. Returns notificationId. */
-  enqueueNotification(targetSessionId: string, sourceSessionId: string, message: string): string {
+  /** Enqueue a notification for a target session. Returns notificationId.
+   *  `options.kind` + `options.taskId` tag the entry so consumers (MCP/HTTP)
+   *  can recognize task-completion events without parsing the message. */
+  enqueueNotification(
+    targetSessionId: string,
+    sourceSessionId: string,
+    message: string,
+    options?: { kind?: 'task:complete'; taskId?: string }
+  ): string {
     const notificationId = randomBytes(8).toString('hex');
     const sourceName = this.sessions.get(sourceSessionId)?.name || sourceSessionId.slice(0, 8);
 
@@ -1415,7 +1427,7 @@ export class PtyManager {
       this.notificationQueues.set(targetSessionId, []);
     }
     const queue = this.notificationQueues.get(targetSessionId)!;
-    queue.push({
+    const entry: NotificationEntry = {
       notificationId,
       sourceSessionId,
       sourceName,
@@ -1423,18 +1435,74 @@ export class PtyManager {
       timestamp: Date.now(),
       seq: ++this.notificationSeq,
       status: 'queued',
-    });
+    };
+    if (options?.kind) entry.kind = options.kind;
+    if (options?.taskId) entry.taskId = options.taskId;
+    queue.push(entry);
 
     // Enforce max entries
     while (queue.length > NOTIFICATION_MAX_ENTRIES) {
       queue.shift();
     }
 
+    // Wake any HTTP long-poll waiters subscribed to this session before the
+    // sync injection path runs — waiters resolve with the queue snapshot, and
+    // PTY auto-inject continues independently for legacy consumers.
+    this.notifyWaitWaiters(targetSessionId);
+
     // Try immediate flush if target is idle, and schedule retry if not
     this.tryFlushNotifications(targetSessionId);
     this.scheduleNotificationFlush(targetSessionId);
 
     return notificationId;
+  }
+
+  /** Long-poll waiter registry. Each entry resolves when a new notification
+   *  is enqueued for `targetSessionId`. Keyed by random id so cleanup is O(1). */
+  private notificationWaiters: Map<string, Map<string, () => void>> = new Map();
+
+  /** Per-session cap on concurrent long-poll waiters. Caps fd / memory growth
+   *  if a misbehaving caller keeps reopening the wait endpoint. Tunable later. */
+  private static readonly NOTIFICATION_WAITER_LIMIT = 8;
+
+  /** Register a long-poll waiter. Returns `{ok:true, dispose}` on success or
+   *  `{ok:false}` when the per-session limit is reached so the caller can
+   *  degrade gracefully (e.g. fall back to a one-shot read). */
+  registerNotificationWaiter(
+    targetSessionId: string,
+    onWake: () => void
+  ): { ok: true; dispose: () => void } | { ok: false } {
+    let bucket = this.notificationWaiters.get(targetSessionId);
+    if (!bucket) {
+      bucket = new Map();
+      this.notificationWaiters.set(targetSessionId, bucket);
+    }
+    if (bucket.size >= PtyManager.NOTIFICATION_WAITER_LIMIT) {
+      return { ok: false };
+    }
+    const waiterId = randomBytes(6).toString('hex');
+    bucket.set(waiterId, onWake);
+    return {
+      ok: true,
+      dispose: () => {
+        const b = this.notificationWaiters.get(targetSessionId);
+        if (!b) return;
+        b.delete(waiterId);
+        if (b.size === 0) this.notificationWaiters.delete(targetSessionId);
+      },
+    };
+  }
+
+  /** Wake all waiters for a session. Each waiter is responsible for cleaning
+   *  itself up via the returned disposer once it has read the queue. */
+  private notifyWaitWaiters(targetSessionId: string): void {
+    const bucket = this.notificationWaiters.get(targetSessionId);
+    if (!bucket || bucket.size === 0) return;
+    // Snapshot to allow waiters to mutate the bucket as they unregister.
+    const fns = Array.from(bucket.values());
+    for (const fn of fns) {
+      try { fn(); } catch (err) { console.error('notifyWaitWaiters:', err); }
+    }
   }
 
   /** Check if it's safe to auto-inject text into a session's terminal.
@@ -1808,6 +1876,18 @@ export class PtyManager {
       console.error(`writeTaskManifest failed for ${task.taskId}:`, err);
       task.manifestError = msg;
     }
+
+    // Auto-enqueue a task:complete notification on MAIN's queue so any
+    // consumer (PTY auto-inject, MCP pull, HTTP long-poll) can deliver the
+    // event without needing the SUB to call `tt notify` explicitly.
+    // Idempotency: completeTaskById guards against pending→terminal twice
+    // (returns 409), so this enqueue path runs at most once per task.
+    const summaryStr = task.summary || task.result || nextStatus;
+    const taskNotice = `task ${task.taskId.slice(0, 8)} ${nextStatus}: ${summaryStr}`;
+    this.enqueueNotification(task.sourceSessionId, task.targetSessionId, taskNotice, {
+      kind: 'task:complete',
+      taskId: task.taskId,
+    });
 
     return { ok: true, task };
   }

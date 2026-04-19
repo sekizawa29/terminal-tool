@@ -6,7 +6,7 @@ import { resolve, dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
-import { PtyManager } from './pty-manager.js';
+import { PtyManager, type NotificationEntry } from './pty-manager.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -689,6 +689,85 @@ app.get('/api/notifications/:sessionId', (req, res) => {
   const lastReadSeq = ptyManager.getLastReadSeq(resolved);
   const totalCount = ptyManager.getNotifications(resolved).length;
   res.json({ sessionId: resolved, notifications, lastReadSeq, totalCount });
+});
+
+// Long-poll for new notifications. Returns immediately when the queue has
+// entries with seq > sinceSeq; otherwise holds the response until a new
+// enqueue (via task complete or `tt notify`) wakes the waiter, or until the
+// timeout fires. One-shot semantics — clients re-issue with a refreshed
+// sinceSeq to keep listening. This is the primitive that MCP `_wait` and
+// CLI `--wait` wrap (the same mechanism for every consumer).
+//
+// Threat model: this endpoint inherits the existing notification API's
+// posture (no token check). The data exposed is limited to notifications
+// already addressed to the session, so an unauthorized reader sees the same
+// surface as `/api/notifications/:sessionId`. We additionally cap concurrent
+// waiters per session (handled by the manager) so a misbehaving caller can't
+// hold unbounded fds.
+const NOTIFICATION_WAIT_DEFAULT_MS = 25_000;
+const NOTIFICATION_WAIT_MAX_MS = 60_000;
+app.get('/api/notifications/:sessionId/wait', (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const sinceParam = req.query.sinceSeq as string | undefined;
+  const sinceSeq = sinceParam !== undefined ? parseInt(sinceParam, 10) : 0;
+  const timeoutParam = req.query.timeout as string | undefined;
+  let timeoutMs = timeoutParam !== undefined ? parseInt(timeoutParam, 10) : NOTIFICATION_WAIT_DEFAULT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = NOTIFICATION_WAIT_DEFAULT_MS;
+  if (timeoutMs > NOTIFICATION_WAIT_MAX_MS) timeoutMs = NOTIFICATION_WAIT_MAX_MS;
+
+  const respondWith = (notifications: NotificationEntry[]) => {
+    if (res.writableEnded) return;
+    const lastReadSeq = ptyManager.getLastReadSeq(resolved);
+    const totalCount = ptyManager.getNotifications(resolved).length;
+    res.json({ sessionId: resolved, notifications, lastReadSeq, totalCount, timedOut: notifications.length === 0 });
+  };
+
+  // Critical ordering: register the waiter BEFORE checking the queue. If we
+  // checked first and registered second, an enqueue landing in that gap
+  // would wake nothing — the waiter wasn't registered yet — and the request
+  // would block until full timeout despite items being available.
+  let settled = false;
+  let dispose: (() => void) | null = null;
+  const finish = (notifications: NotificationEntry[]) => {
+    if (settled) return;
+    settled = true;
+    if (dispose) { dispose(); dispose = null; }
+    if (timer) { clearTimeout(timer); }
+    respondWith(notifications);
+  };
+  const onWake = () => {
+    const fresh = ptyManager.getNotifications(resolved, sinceSeq);
+    if (fresh.length > 0) finish(fresh);
+  };
+  const timer = setTimeout(() => finish([]), timeoutMs);
+  const reg = ptyManager.registerNotificationWaiter(resolved, onWake);
+  if (reg.ok) {
+    dispose = reg.dispose;
+  } else {
+    // Per-session waiter cap exceeded; degrade to the fast path so callers
+    // still make progress instead of blocking unanchored.
+    finish(ptyManager.getNotifications(resolved, sinceSeq));
+    return;
+  }
+
+  // Now safe to drain anything already pending: the waiter is in place, so
+  // an enqueue racing with this check will be caught by onWake's re-read.
+  const initial = ptyManager.getNotifications(resolved, sinceSeq);
+  if (initial.length > 0) {
+    finish(initial);
+    return;
+  }
+
+  req.on('close', () => {
+    if (settled) return;
+    settled = true;
+    if (dispose) { dispose(); dispose = null; }
+    clearTimeout(timer);
+  });
 });
 
 // Mark notifications as read for a session
