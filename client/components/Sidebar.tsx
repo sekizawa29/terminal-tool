@@ -6,7 +6,6 @@ import type { SessionStatus } from '../types.js';
 interface SidebarProps {
   transform: CanvasTransform;
   onAddTerminal: () => void;
-  onAddBrowser: () => void;
   onToggleExplorer: () => void;
   explorerOpen: boolean;
   onAddMemo: () => void;

@@ -265,34 +265,6 @@ export default function App() {
     useTerminalStore.getState().saveLayout();
   }, [addTerminal, canvas]);
 
-  const addBrowserPanel = useCallback((url?: string) => {
-    const { offsetX, offsetY, scale } = canvas.transform;
-    const centerX = (window.innerWidth / 2 - offsetX) / scale;
-    const centerY = (window.innerHeight / 2 - offsetY) / scale;
-
-    const width = 800;
-    const height = 550;
-
-    const initialUrl = url || 'about:blank';
-    const host = initialUrl === 'about:blank' ? 'Browser' : initialUrl.replace(/^https?:\/\//, '').split('/')[0];
-
-    const tw: TerminalWindow = {
-      id: crypto.randomUUID(),
-      sessionId: '', // no server session for browser panels
-      type: 'browser',
-      url: initialUrl,
-      x: centerX - width / 2,
-      y: centerY - height / 2,
-      width,
-      height,
-      zIndex: 0,
-      title: host,
-    };
-
-    addTerminal(tw);
-    useTerminalStore.getState().saveLayout();
-  }, [canvas.transform, addTerminal]);
-
   // Restore sessions on mount (with StrictMode guard)
   const restoredRef = useRef(false);
   useEffect(() => {
@@ -553,7 +525,6 @@ export default function App() {
       <Sidebar
         transform={canvas.transform}
         onAddTerminal={addNewTerminal}
-        onAddBrowser={addBrowserPanel}
         onToggleExplorer={toggleExplorer}
         explorerOpen={explorerOpen}
         onAddMemo={addMemoPanel}

@@ -3,3 +3,14 @@ dist/
 .env
 *.log
 .claude/
+
+# Local dev/test artifacts
+/tmp/
+/captures/
+/.codex
+*:Zone.Identifier
+
+# Ad-hoc screenshots dropped at repo root
+/Monosnap*.png
+/スクリーンショット*.png
+/--selector
