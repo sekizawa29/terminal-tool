@@ -30,7 +30,12 @@ async function fetchActiveSessions(): Promise<string[]> {
   return data.sessions;
 }
 
-const PANEL_WIDTH = 290;
+const PANEL_WIDTH = 320;
+const TOOLBAR_BOTTOM = 14 + 44; // top + (42 row + 1+1 borders)
+const PANEL_GAP = 16;
+const SESSION_ROW = 36;
+const SESSION_LIST_PAD = 9;
+const SESSION_LIST_MAX = 248 + SESSION_LIST_PAD;
 
 export default function App() {
   const canvas = useCanvas();
@@ -39,6 +44,9 @@ export default function App() {
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [explorerRoot, setExplorerRoot] = useState('~');
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  const terminalCount = useTerminalStore((s) => s.terminals.size);
+  const sessionListHeight = Math.min(terminalCount * SESSION_ROW + SESSION_LIST_PAD, SESSION_LIST_MAX);
+  const explorerTop = TOOLBAR_BOTTOM + (sessionsExpanded ? sessionListHeight : 0) + PANEL_GAP;
 
   // Fetch token on mount (with StrictMode guard)
   useEffect(() => {
@@ -495,63 +503,26 @@ export default function App() {
         <div
           style={{
             position: 'fixed',
-            left: 12,
-            top: sessionsExpanded ? 58 + 177 : 58,
-            bottom: 12,
+            left: 14,
+            top: explorerTop,
+            bottom: 14,
             transition: 'top 200ms var(--ease-out)',
             width: PANEL_WIDTH,
             zIndex: 9999,
-            background: 'transparent',
-            border: 'none',
-            borderRadius: 10,
-            boxShadow: 'none',
+            background: '#1f2138',
+            border: '1px solid rgba(122, 162, 247, 0.10)',
+            borderRadius: 12,
+            boxShadow: [
+              '0 1px 0 rgba(255, 255, 255, 0.04) inset',
+              '0 1px 2px rgba(0, 0, 0, 0.4)',
+              '0 8px 20px -8px rgba(0, 0, 0, 0.5)',
+            ].join(', '),
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
             animation: 'scaleIn 0.2s var(--ease-out) both',
           }}
         >
-          {/* Explorer header */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              height: 34,
-              padding: '0 10px',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
-              flexShrink: 0,
-              gap: 7,
-            }}
-          >
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
-              <path d="M2 4a1 1 0 011-1h3.586a1 1 0 01.707.293L8.414 4.414A1 1 0 009.121 4.7H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" strokeWidth="1.3" fill="none"/>
-            </svg>
-            <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.04em', textTransform: 'uppercase', flex: 1 }}>
-              Explorer
-            </span>
-            <button
-              onClick={toggleExplorer}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 20,
-                height: 20,
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-tertiary)',
-                cursor: 'pointer',
-                borderRadius: 4,
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-              title="Close Explorer"
-            >
-              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-              </svg>
-            </button>
-          </div>
           {/* Explorer content */}
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <ExplorerContent
