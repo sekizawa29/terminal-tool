@@ -39,6 +39,15 @@ export function useCanvas() {
     }));
   }, []);
 
+  const panBy = useCallback((deltaX: number, deltaY: number) => {
+    if (deltaX === 0 && deltaY === 0) return;
+    setTransform((t) => ({
+      ...t,
+      offsetX: t.offsetX + deltaX,
+      offsetY: t.offsetY + deltaY,
+    }));
+  }, []);
+
   const endPan = useCallback(() => {
     isPanning.current = false;
   }, []);
@@ -124,6 +133,7 @@ export function useCanvas() {
     transform,
     startPan,
     updatePan,
+    panBy,
     endPan,
     zoom,
     setScale,

@@ -9,6 +9,7 @@ interface CanvasProps {
   transform: CanvasTransform;
   startPan: (clientX: number, clientY: number) => void;
   updatePan: (clientX: number, clientY: number) => void;
+  panBy: (deltaX: number, deltaY: number) => void;
   endPan: () => void;
   zoom: (deltaY: number, clientX: number, clientY: number) => void;
   setScale: (scale: number, anchorX?: number, anchorY?: number) => void;
@@ -22,6 +23,7 @@ export default function Canvas({
   transform,
   startPan,
   updatePan,
+  panBy,
   endPan,
   zoom,
   setScale,
@@ -94,11 +96,19 @@ export default function Canvas({
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         zoom(e.deltaY, e.clientX, e.clientY);
+        return;
+      }
+
+      const target = e.target;
+      const inWindow = target instanceof Element && target.closest('.terminal-window-enter');
+      if (!inWindow) {
+        e.preventDefault();
+        panBy(-e.deltaX, -e.deltaY);
       }
     };
     window.addEventListener('wheel', handler, { passive: false });
     return () => window.removeEventListener('wheel', handler);
-  }, [zoom]);
+  }, [panBy, zoom]);
 
   // Prevent middle-click autoscroll
   useEffect(() => {
