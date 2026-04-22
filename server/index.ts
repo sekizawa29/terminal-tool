@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { existsSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { PtyManager, type NotificationEntry } from './pty-manager.js';
+import { captureRegionPng, canCaptureScreen, wslPathToWindows, ScreenshotError } from './screenshot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -145,6 +146,64 @@ app.post('/api/upload', (req, res) => {
     res.json({ path: filePath });
   } catch (err) {
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// Capability probe: surface whether the host can launch the region-snip UI.
+app.get('/api/screenshot/capabilities', (_req, res) => {
+  res.json({ supported: canCaptureScreen() });
+});
+
+// Capture a screen region via the native Windows snip UI, save the PNG into
+// the terminal's CWD, and paste the resulting path into the terminal's PTY.
+app.post('/api/terminals/:sessionId/screenshot', async (req, res) => {
+  const resolved = resolveSession(req.params.sessionId);
+  if (!resolved) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  if (!canCaptureScreen()) {
+    res.status(501).json({ error: 'Screen capture requires Windows or WSL' });
+    return;
+  }
+
+  try {
+    const png = await captureRegionPng();
+
+    const status = ptyManager.getSessionStatus(resolved);
+    const isWindowsShell = status?.shellType === 'windows';
+    const linuxCwd = status?.cwd;
+
+    // Save location: terminal's CWD when known (WSL/Linux/macOS). For a
+    // Windows-shell terminal (CWD not reliably obtainable), fall back to
+    // the system tmpdir.
+    const saveDir = !isWindowsShell && linuxCwd && existsSync(linuxCwd) ? linuxCwd : tmpdir();
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+    const filename = `screenshot-${ts}.png`;
+    const savedPath = join(saveDir, filename);
+    writeFileSync(savedPath, png);
+
+    // Paste path into the terminal. Windows-shell terminals need a Windows
+    // path; everyone else gets the POSIX path. Quote if it contains spaces.
+    let pastePath = savedPath;
+    if (isWindowsShell) {
+      const winPath = wslPathToWindows(savedPath);
+      if (winPath) pastePath = winPath;
+    }
+    const needsQuote = /\s/.test(pastePath);
+    const pasted = needsQuote
+      ? (isWindowsShell ? `"${pastePath}"` : `'${pastePath}'`)
+      : pastePath;
+    ptyManager.write(resolved, pasted);
+
+    res.json({ ok: true, path: savedPath, pastedAs: pasted });
+  } catch (err) {
+    if (err instanceof ScreenshotError) {
+      const statusCode = err.code === 'TIMEOUT' ? 408 : err.code === 'UNSUPPORTED' ? 501 : 500;
+      res.status(statusCode).json({ error: err.message, code: err.code });
+    } else {
+      res.status(500).json({ error: String(err) });
+    }
   }
 });
 

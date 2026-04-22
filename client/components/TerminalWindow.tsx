@@ -41,6 +41,8 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   const [closeHovered, setCloseHovered] = useState(false);
   const [connectorHovered, setConnectorHovered] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [captureState, setCaptureState] = useState<'idle' | 'capturing' | 'error'>('idle');
+  const [captureHovered, setCaptureHovered] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isBrowser = tw.type === 'browser';
@@ -148,6 +150,20 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
     updateTerminal(tw.id, { url, title: url.replace(/^https?:\/\//, '').split('/')[0] || url });
     saveLayout();
   }, [tw.id, updateTerminal, saveLayout]);
+
+  const onCaptureClick = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (captureState === 'capturing') return;
+    setCaptureState('capturing');
+    try {
+      const res = await fetch(`/api/terminals/${tw.sessionId}/screenshot`, { method: 'POST' });
+      if (!res.ok) throw new Error(String(res.status));
+      setCaptureState('idle');
+    } catch {
+      setCaptureState('error');
+      setTimeout(() => setCaptureState('idle'), 1200);
+    }
+  }, [tw.sessionId, captureState]);
 
   // Link connector: start drag
   const onStartConnector = useCallback(
@@ -362,8 +378,53 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
             )}
           </div>
 
-          {/* Right spacer to balance the close button */}
-          <div style={{ width: 12 }} />
+          {/* Right: capture button for terminal panels, spacer otherwise */}
+          {!isBrowser && !isExplorer && !isEditor && !isMemo ? (
+            <button
+              onClick={onCaptureClick}
+              onMouseDown={(e) => e.stopPropagation()}
+              onMouseEnter={() => setCaptureHovered(true)}
+              onMouseLeave={() => setCaptureHovered(false)}
+              title="Capture screen region and attach (Win+Shift+S)"
+              aria-label="Capture screen region"
+              disabled={captureState === 'capturing'}
+              style={{
+                width: 18,
+                height: 18,
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: captureState === 'capturing' ? 'progress' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color:
+                  captureState === 'error'
+                    ? 'var(--accent-red)'
+                    : captureState === 'capturing'
+                    ? '#e0af68'
+                    : captureHovered
+                    ? 'var(--text-secondary)'
+                    : 'var(--text-tertiary)',
+                opacity: captureState === 'capturing' ? 0.9 : isActive || isHovered ? 1 : 0.6,
+                transition: 'color var(--duration-fast), opacity var(--duration-fast)',
+                animation: captureState === 'capturing' ? 'breathe 1.2s ease-in-out infinite' : undefined,
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M4 7h3l2-2h6l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinejoin="round"
+                  fill="none"
+                />
+                <circle cx="12" cy="13" r="3.2" stroke="currentColor" strokeWidth="1.6" fill="none" />
+              </svg>
+            </button>
+          ) : (
+            <div style={{ width: 12 }} />
+          )}
         </div>
 
         {/* Content */}
