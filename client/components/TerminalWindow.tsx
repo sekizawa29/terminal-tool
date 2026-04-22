@@ -43,6 +43,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [captureState, setCaptureState] = useState<'idle' | 'capturing' | 'error'>('idle');
   const [captureHovered, setCaptureHovered] = useState(false);
+  const [captureError, setCaptureError] = useState<string>('');
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isBrowser = tw.type === 'browser';
@@ -155,13 +156,23 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
     e.stopPropagation();
     if (captureState === 'capturing') return;
     setCaptureState('capturing');
+    setCaptureError('');
     try {
       const res = await fetch(`/api/terminals/${tw.sessionId}/screenshot`, { method: 'POST' });
-      if (!res.ok) throw new Error(String(res.status));
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.error) detail = body.error;
+          if (body?.code === 'CANCELED') detail = 'Canceled';
+        } catch {}
+        throw new Error(detail);
+      }
       setCaptureState('idle');
-    } catch {
+    } catch (err) {
+      setCaptureError(err instanceof Error ? err.message : String(err));
       setCaptureState('error');
-      setTimeout(() => setCaptureState('idle'), 1200);
+      setTimeout(() => { setCaptureState('idle'); setCaptureError(''); }, 2000);
     }
   }, [tw.sessionId, captureState]);
 
@@ -385,7 +396,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
               onMouseDown={(e) => e.stopPropagation()}
               onMouseEnter={() => setCaptureHovered(true)}
               onMouseLeave={() => setCaptureHovered(false)}
-              title="Capture screen region and attach (Win+Shift+S)"
+              title={captureError || 'Capture screen region and attach (Win+Shift+S)'}
               aria-label="Capture screen region"
               disabled={captureState === 'capturing'}
               style={{

@@ -2,27 +2,69 @@ import { spawn, execFileSync } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { platform } from 'os';
 
-// PowerShell script: clear clipboard, trigger native region-snip UI,
-// poll clipboard for image, emit PNG bytes as base64 to stdout.
+// PowerShell script: clear clipboard, trigger native region-snip UI, poll
+// clipboard for an image, emit raw PNG bytes on stdout. The snip host is
+// ScreenClippingHost.exe (Win11) or SnippingTool.exe (Win10 / fallback).
+// We watch those processes so an Escape-cancel exits fast instead of waiting
+// the full timeout. Exit 2 = timeout, 3 = canceled, 4 = launch failed.
 const PS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$WarningPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 try { [System.Windows.Forms.Clipboard]::Clear() } catch {}
 
-Start-Process "explorer.exe" "ms-screenclip:" -ErrorAction SilentlyContinue
+$launched = $false
+try { Start-Process "ms-screenclip:" -ErrorAction Stop; $launched = $true } catch {}
+if (-not $launched) {
+    try { Start-Process "explorer.exe" "ms-screenclip:" -ErrorAction Stop; $launched = $true } catch {}
+}
+if (-not $launched) {
+    try { Start-Process "SnippingTool.exe" "/clip" -ErrorAction Stop; $launched = $true } catch {}
+}
+if (-not $launched) {
+    [Console]::Error.Write("LAUNCH_FAILED")
+    exit 4
+}
 
+$snipNames = @('ScreenClippingHost','SnippingTool')
 $deadline = [DateTime]::UtcNow.AddSeconds(60)
+$startupDeadline = [DateTime]::UtcNow.AddMilliseconds(1500)
+$sawSnipProcess = $false
 $image = $null
+
 while ([DateTime]::UtcNow -lt $deadline) {
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 120
     try {
         if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
             $image = [System.Windows.Forms.Clipboard]::GetImage()
             if ($null -ne $image) { break }
         }
     } catch {}
+
+    $procAlive = $false
+    foreach ($n in $snipNames) {
+        if (Get-Process -Name $n -ErrorAction SilentlyContinue) { $procAlive = $true; break }
+    }
+    if ($procAlive) { $sawSnipProcess = $true }
+    elseif ($sawSnipProcess) {
+        # Snip UI appeared then closed without writing clipboard → canceled.
+        # Give it 400ms in case clipboard write is still propagating.
+        Start-Sleep -Milliseconds 400
+        if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+            $image = [System.Windows.Forms.Clipboard]::GetImage()
+            if ($null -ne $image) { break }
+        }
+        [Console]::Error.Write("CANCELED")
+        exit 3
+    }
+    elseif ([DateTime]::UtcNow -gt $startupDeadline) {
+        # Snip UI never appeared — launcher silently failed.
+        [Console]::Error.Write("LAUNCH_FAILED")
+        exit 4
+    }
 }
 
 if ($null -eq $image) {
@@ -75,9 +117,12 @@ function resolvePowershell(): string {
   return 'powershell.exe';
 }
 
+export type ScreenshotErrorCode = 'TIMEOUT' | 'CANCELED' | 'LAUNCH_FAILED' | 'UNSUPPORTED' | 'FAILED';
+
 export class ScreenshotError extends Error {
-  constructor(message: string, public code: 'TIMEOUT' | 'UNSUPPORTED' | 'FAILED') {
+  constructor(message: string, public code: ScreenshotErrorCode) {
     super(message);
+    this.name = 'ScreenshotError';
   }
 }
 
@@ -109,7 +154,15 @@ export function captureRegionPng(): Promise<Buffer> {
 
     child.on('close', (code) => {
       if (code === 2) {
-        rejectPromise(new ScreenshotError('Capture canceled or timed out', 'TIMEOUT'));
+        rejectPromise(new ScreenshotError('Capture timed out', 'TIMEOUT'));
+        return;
+      }
+      if (code === 3) {
+        rejectPromise(new ScreenshotError('Capture canceled', 'CANCELED'));
+        return;
+      }
+      if (code === 4) {
+        rejectPromise(new ScreenshotError('Could not launch Windows snip UI', 'LAUNCH_FAILED'));
         return;
       }
       if (code !== 0) {
@@ -118,7 +171,11 @@ export function captureRegionPng(): Promise<Buffer> {
         return;
       }
       const png = Buffer.concat(stdoutChunks);
-      if (png.length < 8 || png[0] !== 0x89 || png[1] !== 0x50) {
+      const isPng =
+        png.length >= 8 &&
+        png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47 &&
+        png[4] === 0x0d && png[5] === 0x0a && png[6] === 0x1a && png[7] === 0x0a;
+      if (!isPng) {
         rejectPromise(new ScreenshotError('captured payload was not a PNG', 'FAILED'));
         return;
       }
