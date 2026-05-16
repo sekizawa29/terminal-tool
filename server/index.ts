@@ -167,7 +167,7 @@ app.post('/api/terminals/:sessionId/screenshot', async (req, res) => {
     return;
   }
   if (!canCaptureScreen()) {
-    res.status(501).json({ error: 'Screen capture requires Windows or WSL' });
+    res.status(501).json({ error: 'Screen capture not supported on this platform' });
     return;
   }
   if (inflightCaptures.has(resolved)) {

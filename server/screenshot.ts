@@ -1,6 +1,7 @@
 import { spawn, execFileSync } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
-import { platform } from 'os';
+import { readFileSync, existsSync, unlinkSync } from 'fs';
+import { platform, tmpdir } from 'os';
+import { join } from 'path';
 
 // PowerShell script: clear clipboard, trigger native region-snip UI, poll
 // clipboard for an image, emit raw PNG bytes on stdout. The snip host is
@@ -104,7 +105,7 @@ export function isWSL(): boolean {
 }
 
 export function canCaptureScreen(): boolean {
-  return platform() === 'win32' || isWSL();
+  return platform() === 'win32' || platform() === 'darwin' || isWSL();
 }
 
 function resolvePowershell(): string {
@@ -126,12 +127,72 @@ export class ScreenshotError extends Error {
   }
 }
 
-// Launches the native Windows region-snip UI and resolves with PNG bytes.
-// Rejects with ScreenshotError('TIMEOUT') if the user cancels or waits >60s.
+// macOS region capture via the built-in `screencapture -i` tool. ESC cancels;
+// in that case no file is written and we surface CANCELED. The PNG is read
+// back into a Buffer (to keep the cross-platform contract) and the temp file
+// is removed before resolving.
+function captureRegionPngDarwin(): Promise<Buffer> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const tmp = join(
+      tmpdir(),
+      `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`,
+    );
+    const child = spawn('screencapture', ['-i', '-x', tmp], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    const stderrChunks: Buffer[] = [];
+    child.stderr.on('data', (c) => stderrChunks.push(c));
+
+    child.on('error', (err) => {
+      rejectPromise(new ScreenshotError(`Failed to spawn screencapture: ${err.message}`, 'FAILED'));
+    });
+
+    child.on('close', (code) => {
+      const cleanup = () => { try { if (existsSync(tmp)) unlinkSync(tmp); } catch {} };
+      if (code !== 0) {
+        cleanup();
+        const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
+        rejectPromise(new ScreenshotError(`screencapture exited ${code}${stderr ? `: ${stderr}` : ''}`, 'FAILED'));
+        return;
+      }
+      // screencapture returns 0 on ESC-cancel but writes no file.
+      if (!existsSync(tmp)) {
+        rejectPromise(new ScreenshotError('Capture canceled', 'CANCELED'));
+        return;
+      }
+      let png: Buffer;
+      try {
+        png = readFileSync(tmp);
+      } catch (err) {
+        cleanup();
+        rejectPromise(new ScreenshotError(`Failed to read screenshot: ${(err as Error).message}`, 'FAILED'));
+        return;
+      }
+      cleanup();
+      if (png.length === 0) {
+        rejectPromise(new ScreenshotError('Capture canceled', 'CANCELED'));
+        return;
+      }
+      const isPng =
+        png.length >= 8 &&
+        png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47 &&
+        png[4] === 0x0d && png[5] === 0x0a && png[6] === 0x1a && png[7] === 0x0a;
+      if (!isPng) {
+        rejectPromise(new ScreenshotError('captured payload was not a PNG', 'FAILED'));
+        return;
+      }
+      resolvePromise(png);
+    });
+  });
+}
+
+// Launches the native region-snip UI for the host OS and resolves with PNG
+// bytes. Rejects with ScreenshotError('CANCELED') on user cancel.
 export function captureRegionPng(): Promise<Buffer> {
   if (!canCaptureScreen()) {
-    return Promise.reject(new ScreenshotError('Screen capture requires Windows or WSL', 'UNSUPPORTED'));
+    return Promise.reject(new ScreenshotError('Screen capture not supported on this platform', 'UNSUPPORTED'));
   }
+  if (platform() === 'darwin') return captureRegionPngDarwin();
 
   return new Promise((resolvePromise, rejectPromise) => {
     const encoded = Buffer.from(PS_SCRIPT, 'utf16le').toString('base64');
