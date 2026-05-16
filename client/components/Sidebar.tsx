@@ -305,7 +305,7 @@ export default function Sidebar({
   const [starMenuOpen, setStarMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [recentDirs, setRecentDirs] = useState<string[]>(() => loadRecentDirs());
-  const seenSessionIds = useRef<Set<string>>(new Set());
+  const lastCwdBySession = useRef<Map<string, string>>(new Map());
   const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const starWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -369,12 +369,18 @@ export default function Sidebar({
         }
         let recentChanged = false;
         let nextRecent = loadRecentDirs();
+        const liveIds = new Set<string>();
         for (const s of data.statuses as SessionStatus[]) {
-          if (!s.cwd || seenSessionIds.current.has(s.sessionId)) continue;
-          seenSessionIds.current.add(s.sessionId);
+          liveIds.add(s.sessionId);
+          if (!s.cwd) continue;
+          if (lastCwdBySession.current.get(s.sessionId) === s.cwd) continue;
+          lastCwdBySession.current.set(s.sessionId, s.cwd);
           if (nextRecent[0] === s.cwd) continue;
           nextRecent = [s.cwd, ...nextRecent.filter((d) => d !== s.cwd)].slice(0, MAX_RECENT);
           recentChanged = true;
+        }
+        for (const id of lastCwdBySession.current.keys()) {
+          if (!liveIds.has(id)) lastCwdBySession.current.delete(id);
         }
         if (recentChanged) {
           saveRecentDirs(nextRecent);
