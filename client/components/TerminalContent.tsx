@@ -70,7 +70,7 @@ export default function TerminalContent({
       fontSize: 14,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
       theme: {
-        background: '#1a1b26',
+        background: '#000000',
         foreground: '#c0caf5',
         cursor: '#c0caf5',
         selectionBackground: '#33467c',

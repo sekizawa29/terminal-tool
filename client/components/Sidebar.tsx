@@ -117,6 +117,45 @@ const MemoIcon = () => (
   </svg>
 );
 
+const StarIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+    <path
+      d="M8 1.8l1.86 3.94 4.14.6-3 2.96.71 4.18L8 11.5l-3.71 1.98.71-4.18-3-2.96 4.14-.6L8 1.8z"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinejoin="round"
+      fill="none"
+    />
+  </svg>
+);
+
+const RECENT_DIRS_KEY = 'tboard.recentDirs';
+const MAX_RECENT = 5;
+
+function loadRecentDirs(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_DIRS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentDirs(dirs: string[]) {
+  try {
+    localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify(dirs));
+  } catch {
+    /* quota or disabled */
+  }
+}
+
+function shortDirLabel(cwd: string): string {
+  const parts = cwd.split('/').filter(Boolean);
+  return parts[parts.length - 1] || cwd;
+}
+
 const CopyIcon = () => (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
     <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="1.4" fill="none"/>
@@ -124,13 +163,17 @@ const CopyIcon = () => (
   </svg>
 );
 
+const LogoMark = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <rect x="2" y="2" width="20" height="20" rx="5" stroke="var(--accent-blue)" strokeWidth="1.8" />
+    <path d="M7 8l4 4-4 4" stroke="var(--accent-blue)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M13 16h4" stroke="var(--accent-blue)" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
 const Logo = () => (
   <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '0 2px 0 0', flexShrink: 0 }}>
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <rect x="2" y="2" width="20" height="20" rx="5" stroke="var(--accent-blue)" strokeWidth="1.8" />
-      <path d="M7 8l4 4-4 4" stroke="var(--accent-blue)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M13 16h4" stroke="var(--accent-blue)" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
+    <LogoMark />
     <span
       style={{
         fontSize: 13,
@@ -259,7 +302,48 @@ export default function Sidebar({
   const { bringToFront, setActive, updateTerminal, setSessionStatuses } = useTerminalStore();
   const [expanded, setExpanded] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [starMenuOpen, setStarMenuOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [recentDirs, setRecentDirs] = useState<string[]>(() => loadRecentDirs());
+  const seenSessionIds = useRef<Set<string>>(new Set());
   const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const starWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (collapseTimer.current) clearTimeout(collapseTimer.current);
+      if (addMenuTimer.current) clearTimeout(addMenuTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!starMenuOpen) return;
+    const handlePointer = (e: MouseEvent) => {
+      if (!starWrapperRef.current) return;
+      if (starWrapperRef.current.contains(e.target as Node)) return;
+      setStarMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointer);
+    return () => document.removeEventListener('mousedown', handlePointer);
+  }, [starMenuOpen]);
+
+  const handleWrapperEnter = () => {
+    if (collapseTimer.current) {
+      clearTimeout(collapseTimer.current);
+      collapseTimer.current = null;
+    }
+    setHovered(true);
+  };
+
+  const handleWrapperLeave = () => {
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    collapseTimer.current = setTimeout(() => {
+      if (starMenuOpen) return;
+      setHovered(false);
+      setAddMenuOpen(false);
+    }, 80);
+  };
 
   useEffect(() => {
     let active = true;
@@ -282,6 +366,19 @@ export default function Sidebar({
               updateTerminal(tw.id, { title: name });
             }
           }
+        }
+        let recentChanged = false;
+        let nextRecent = loadRecentDirs();
+        for (const s of data.statuses as SessionStatus[]) {
+          if (!s.cwd || seenSessionIds.current.has(s.sessionId)) continue;
+          seenSessionIds.current.add(s.sessionId);
+          if (nextRecent[0] === s.cwd) continue;
+          nextRecent = [s.cwd, ...nextRecent.filter((d) => d !== s.cwd)].slice(0, MAX_RECENT);
+          recentChanged = true;
+        }
+        if (recentChanged) {
+          saveRecentDirs(nextRecent);
+          setRecentDirs(nextRecent);
         }
       } catch { /* server unavailable */ }
     };
@@ -313,8 +410,26 @@ export default function Sidebar({
   const sessionPillBg = expanded ? 'var(--accent-soft)' : 'rgba(255, 255, 255, 0.03)';
   const sessionPillFg = expanded ? 'var(--accent-blue)' : 'var(--text-secondary)';
 
+  const panelShadow = [
+    '0 1px 0 rgba(255, 255, 255, 0.06) inset',
+    '0 0 0 1px rgba(0, 0, 0, 0.4)',
+    '0 14px 32px -8px rgba(0, 0, 0, 0.65)',
+    '0 4px 10px -2px rgba(0, 0, 0, 0.45)',
+  ].join(', ');
+
+  const ease = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const motionMs = 460;
+
+  const collapsedWidth = 42;
+  const expandedWidth = 348;
+  const contentTransition = hovered
+    ? `opacity ${Math.round(motionMs * 0.55)}ms ${ease} ${Math.round(motionMs * 0.4)}ms, transform ${Math.round(motionMs * 0.55)}ms ${ease} ${Math.round(motionMs * 0.4)}ms`
+    : `opacity ${Math.round(motionMs * 0.35)}ms ${ease} 0ms, transform ${Math.round(motionMs * 0.45)}ms ${ease} 0ms`;
+
   return (
     <div
+      onMouseEnter={handleWrapperEnter}
+      onMouseLeave={handleWrapperLeave}
       style={{
         position: 'fixed',
         top: 14,
@@ -329,14 +444,11 @@ export default function Sidebar({
           background: 'linear-gradient(180deg, #232540 0%, #1c1d2e 100%)',
           border: '1px solid rgba(122, 162, 247, 0.18)',
           borderRadius: 12,
-          boxShadow: [
-            '0 1px 0 rgba(255, 255, 255, 0.06) inset',
-            '0 0 0 1px rgba(0, 0, 0, 0.4)',
-            '0 14px 32px -8px rgba(0, 0, 0, 0.65)',
-            '0 4px 10px -2px rgba(0, 0, 0, 0.45)',
-          ].join(', '),
-          width: 320,
-          overflow: 'visible',
+          boxShadow: panelShadow,
+          width: hovered ? expandedWidth : collapsedWidth,
+          overflow: hovered ? 'visible' : 'hidden',
+          transition: `width ${motionMs}ms ${ease}, overflow 0s linear ${hovered ? motionMs : 0}ms`,
+          willChange: 'width',
         }}
       >
         {/* Top row */}
@@ -349,8 +461,56 @@ export default function Sidebar({
             gap: 2,
           }}
         >
-          <Logo />
-          <Divider />
+          {/* Always-visible logo icon */}
+          <button
+            type="button"
+            onClick={handleWrapperEnter}
+            aria-label="tboardメニューを開く"
+            title="tboard"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 18,
+              height: 18,
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: hovered ? 'default' : 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <LogoMark />
+          </button>
+
+          {/* Right-side cluster — fades in after the box widens */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 2,
+              marginLeft: 7,
+              opacity: hovered ? 1 : 0,
+              transform: hovered ? 'translateX(0)' : 'translateX(-6px)',
+              transition: contentTransition,
+              pointerEvents: hovered ? 'auto' : 'none',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                letterSpacing: '-0.01em',
+                lineHeight: 1,
+                paddingRight: 2,
+                flexShrink: 0,
+              }}
+            >
+              tboard
+            </span>
+            <Divider />
 
           {/* Session count pill */}
           <button
@@ -455,6 +615,67 @@ export default function Sidebar({
             )}
           </div>
 
+          {/* Recent directories — star + click-to-pin dropdown */}
+          <div ref={starWrapperRef} style={{ position: 'relative', flexShrink: 0 }}>
+            <ToolbarButton
+              icon={<StarIcon />}
+              hint={recentDirs.length ? '最近のディレクトリ' : '最近のディレクトリ (履歴なし)'}
+              onClick={() => {
+                if (recentDirs.length === 0) return;
+                setStarMenuOpen((p) => !p);
+              }}
+              active={starMenuOpen}
+              tone="explorer"
+            />
+            {starMenuOpen && recentDirs.length > 0 && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: -4,
+                  paddingTop: 6,
+                  zIndex: 10002,
+                }}
+              >
+                <div
+                  style={{
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 10,
+                    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55)',
+                    padding: 4,
+                    minWidth: 280,
+                    maxWidth: 380,
+                    animation: 'slideInUp 140ms var(--ease-out) both',
+                  }}
+                >
+                  {recentDirs.map((dir) => {
+                    const spawn = (kind: 'terminal' | 'claude' | 'codex') => {
+                      setStarMenuOpen(false);
+                      const { offsetX, offsetY, scale } = transform;
+                      const cx = (window.innerWidth / 2 - offsetX) / scale;
+                      const cy = (window.innerHeight / 2 - offsetY) / scale;
+                      const x = cx - 350;
+                      const y = cy - 225;
+                      if (kind === 'claude') onClaudeTerminal(dir, x, y);
+                      else if (kind === 'codex') onCodexTerminal(dir, x, y);
+                      else onDuplicateTerminal(dir, x, y);
+                    };
+                    return (
+                      <RecentDirItem
+                        key={dir}
+                        cwd={dir}
+                        onOpenTerminal={() => spawn('terminal')}
+                        onOpenClaude={() => spawn('claude')}
+                        onOpenCodex={() => spawn('codex')}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           <Divider />
 
           <ToolbarButton icon={<FitIcon />} hint="Zoom to Fit" onClick={onZoomToFit} />
@@ -467,10 +688,11 @@ export default function Sidebar({
             tone="explorer"
           />
           <ToolbarButton icon={<MemoIcon />} hint="New Memo" onClick={onAddMemo} tone="memo" />
+          </div>
         </div>
 
         {/* Session list */}
-        {expanded && (
+        {hovered && expanded && (
           <div
             style={{
               borderTop: '1px solid var(--border-hair)',
@@ -530,6 +752,97 @@ export default function Sidebar({
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+interface RecentDirItemProps {
+  cwd: string;
+  onOpenTerminal: () => void;
+  onOpenClaude: () => void;
+  onOpenCodex: () => void;
+}
+
+function RecentDirItem({ cwd, onOpenTerminal, onOpenClaude, onOpenCodex }: RecentDirItemProps) {
+  const [hover, setHover] = useState(false);
+  const name = shortDirLabel(cwd);
+  return (
+    <div
+      onClick={onOpenTerminal}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={cwd}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 9,
+        padding: '7px 9px',
+        borderRadius: 7,
+        cursor: 'pointer',
+        background: hover ? 'rgba(255, 255, 255, 0.035)' : 'transparent',
+        transition: 'background 120ms',
+      }}
+    >
+      <span
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          flexShrink: 0,
+          color: 'var(--accent-yellow)',
+        }}
+      >
+        <StarIcon />
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1,
+          overflow: 'hidden',
+        }}
+      >
+        <span
+          style={{
+            color: 'var(--text-primary)',
+            fontWeight: 500,
+            fontSize: 12,
+            letterSpacing: '-0.005em',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {name}
+        </span>
+        <span
+          style={{
+            color: 'var(--text-ghost)',
+            fontSize: 10,
+            fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {cwd}
+        </span>
+      </span>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          opacity: hover ? 1 : 0.35,
+          transition: 'opacity 120ms',
+          flexShrink: 0,
+        }}
+      >
+        <RowAction icon={<ClaudeIcon />} hint="このディレクトリで Claude を開く" onClick={onOpenClaude} />
+        <RowAction icon={<CodexIcon />} hint="このディレクトリで Codex を開く" onClick={onOpenCodex} />
+        <RowAction icon={<TerminalIcon />} hint="このディレクトリで Terminal を開く" onClick={onOpenTerminal} />
       </div>
     </div>
   );
