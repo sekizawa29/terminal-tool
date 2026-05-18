@@ -117,37 +117,91 @@ const MemoIcon = () => (
   </svg>
 );
 
-const StarIcon = () => (
+const StarIcon = ({ filled = false }: { filled?: boolean }) => (
   <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
     <path
       d="M8 1.8l1.86 3.94 4.14.6-3 2.96.71 4.18L8 11.5l-3.71 1.98.71-4.18-3-2.96 4.14-.6L8 1.8z"
       stroke="currentColor"
       strokeWidth="1.3"
       strokeLinejoin="round"
-      fill="none"
+      fill={filled ? 'currentColor' : 'none'}
     />
   </svg>
 );
 
-const RECENT_DIRS_KEY = 'tboard.recentDirs';
-const MAX_RECENT = 5;
+const PinIcon = ({ filled = false }: { filled?: boolean }) => (
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+    <path
+      d="M10.5 2L14 5.5l-2.5.7-3 3 1 3-1.2 1.2-3-3L2 13l1.6-3.3 3-3 .7-2.5L10.5 2z"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinejoin="round"
+      strokeLinecap="round"
+      fill={filled ? 'currentColor' : 'none'}
+    />
+  </svg>
+);
 
-function loadRecentDirs(): string[] {
+interface DirsState {
+  recent: string[];
+  pinned: string[];
+}
+
+const EMPTY_DIRS_STATE: DirsState = { recent: [], pinned: [] };
+
+async function fetchDirsState(): Promise<DirsState | null> {
   try {
-    const raw = localStorage.getItem(RECENT_DIRS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
+    const res = await fetch('/api/dirs');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      recent: Array.isArray(data.recent) ? data.recent : [],
+      pinned: Array.isArray(data.pinned) ? data.pinned : [],
+    };
   } catch {
-    return [];
+    return null;
   }
 }
 
-function saveRecentDirs(dirs: string[]) {
+async function pushRecentDir(cwd: string): Promise<DirsState | null> {
   try {
-    localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify(dirs));
+    const res = await fetch('/api/dirs/recent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
-    /* quota or disabled */
+    return null;
+  }
+}
+
+async function pinDir(cwd: string): Promise<DirsState | null> {
+  try {
+    const res = await fetch('/api/dirs/pinned', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function unpinDir(cwd: string): Promise<DirsState | null> {
+  try {
+    const res = await fetch('/api/dirs/pinned', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
   }
 }
 
@@ -304,8 +358,10 @@ export default function Sidebar({
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [starMenuOpen, setStarMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
-  const [recentDirs, setRecentDirs] = useState<string[]>(() => loadRecentDirs());
+  const [dirsState, setDirsStateLocal] = useState<DirsState>(EMPTY_DIRS_STATE);
   const lastCwdBySession = useRef<Map<string, string>>(new Map());
+  const dirsStateRef = useRef<DirsState>(EMPTY_DIRS_STATE);
+  dirsStateRef.current = dirsState;
   const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const starWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -347,6 +403,10 @@ export default function Sidebar({
 
   useEffect(() => {
     let active = true;
+    // Pull initial persisted dirs so the menu is hydrated before the first cwd-diff.
+    fetchDirsState().then((state) => {
+      if (active && state) setDirsStateLocal(state);
+    });
     const poll = async () => {
       try {
         const res = await fetch('/api/terminals/status');
@@ -367,24 +427,24 @@ export default function Sidebar({
             }
           }
         }
-        let recentChanged = false;
-        let nextRecent = loadRecentDirs();
         const liveIds = new Set<string>();
+        const newCwds: string[] = [];
         for (const s of data.statuses as SessionStatus[]) {
           liveIds.add(s.sessionId);
           if (!s.cwd) continue;
           if (lastCwdBySession.current.get(s.sessionId) === s.cwd) continue;
           lastCwdBySession.current.set(s.sessionId, s.cwd);
-          if (nextRecent[0] === s.cwd) continue;
-          nextRecent = [s.cwd, ...nextRecent.filter((d) => d !== s.cwd)].slice(0, MAX_RECENT);
-          recentChanged = true;
+          if (dirsStateRef.current.recent[0] === s.cwd) continue;
+          newCwds.push(s.cwd);
         }
         for (const id of lastCwdBySession.current.keys()) {
           if (!liveIds.has(id)) lastCwdBySession.current.delete(id);
         }
-        if (recentChanged) {
-          saveRecentDirs(nextRecent);
-          setRecentDirs(nextRecent);
+        // Push each new cwd to the server in order; server enforces the dedupe + 5-cap.
+        for (const cwd of newCwds) {
+          const updated = await pushRecentDir(cwd);
+          if (!active) return;
+          if (updated) setDirsStateLocal(updated);
         }
       } catch { /* server unavailable */ }
     };
@@ -392,6 +452,12 @@ export default function Sidebar({
     const interval = setInterval(poll, 2000);
     return () => { active = false; clearInterval(interval); };
   }, [updateTerminal, setSessionStatuses]);
+
+  const handleTogglePin = useCallback(async (cwd: string) => {
+    const isPinned = dirsStateRef.current.pinned.includes(cwd);
+    const updated = isPinned ? await unpinDir(cwd) : await pinDir(cwd);
+    if (updated) setDirsStateLocal(updated);
+  }, []);
 
   const handleClick = useCallback(
     (id: string) => {
@@ -581,15 +647,15 @@ export default function Sidebar({
                   top: '100%',
                   left: -4,
                   paddingTop: 6,
-                  zIndex: 10002,
+                  zIndex: 10010,
                 }}
               >
                 <div
                   style={{
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border-default)',
-                    borderRadius: 10,
-                    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55)',
+                    background: 'linear-gradient(180deg, #232540 0%, #1c1d2e 100%)',
+                    border: '1px solid rgba(122, 162, 247, 0.18)',
+                    borderRadius: 12,
+                    boxShadow: panelShadow,
                     padding: 4,
                     minWidth: 180,
                     animation: 'slideInUp 140ms var(--ease-out) both',
@@ -621,65 +687,98 @@ export default function Sidebar({
             )}
           </div>
 
-          {/* Recent directories — star + click-to-pin dropdown */}
+          {/* Pinned + recent directories — star dropdown */}
           <div ref={starWrapperRef} style={{ position: 'relative', flexShrink: 0 }}>
-            <ToolbarButton
-              icon={<StarIcon />}
-              hint={recentDirs.length ? '最近のディレクトリ' : '最近のディレクトリ (履歴なし)'}
-              onClick={() => {
-                if (recentDirs.length === 0) return;
-                setStarMenuOpen((p) => !p);
-              }}
-              active={starMenuOpen}
-              tone="explorer"
-            />
-            {starMenuOpen && recentDirs.length > 0 && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: '100%',
-                  left: -4,
-                  paddingTop: 6,
-                  zIndex: 10002,
-                }}
-              >
-                <div
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border-default)',
-                    borderRadius: 10,
-                    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55)',
-                    padding: 4,
-                    minWidth: 280,
-                    maxWidth: 380,
-                    animation: 'slideInUp 140ms var(--ease-out) both',
-                  }}
-                >
-                  {recentDirs.map((dir) => {
-                    const spawn = (kind: 'terminal' | 'claude' | 'codex') => {
-                      setStarMenuOpen(false);
-                      const { offsetX, offsetY, scale } = transform;
-                      const cx = (window.innerWidth / 2 - offsetX) / scale;
-                      const cy = (window.innerHeight / 2 - offsetY) / scale;
-                      const x = cx - 350;
-                      const y = cy - 225;
-                      if (kind === 'claude') onClaudeTerminal(dir, x, y);
-                      else if (kind === 'codex') onCodexTerminal(dir, x, y);
-                      else onDuplicateTerminal(dir, x, y);
-                    };
-                    return (
-                      <RecentDirItem
-                        key={dir}
-                        cwd={dir}
-                        onOpenTerminal={() => spawn('terminal')}
-                        onOpenClaude={() => spawn('claude')}
-                        onOpenCodex={() => spawn('codex')}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            {(() => {
+              const pinnedSet = new Set(dirsState.pinned);
+              const recentOnly = dirsState.recent.filter((d) => !pinnedSet.has(d));
+              const hasAny = dirsState.pinned.length > 0 || recentOnly.length > 0;
+              const hintText = hasAny
+                ? 'ピン / 最近のディレクトリ'
+                : 'ピン / 最近のディレクトリ (履歴なし)';
+              const spawn = (dir: string, kind: 'terminal' | 'claude' | 'codex') => {
+                setStarMenuOpen(false);
+                const { offsetX, offsetY, scale } = transform;
+                const cx = (window.innerWidth / 2 - offsetX) / scale;
+                const cy = (window.innerHeight / 2 - offsetY) / scale;
+                const x = cx - 350;
+                const y = cy - 225;
+                if (kind === 'claude') onClaudeTerminal(dir, x, y);
+                else if (kind === 'codex') onCodexTerminal(dir, x, y);
+                else onDuplicateTerminal(dir, x, y);
+              };
+              return (
+                <>
+                  <ToolbarButton
+                    icon={<StarIcon />}
+                    hint={hintText}
+                    onClick={() => {
+                      if (!hasAny) return;
+                      setStarMenuOpen((p) => !p);
+                    }}
+                    active={starMenuOpen}
+                    tone="explorer"
+                  />
+                  {starMenuOpen && hasAny && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '100%',
+                        left: -4,
+                        paddingTop: 6,
+                        zIndex: 10010,
+                      }}
+                    >
+                      <div
+                        style={{
+                          background: 'linear-gradient(180deg, #232540 0%, #1c1d2e 100%)',
+                          border: '1px solid rgba(122, 162, 247, 0.18)',
+                          borderRadius: 12,
+                          boxShadow: panelShadow,
+                          padding: 4,
+                          minWidth: 280,
+                          maxWidth: 380,
+                          animation: 'slideInUp 140ms var(--ease-out) both',
+                        }}
+                      >
+                        {dirsState.pinned.length > 0 && (
+                          <>
+                            <SectionLabel text="ピン留め" />
+                            {dirsState.pinned.map((dir) => (
+                              <RecentDirItem
+                                key={`pinned-${dir}`}
+                                cwd={dir}
+                                pinned
+                                onOpenTerminal={() => spawn(dir, 'terminal')}
+                                onOpenClaude={() => spawn(dir, 'claude')}
+                                onOpenCodex={() => spawn(dir, 'codex')}
+                                onTogglePin={() => handleTogglePin(dir)}
+                              />
+                            ))}
+                          </>
+                        )}
+                        {recentOnly.length > 0 && (
+                          <>
+                            <SectionLabel text="最近" />
+                            {recentOnly.map((dir) => (
+                              <RecentDirItem
+                                key={`recent-${dir}`}
+                                cwd={dir}
+                                pinned={false}
+                                onOpenTerminal={() => spawn(dir, 'terminal')}
+                                onOpenClaude={() => spawn(dir, 'claude')}
+                                onOpenCodex={() => spawn(dir, 'codex')}
+                                onTogglePin={() => handleTogglePin(dir)}
+                              />
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           <Divider />
@@ -701,6 +800,8 @@ export default function Sidebar({
         {hovered && expanded && (
           <div
             style={{
+              position: 'relative',
+              zIndex: 0,
               borderTop: '1px solid var(--border-hair)',
               padding: 4,
               maxHeight: 240,
@@ -765,12 +866,31 @@ export default function Sidebar({
 
 interface RecentDirItemProps {
   cwd: string;
+  pinned: boolean;
   onOpenTerminal: () => void;
   onOpenClaude: () => void;
   onOpenCodex: () => void;
+  onTogglePin: () => void;
 }
 
-function RecentDirItem({ cwd, onOpenTerminal, onOpenClaude, onOpenCodex }: RecentDirItemProps) {
+function SectionLabel({ text }: { text: string }) {
+  return (
+    <div
+      style={{
+        padding: '6px 10px 4px',
+        fontSize: 9,
+        fontWeight: 600,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        color: 'var(--text-ghost)',
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+function RecentDirItem({ cwd, pinned, onOpenTerminal, onOpenClaude, onOpenCodex, onTogglePin }: RecentDirItemProps) {
   const [hover, setHover] = useState(false);
   const name = shortDirLabel(cwd);
   return (
@@ -795,10 +915,10 @@ function RecentDirItem({ cwd, onOpenTerminal, onOpenClaude, onOpenCodex }: Recen
           display: 'flex',
           alignItems: 'center',
           flexShrink: 0,
-          color: 'var(--accent-yellow)',
+          color: pinned ? 'var(--accent-yellow)' : 'var(--text-ghost)',
         }}
       >
-        <StarIcon />
+        <StarIcon filled={pinned} />
       </span>
       <span
         style={{
@@ -846,6 +966,12 @@ function RecentDirItem({ cwd, onOpenTerminal, onOpenClaude, onOpenCodex }: Recen
           flexShrink: 0,
         }}
       >
+        <RowAction
+          icon={<PinIcon filled={pinned} />}
+          hint={pinned ? 'ピン留めを解除' : 'ピン留めする'}
+          onClick={onTogglePin}
+          activeColor={pinned ? 'var(--accent-yellow)' : undefined}
+        />
         <RowAction icon={<ClaudeIcon />} hint="このディレクトリで Claude を開く" onClick={onOpenClaude} />
         <RowAction icon={<CodexIcon />} hint="このディレクトリで Codex を開く" onClick={onOpenCodex} />
         <RowAction icon={<TerminalIcon />} hint="このディレクトリで Terminal を開く" onClick={onOpenTerminal} />
@@ -1001,10 +1127,16 @@ interface RowActionProps {
   icon: React.ReactNode;
   hint: string;
   onClick: () => void;
+  activeColor?: string;
 }
 
-function RowAction({ icon, hint, onClick }: RowActionProps) {
+function RowAction({ icon, hint, onClick, activeColor }: RowActionProps) {
   const [hover, setHover] = useState(false);
+  const color = activeColor
+    ? activeColor
+    : hover
+      ? 'var(--text-secondary)'
+      : 'var(--text-tertiary)';
   return (
     <button
       type="button"
@@ -1023,7 +1155,7 @@ function RowAction({ icon, hint, onClick }: RowActionProps) {
         height: 22,
         borderRadius: 5,
         background: hover ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
-        color: hover ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+        color,
         border: 'none',
         cursor: 'pointer',
         flexShrink: 0,

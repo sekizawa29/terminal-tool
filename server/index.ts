@@ -4,8 +4,8 @@ import { WebSocketServer } from 'ws';
 import { randomBytes } from 'crypto';
 import { resolve, dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import { PtyManager, type NotificationEntry } from './pty-manager.js';
 import { captureRegionPng, canCaptureScreen, wslPathToWindows, ScreenshotError } from './screenshot.js';
 
@@ -46,6 +46,49 @@ function isDescendantPath(parentPath: string, childPath: string): boolean {
   return childPath === parentPath || childPath.startsWith(normalizedParent);
 }
 
+// ── Persistent directory store (recent + pinned) ──────────────────────
+// Recent: auto-maintained, capped at MAX_RECENT_DIRS, MRU-first.
+// Pinned: user-managed, no cap, insertion-order. The two lists are independent;
+// a path can appear in pinned without being in recent.
+const DIRS_STATE_DIR = process.env.TBOARD_STATE_DIR
+  || join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'tboard');
+const DIRS_STATE_FILE = join(DIRS_STATE_DIR, 'dirs.json');
+const MAX_RECENT_DIRS = 5;
+
+interface DirsState {
+  recent: string[];
+  pinned: string[];
+}
+
+let dirsState: DirsState = { recent: [], pinned: [] };
+
+function loadDirsState(): DirsState {
+  try {
+    const raw = readFileSync(DIRS_STATE_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const recent = Array.isArray(parsed.recent)
+      ? parsed.recent.filter((s: unknown): s is string => typeof s === 'string').slice(0, MAX_RECENT_DIRS)
+      : [];
+    const pinned = Array.isArray(parsed.pinned)
+      ? parsed.pinned.filter((s: unknown): s is string => typeof s === 'string')
+      : [];
+    return { recent, pinned };
+  } catch {
+    return { recent: [], pinned: [] };
+  }
+}
+
+function saveDirsState(): void {
+  try {
+    mkdirSync(DIRS_STATE_DIR, { recursive: true });
+    writeFileSync(DIRS_STATE_FILE, JSON.stringify(dirsState, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn(`[tboard] Failed to persist dirs state: ${err}`);
+  }
+}
+
+dirsState = loadDirsState();
+
 // Auth token store (simple in-memory)
 const validTokens = new Set<string>();
 
@@ -54,6 +97,52 @@ app.get('/api/token', (_req, res) => {
   const token = randomBytes(32).toString('hex');
   validTokens.add(token);
   res.json({ token });
+});
+
+// ── Recent + pinned directories (persisted to ~/.local/state/tboard/dirs.json) ──
+
+app.get('/api/dirs', (_req, res) => {
+  res.json(dirsState);
+});
+
+app.post('/api/dirs/recent', (req, res) => {
+  const { cwd } = req.body || {};
+  if (typeof cwd !== 'string' || cwd.length === 0) {
+    res.status(400).json({ error: 'cwd must be a non-empty string' });
+    return;
+  }
+  if (dirsState.recent[0] !== cwd) {
+    dirsState.recent = [cwd, ...dirsState.recent.filter((d) => d !== cwd)].slice(0, MAX_RECENT_DIRS);
+    saveDirsState();
+  }
+  res.json(dirsState);
+});
+
+app.post('/api/dirs/pinned', (req, res) => {
+  const { cwd } = req.body || {};
+  if (typeof cwd !== 'string' || cwd.length === 0) {
+    res.status(400).json({ error: 'cwd must be a non-empty string' });
+    return;
+  }
+  if (!dirsState.pinned.includes(cwd)) {
+    dirsState.pinned = [...dirsState.pinned, cwd];
+    saveDirsState();
+  }
+  res.json(dirsState);
+});
+
+app.delete('/api/dirs/pinned', (req, res) => {
+  const { cwd } = req.body || {};
+  if (typeof cwd !== 'string' || cwd.length === 0) {
+    res.status(400).json({ error: 'cwd must be a non-empty string' });
+    return;
+  }
+  const next = dirsState.pinned.filter((d) => d !== cwd);
+  if (next.length !== dirsState.pinned.length) {
+    dirsState.pinned = next;
+    saveDirsState();
+  }
+  res.json(dirsState);
 });
 
 // Create terminal
