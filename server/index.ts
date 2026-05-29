@@ -319,6 +319,12 @@ app.post('/api/terminals/:sessionId/screenshot', async (req, res) => {
 
 // ── Links: Peer routing registry ─────────────────────────────────────
 
+// Pairs the user recently removed, so a quick re-link is recognized as a
+// reconnection (after a dropped connection) rather than a brand-new link.
+const recentlyUnlinked = new Map<string, number>(); // "idA|idB" → unlinkedAt(ms)
+const RECONNECT_WINDOW_MS = 30 * 60 * 1000;
+const linkPairKey = (a: string, b: string) => [a, b].sort().join('|');
+
 // Register a link (bidirectional)
 app.post('/api/links', (req, res) => {
   const { sourceId, targetId } = req.body || {};
@@ -326,14 +332,41 @@ app.post('/api/links', (req, res) => {
     res.status(400).json({ error: 'sourceId and targetId are required' });
     return;
   }
+  // Detect a reconnection: either the server still has these two registered as
+  // peers (their PTYs survived a UI/WebSocket drop such as display sleep), or the
+  // user removed the link moments ago and is re-drawing it. Either way the agents
+  // already hold their collaboration context in scrollback.
+  const pairKey = linkPairKey(sourceId, targetId);
+  const unlinkedAt = recentlyUnlinked.get(pairKey);
+  const recentlyDropped = unlinkedAt !== undefined && Date.now() - unlinkedAt < RECONNECT_WINDOW_MS;
+  const isReconnect = ptyManager.arePeers(sourceId, targetId) || recentlyDropped;
+  recentlyUnlinked.delete(pairKey);
+
   ptyManager.addLink(sourceId, targetId);
+
+  const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
+  const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
+
+  // Reconnection: tell BOTH agents the connection dropped and is back (fact only,
+  // no action instruction) and skip the verbose new-link protocol dump.
+  if (isReconnect) {
+    const submitDelay = 500;
+    const notices: [string, string][] = [
+      [sourceId, `[tboard] SYSTEM (automated notice, not user input): The connection to "${targetName}" was lost and has been re-established (reconnected).`],
+      [targetId, `[tboard] SYSTEM (automated notice, not user input): The connection to "${sourceName}" was lost and has been re-established (reconnected).`],
+    ];
+    for (const [id, msg] of notices) {
+      ptyManager.write(id, msg);
+      setTimeout(() => ptyManager.write(id, '\r'), submitDelay);
+    }
+    res.json({ ok: true, reconnected: true });
+    return;
+  }
 
   // Ensure output directory for the sub-agent
   const outputDir = ptyManager.ensureOutputDir(sourceId, targetId);
 
   // Inject agent collaboration context into both terminals
-  const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
-  const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
 
   // Phase 4a: MAIN-side link paste is now intentionally brief. MAIN is typically
   // the orchestrator — a capable agent that can discover commands via `tt help`
@@ -494,6 +527,14 @@ app.delete('/api/links', (req, res) => {
   ptyManager.write(targetId, `[tboard system] Link with "${sourceName}" disconnected. Peer commands are no longer available.\r`);
 
   ptyManager.removeLink(sourceId, targetId);
+
+  // Remember this pair briefly so an immediate re-link reads as a reconnection.
+  const now = Date.now();
+  for (const [k, t] of recentlyUnlinked) {
+    if (now - t >= RECONNECT_WINDOW_MS) recentlyUnlinked.delete(k);
+  }
+  recentlyUnlinked.set(linkPairKey(sourceId, targetId), now);
+
   res.json({ ok: true });
 });
 
