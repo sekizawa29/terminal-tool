@@ -309,6 +309,9 @@ export class PtyManager {
   private notificationSeq = 0; // global monotonic counter
   private notificationReadSeq = new Map<string, number>(); // sessionId → last read seq
   private taskRegistry = new Map<string, TaskEntry[]>(); // sourceSessionId (MAIN) → tasks
+  // Phase 7.2: dampen findTaskById CPU when unknown task ids are hammered.
+  private taskNegativeCache = new Map<string, number>(); // taskId → expiry ms (60s)
+  private lastTaskFsScanAt = 0;                          // throttle fs fallback to >=10s
   private activeCaptures = new Map<string, CaptureHandle[]>(); // targetSessionId → active captures
   private captureDir = CAPTURE_DIR;
   private compressTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1913,6 +1916,8 @@ export class PtyManager {
     if (!this.taskRegistry.has(sourceSessionId)) {
       this.taskRegistry.set(sourceSessionId, []);
     }
+    // A lookup before creation may have negatively cached this id — clear it.
+    this.taskNegativeCache.delete(taskId);
     const tasks = this.taskRegistry.get(sourceSessionId)!;
     tasks.push({
       taskId,
@@ -1964,6 +1969,21 @@ export class PtyManager {
       const task = tasks.find(t => t.taskId === taskId);
       if (task) return task;
     }
+
+    const now = Date.now();
+    // Negative cache: a recently-missed id short-circuits the fs scan for 60s.
+    const negExpiry = this.taskNegativeCache.get(taskId);
+    if (negExpiry !== undefined) {
+      if (negExpiry > now) return null;
+      this.taskNegativeCache.delete(taskId);
+    }
+    // Throttle the fs fallback so an unknown-id flood can't trigger a full
+    // tmpdir walk on every call.
+    if (now - this.lastTaskFsScanAt < 10_000) {
+      return null;
+    }
+    this.lastTaskFsScanAt = now;
+
     // Filesystem fallback: scan /tmp/tboard-output-<...>/<peer>/<taskId>/manifest.json
     const root = tmpdir();
     let rootReal: string;
@@ -2026,6 +2046,8 @@ export class PtyManager {
     } catch {
       // tmpdir scan failed — treat as not found.
     }
+    // Remember the miss so repeats skip the scan for 60s.
+    this.taskNegativeCache.set(taskId, Date.now() + 60_000);
     return null;
   }
 
