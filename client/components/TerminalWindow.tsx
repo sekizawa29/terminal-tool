@@ -136,13 +136,22 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
     const trimmed = value.trim();
     if (trimmed && trimmed !== tw.title) {
       updateTerminal(tw.id, { title: trimmed });
-      // Sync name to backend for terminal panels
+      // Sync name to backend for terminal panels. The server may disambiguate a
+      // duplicate name (foo -> foo-2); reflect the assigned name in the title.
       if (!isBrowser && !isMemo && tw.sessionId) {
         apiFetch(`/api/terminals/${tw.sessionId}/name`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: trimmed }),
-        }).catch(() => {});
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data?.name && data.name !== trimmed) {
+              updateTerminal(tw.id, { title: data.name });
+              saveLayout();
+            }
+          })
+          .catch(() => {});
       }
       saveLayout();
     }

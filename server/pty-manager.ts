@@ -803,18 +803,39 @@ export class PtyManager {
     return null;
   }
 
-  setName(sessionId: string, name: string): void {
+  /** Set a session's name, returning the name actually assigned. If `name` is
+   *  already held by another live session it is disambiguated with -2/-3/…, so
+   *  name-based routing always points at exactly one session. */
+  setName(sessionId: string, name: string): string | undefined {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session) return undefined;
 
-    // Remove old name from index
+    // Remove old name from index first so renaming to the same value is a no-op
+    // and our own previous name doesn't count as a collision.
     if (session.name) {
       this.nameIndex.delete(session.name);
     }
 
-    session.name = name || undefined;
+    let finalName: string | undefined = name || undefined;
     if (name) {
-      this.nameIndex.set(name, sessionId);
+      finalName = this.uniqueName(name, sessionId);
+      this.nameIndex.set(finalName, sessionId);
+    }
+    session.name = finalName;
+    return finalName;
+  }
+
+  /** Return `base`, or `base-2`/`base-3`/… if another live session holds it. */
+  private uniqueName(base: string, sessionId: string): string {
+    const owner = this.nameIndex.get(base);
+    if (!owner || owner === sessionId) return base;
+    let n = 2;
+    // Bounded by the number of live sessions, so this terminates quickly.
+    while (true) {
+      const candidate = `${base}-${n}`;
+      const candidateOwner = this.nameIndex.get(candidate);
+      if (!candidateOwner || candidateOwner === sessionId) return candidate;
+      n++;
     }
   }
 

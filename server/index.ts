@@ -326,8 +326,10 @@ app.put('/api/terminals/:sessionId/name', (req, res) => {
     res.status(400).json({ error: 'name must be a string' });
     return;
   }
-  ptyManager.setName(resolved, name);
-  res.json({ ok: true, sessionId: resolved, name });
+  // setName disambiguates collisions; echo the name actually assigned so the
+  // client can reflect e.g. "foo" -> "foo-2" in the title.
+  const assignedName = ptyManager.setName(resolved, name);
+  res.json({ ok: true, sessionId: resolved, name: assignedName ?? name });
 });
 
 // Upload file to terminal's CWD → return path
