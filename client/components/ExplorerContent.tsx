@@ -185,7 +185,7 @@ async function readFileAsBase64(file: File): Promise<string> {
 async function fetchDirectory(path: string, showHidden: boolean): Promise<FetchResult> {
   const endpoint = showHidden ? '/api/files/all' : '/api/files';
   const query = path === '~' ? '' : `?path=${encodeURIComponent(path)}`;
-  const res = await fetch(`${endpoint}${query}`);
+  const res = await apiFetch(`${endpoint}${query}`);
   const data = await readApiPayload(res);
   if (!res.ok) {
     throw new Error(getApiError(data, 'Failed to load directory'));
