@@ -19,6 +19,9 @@ interface TerminalContentProps {
 // Reconnect backoff schedule (ms), capped at 15s. Index = attempt number.
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
 
+// Warn at most once if the xterm private-API mouse patch can't be applied.
+let mousePatchWarned = false;
+
 export default function TerminalContent({
   sessionId,
   token,
@@ -139,9 +142,14 @@ export default function TerminalContent({
     // Fix mouse coordinate offset caused by CSS transform: scale() on ancestor.
     // xterm.js computes cell width via OffscreenCanvas (unscaled), but mouse
     // coordinates from getBoundingClientRect are in screen space (scaled).
+    //
+    // NOTE: this reaches into xterm's private _core._mouseService. If you bump
+    // @xterm/xterm (pinned in package.json), re-verify this patch still applies —
+    // the guard below degrades to "selection offset when zoom != 100%" rather
+    // than crashing if the internal shape changes.
     const core = (term as any)._core;
-    if (core?._mouseService) {
-      const ms = core._mouseService;
+    const ms = core?._mouseService;
+    if (ms && typeof ms.getCoords === 'function' && typeof ms.getMouseReportCoords === 'function') {
       const origGetCoords = ms.getCoords.bind(ms);
       ms.getCoords = function(event: any, element: HTMLElement, colCount: number, rowCount: number, isSelection?: boolean) {
         const s = getScaleRef.current();
@@ -167,6 +175,12 @@ export default function TerminalContent({
         }
         return origGetMouseReportCoords(event, element);
       };
+    } else if (!mousePatchWarned) {
+      mousePatchWarned = true;
+      console.warn(
+        '[tboard] xterm _mouseService.getCoords patch could not be applied; ' +
+        'text selection may be offset when zoom != 100%. Check the xterm version.'
+      );
     }
 
     // Re-measure after fonts load to ensure correct character dimensions
