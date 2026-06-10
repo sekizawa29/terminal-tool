@@ -82,6 +82,115 @@ function stripAgentNoise(text: string, profile: AgentProfile): string {
   return result.trim();
 }
 
+/**
+ * Result of a middle-elision pass. `elided=false` means the input was returned
+ * verbatim (and `omittedLines`/`omittedBytes` are 0).
+ */
+export interface ElideResult {
+  text: string;
+  elided: boolean;
+  omittedLines: number;
+  omittedBytes: number;
+}
+
+/**
+ * Token-efficiency helper (Phase 8.2). Keep the head (~40%) and tail (~60%) of a
+ * large text and replace the middle with a single marker line, so callers see
+ * both where output started (errors) and where it ended (conclusions) without
+ * pulling the whole thing into context.
+ *
+ * Pure, read-time-only: this never mutates stored capture/report data. Callers
+ * apply it when serializing an HTTP response. When `Buffer.byteLength(text) <=
+ * maxBytes`, or `maxBytes <= 0`, the text is returned unchanged.
+ *
+ * Splitting happens on line boundaries so multi-byte characters are never cut
+ * mid-sequence. A single line larger than the byte budget is the only case that
+ * is sliced mid-line (head/tail slice on a UTF-8-safe boundary).
+ */
+export function elideMiddle(text: string, maxBytes: number): ElideResult {
+  if (maxBytes <= 0 || Buffer.byteLength(text) <= maxBytes) {
+    return { text, elided: false, omittedLines: 0, omittedBytes: 0 };
+  }
+
+  const lines = text.split('\n');
+  // Byte length of each line including its trailing '\n' (the last line has none,
+  // but counting one extra newline only makes the budget slightly conservative).
+  const lineBytes = lines.map((l) => Buffer.byteLength(l) + 1);
+  const totalBytes = lineBytes.reduce((a, b) => a + b, 0);
+
+  // Pathological single-line case: slice the one line on a UTF-8-safe boundary.
+  if (lines.length === 1) {
+    const headBudget = Math.floor(maxBytes * 0.4);
+    const tailBudget = maxBytes - headBudget;
+    const buf = Buffer.from(text, 'utf-8');
+    const head = utf8SliceSafe(buf, 0, headBudget);
+    const tail = utf8SliceSafe(buf, buf.length - tailBudget, buf.length);
+    const omittedBytes = buf.length - Buffer.byteLength(head) - Buffer.byteLength(tail);
+    const marker = `… [tboard: 0 lines / ${Math.round(omittedBytes / 1024)} KB omitted — full output available via --all] …`;
+    return {
+      text: `${head}\n${marker}\n${tail}`,
+      elided: true,
+      omittedLines: 0,
+      omittedBytes,
+    };
+  }
+
+  // Reserve budget for the marker line itself so the result stays within maxBytes.
+  const markerReserve = 96;
+  const budget = Math.max(0, maxBytes - markerReserve);
+  const headBudget = Math.floor(budget * 0.4);
+  const tailBudget = budget - headBudget;
+
+  // Accumulate head lines from the front until the head budget is exhausted.
+  let headEnd = 0;
+  let headUsed = 0;
+  while (headEnd < lines.length && headUsed + lineBytes[headEnd] <= headBudget) {
+    headUsed += lineBytes[headEnd];
+    headEnd++;
+  }
+
+  // Accumulate tail lines from the back until the tail budget is exhausted.
+  let tailStart = lines.length;
+  let tailUsed = 0;
+  while (tailStart > headEnd && tailUsed + lineBytes[tailStart - 1] <= tailBudget) {
+    tailUsed += lineBytes[tailStart - 1];
+    tailStart--;
+  }
+
+  // Always keep at least the first and last line so the marker has context.
+  if (headEnd === 0) headEnd = 1;
+  if (tailStart <= headEnd) tailStart = Math.min(lines.length, headEnd + 1);
+
+  const omittedLines = tailStart - headEnd;
+  if (omittedLines <= 0) {
+    // Nothing actually omittable (e.g. every line is huge); return verbatim.
+    return { text, elided: false, omittedLines: 0, omittedBytes: 0 };
+  }
+
+  const omittedBytes = lineBytes.slice(headEnd, tailStart).reduce((a, b) => a + b, 0);
+  const headPart = lines.slice(0, headEnd).join('\n');
+  const tailPart = lines.slice(tailStart).join('\n');
+  const marker = `… [tboard: ${omittedLines} lines / ${Math.round(omittedBytes / 1024)} KB omitted — full output available via --all] …`;
+
+  return {
+    text: `${headPart}\n${marker}\n${tailPart}`,
+    elided: true,
+    omittedLines,
+    omittedBytes,
+  };
+}
+
+/** Slice a UTF-8 Buffer to [start, end) without splitting a multi-byte char. */
+function utf8SliceSafe(buf: Buffer, start: number, end: number): string {
+  let s = Math.max(0, start);
+  let e = Math.min(buf.length, end);
+  // Move start forward off a continuation byte (0b10xxxxxx).
+  while (s < e && (buf[s] & 0xc0) === 0x80) s++;
+  // Move end backward off a continuation byte.
+  while (e > s && e < buf.length && (buf[e] & 0xc0) === 0x80) e--;
+  return buf.toString('utf-8', s, e);
+}
+
 function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || '';
 }
@@ -2331,7 +2440,7 @@ export class PtyManager {
   }
 
   /** Read a task's capture file from disk. Returns null if not found. */
-  async readCapture(taskId: string, clean: boolean = true): Promise<{ output: string; status: string; truncated: boolean } | null> {
+  async readCapture(taskId: string, clean: boolean = true, maxBytes: number = 0): Promise<{ output: string; status: string; truncated: boolean; elided: boolean; omittedLines: number; omittedBytes: number } | null> {
     const filePath = join(this.captureDir, `${taskId}.capture`);
     const gzPath = filePath + '.gz';
 
@@ -2373,7 +2482,9 @@ export class PtyManager {
       output = stripAgentNoise(output, this.getProfile(targetSessionId));
     }
 
-    return { output, status, truncated };
+    // Read-time middle-elision (8.2). The on-disk capture is never modified.
+    const el = elideMiddle(output, maxBytes);
+    return { output: el.text, status, truncated, elided: el.elided, omittedLines: el.omittedLines, omittedBytes: el.omittedBytes };
   }
 
   /** Check if a capture file exists for a task. */
@@ -2597,6 +2708,29 @@ export class PtyManager {
     }
     if (!existsSync(resolved) || !statSync(resolved).isFile()) return null;
     return readFileSync(resolved, 'utf-8');
+  }
+
+  /**
+   * Resolve and stat the task's report file without reading it. Used by the
+   * report API (8.1) to enforce a hard size ceiling before loading into memory.
+   * Returns the absolute path + byte size, or null if there is no readable report.
+   */
+  statTaskReport(taskId: string): { path: string; size: number } | null {
+    const task = this.findTaskById(taskId);
+    if (!task) return null;
+    const dir = this.getTaskOutputDir(taskId);
+    if (!dir || !task.reportFile) return null;
+    const resolved = pathResolve(dir, task.reportFile);
+    try {
+      const realDir = realpathSync(dir);
+      const realFile = realpathSync(resolved);
+      const normalized = realDir.endsWith('/') ? realDir : `${realDir}/`;
+      if (realFile !== realDir && !realFile.startsWith(normalized)) return null;
+    } catch {
+      return null;
+    }
+    if (!existsSync(resolved) || !statSync(resolved).isFile()) return null;
+    return { path: resolved, size: statSync(resolved).size };
   }
 
   /** List files in the task-scoped output directory. */

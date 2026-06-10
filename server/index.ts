@@ -6,7 +6,7 @@ import { resolve, dirname, join, extname, basename, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync, rmSync, realpathSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { PtyManager, DispatchOverflowError, type NotificationEntry } from './pty-manager.js';
+import { PtyManager, DispatchOverflowError, elideMiddle, type ElideResult, type NotificationEntry } from './pty-manager.js';
 import { captureRegionPng, canCaptureScreen, wslPathToWindows, ScreenshotError } from './screenshot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,52 @@ const binDir = resolve(__dirname, '../bin');
 const binDirResolved = existsSync(binDir) ? binDir : resolve(__dirname, '../../bin');
 
 const ptyManager = new PtyManager(PORT, binDirResolved, SOCKET_PATH);
+
+// ── Token efficiency (Phase 8) ────────────────────────────────────────
+// Default byte budgets for read-time middle-elision (8.2 / 8.1). These bound
+// how much a single read drops into MAIN's context; full data stays on disk.
+const READ_MAX_BYTES_DEFAULT = 32768;   // rendered / capture reads
+const REPORT_MAX_BYTES_DEFAULT = 65536; // task report (usually a small summary)
+const REPORT_HARD_LIMIT_BYTES = 10 * 1024 * 1024; // 10MB report fetch ceiling
+
+/** Parse a `maxBytes` query value. Missing → fallback. `0` → unlimited (0). */
+function parseMaxBytes(raw: unknown, fallback: number): number {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const n = parseInt(String(raw), 10);
+  if (isNaN(n) || n < 0) return fallback;
+  return n; // 0 means unlimited (elideMiddle treats <=0 as passthrough)
+}
+
+// In-memory read accounting (8.4). Reset on restart; not persisted.
+type ReadApi = 'rendered' | 'capture' | 'report' | 'manifest' | 'buffer';
+interface ReadStats { calls: number; bytesReturned: number; bytesElided: number }
+const readStatsSince = new Date().toISOString();
+const readStatsTotals = new Map<ReadApi, ReadStats>();
+const readStatsSessions = new Map<string, Map<ReadApi, ReadStats>>();
+
+function bumpStats(map: Map<ReadApi, ReadStats>, api: ReadApi, bytesReturned: number, bytesElided: number): void {
+  let s = map.get(api);
+  if (!s) { s = { calls: 0, bytesReturned: 0, bytesElided: 0 }; map.set(api, s); }
+  s.calls++;
+  s.bytesReturned += bytesReturned;
+  s.bytesElided += bytesElided;
+}
+
+/**
+ * Record a read for stats. Exception-safe: a metrics failure must never break
+ * an API response (8.4). `el` carries the elided text + omitted byte count.
+ */
+function recordRead(api: ReadApi, sessionId: string | null, el: ElideResult): void {
+  try {
+    const bytesReturned = Buffer.byteLength(el.text);
+    bumpStats(readStatsTotals, api, bytesReturned, el.omittedBytes);
+    if (sessionId) {
+      let sm = readStatsSessions.get(sessionId);
+      if (!sm) { sm = new Map(); readStatsSessions.set(sessionId, sm); }
+      bumpStats(sm, api, bytesReturned, el.omittedBytes);
+    }
+  } catch { /* metrics are best-effort */ }
+}
 
 // Resolve session ID from full ID, short prefix, or name
 function resolveSession(idOrName: string): string | null {
@@ -394,6 +440,8 @@ app.get('/api/terminals/:sessionId/buffer', (req, res) => {
   const lines = parseInt(req.query.lines as string) || 100;
   const plain = req.query.plain !== 'false';
   const output = ptyManager.getBuffer(resolved, lines, plain);
+  // `--buffer` is an explicit raw escape hatch; no elision, but still metered (8.4).
+  recordRead('buffer', resolved, { text: output ?? '', elided: false, omittedLines: 0, omittedBytes: 0 });
   res.json({ output, sessionId: resolved });
 });
 
@@ -1117,21 +1165,40 @@ app.get('/api/tasks/by-id/:taskId/manifest', (req, res) => {
     return;
   }
   try {
-    res.json({ taskId: req.params.taskId, manifest: JSON.parse(raw) });
+    const parsed = JSON.parse(raw);
+    const task = ptyManager.findTaskById(req.params.taskId);
+    recordRead('manifest', task?.targetSessionId ?? null, { text: raw, elided: false, omittedLines: 0, omittedBytes: 0 });
+    res.json({ taskId: req.params.taskId, manifest: parsed });
   } catch {
     res.status(500).json({ error: 'Manifest exists but is not valid JSON' });
   }
 });
 
 // Read the report file declared on task.reportFile.
+// Token efficiency (8.1): hard 10MB ceiling (checked via stat before read) plus
+// read-time middle-elision (default 65536 bytes, maxBytes=0 disables). The file
+// on disk is never modified.
 app.get('/api/tasks/by-id/:taskId/report', (req, res) => {
+  const stat = ptyManager.statTaskReport(req.params.taskId);
+  if (stat && stat.size > REPORT_HARD_LIMIT_BYTES) {
+    res.status(413).json({
+      error: `Report too large (${stat.size} bytes, limit ${REPORT_HARD_LIMIT_BYTES}). Read it directly from disk.`,
+      size: stat.size,
+      limit: REPORT_HARD_LIMIT_BYTES,
+      path: stat.path,
+    });
+    return;
+  }
   const content = ptyManager.readTaskReport(req.params.taskId);
   if (content === null) {
     res.status(404).json({ error: `No report for task: ${req.params.taskId}` });
     return;
   }
   const task = ptyManager.findTaskById(req.params.taskId);
-  res.json({ taskId: req.params.taskId, filename: task?.reportFile || null, content });
+  const maxBytes = parseMaxBytes(req.query.maxBytes, REPORT_MAX_BYTES_DEFAULT);
+  const el = elideMiddle(content, maxBytes);
+  recordRead('report', task?.targetSessionId ?? null, el);
+  res.json({ taskId: req.params.taskId, filename: task?.reportFile || null, content: el.text, elided: el.elided, omittedLines: el.omittedLines, omittedBytes: el.omittedBytes });
 });
 
 // List files in the task's output dir.
@@ -1301,6 +1368,7 @@ app.get('/api/captures/latest/:sourceSessionId/:targetSessionId', async (req, re
     return;
   }
   const clean = req.query.clean !== 'false';
+  const maxBytes = parseMaxBytes(req.query.maxBytes, READ_MAX_BYTES_DEFAULT);
 
   const task = ptyManager.findLatestTask(sourceResolved, targetResolved);
   if (!task) {
@@ -1308,12 +1376,13 @@ app.get('/api/captures/latest/:sourceSessionId/:targetSessionId', async (req, re
     return;
   }
 
-  const result = await ptyManager.readCapture(task.taskId, clean);
+  const result = await ptyManager.readCapture(task.taskId, clean, maxBytes);
   if (!result) {
     res.status(404).json({ error: 'Capture file not found', code: 'capture-missing' });
     return;
   }
-  res.json({ taskId: task.taskId, output: result.output, status: result.status, truncated: result.truncated, command: task.command });
+  recordRead('capture', targetResolved, { text: result.output, elided: result.elided, omittedLines: result.omittedLines, omittedBytes: result.omittedBytes });
+  res.json({ taskId: task.taskId, output: result.output, status: result.status, truncated: result.truncated, elided: result.elided, omittedLines: result.omittedLines, omittedBytes: result.omittedBytes, command: task.command });
 });
 
 // Get rendered terminal content (via headless xterm, no animation artifacts)
@@ -1326,16 +1395,24 @@ app.get('/api/terminals/:sessionId/rendered', (req, res) => {
   const lines = parseInt(req.query.lines as string) || 0;
   const clean = req.query.clean !== 'false';
   const sinceSend = req.query.sinceSend === 'true';
-  const output = sinceSend
+  const rawOutput = sinceSend
     ? ptyManager.getRenderedBufferSinceSend(resolved, clean)
     : ptyManager.getRenderedBuffer(resolved, lines || undefined, clean);
-  if (output === null) {
+  if (rawOutput === null) {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
+  // Token-efficiency (8.2): elide the middle of large reads. Read-time only;
+  // the stored rendered buffer is untouched. Default 32KB, maxBytes=0 disables.
+  const maxBytes = parseMaxBytes(req.query.maxBytes, READ_MAX_BYTES_DEFAULT);
+  const el = elideMiddle(rawOutput, maxBytes);
+  recordRead('rendered', resolved, el);
   const status = ptyManager.getSessionStatus(resolved);
   res.json({
-    output,
+    output: el.text,
+    elided: el.elided,
+    omittedLines: el.omittedLines,
+    omittedBytes: el.omittedBytes,
     sessionId: resolved,
     isProcessing: status?.isProcessing ?? false,
     foregroundProcess: status?.foregroundProcess ?? 'unknown',
