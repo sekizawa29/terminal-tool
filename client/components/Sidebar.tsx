@@ -4,6 +4,14 @@ import { apiFetch } from '../api.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
 import type { SessionStatus } from '../types.js';
 import {
+  type DirsState,
+  EMPTY_DIRS_STATE,
+  fetchDirsState,
+  pushRecentDir,
+  pinDir,
+  unpinDir,
+} from '../api/dirsApi.js';
+import {
   ClaudeIcon,
   CodexIcon,
   PowerShellIcon,
@@ -52,69 +60,6 @@ const TONE_FG: Record<Tone, string> = {
   explorer: 'var(--accent-yellow)',
   browser: 'var(--accent-cyan)',
 };
-
-interface DirsState {
-  recent: string[];
-  pinned: string[];
-}
-
-const EMPTY_DIRS_STATE: DirsState = { recent: [], pinned: [] };
-
-async function fetchDirsState(): Promise<DirsState | null> {
-  try {
-    const res = await apiFetch('/api/dirs');
-    if (!res.ok) return null;
-    const data = await res.json();
-    return {
-      recent: Array.isArray(data.recent) ? data.recent : [],
-      pinned: Array.isArray(data.pinned) ? data.pinned : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function pushRecentDir(cwd: string): Promise<DirsState | null> {
-  try {
-    const res = await apiFetch('/api/dirs/recent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd }),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function pinDir(cwd: string): Promise<DirsState | null> {
-  try {
-    const res = await apiFetch('/api/dirs/pinned', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd }),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function unpinDir(cwd: string): Promise<DirsState | null> {
-  try {
-    const res = await apiFetch('/api/dirs/pinned', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd }),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
 
 function shortDirLabel(cwd: string): string {
   const parts = cwd.split('/').filter(Boolean);
