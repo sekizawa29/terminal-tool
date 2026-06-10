@@ -481,18 +481,19 @@ app.post('/api/terminals/:sessionId/screenshot', async (req, res) => {
     const savedPath = join(saveDir, filename);
     writeFileSync(savedPath, png);
 
-    // Paste path into the terminal. Windows-shell terminals need a Windows
-    // path; everyone else gets the POSIX path. Quote if it contains spaces.
-    let pastePath = savedPath;
+    // Paste path into the terminal. Windows-shell terminals need a Windows path;
+    // everyone else gets the POSIX path. POSIX is always single-quoted with
+    // embedded quotes escaped so any shell metacharacter in the cwd is safe.
+    let pasted: string;
     if (isWindowsShell) {
-      const winPath = wslPathToWindows(savedPath);
-      if (winPath) pastePath = winPath;
+      const winPath = wslPathToWindows(savedPath) || savedPath;
+      pasted = /\s/.test(winPath) ? `"${winPath}"` : winPath;
+    } else {
+      pasted = `'${savedPath.replace(/'/g, "'\\''")}'`;
     }
-    const needsQuote = /\s/.test(pastePath);
-    const pasted = needsQuote
-      ? (isWindowsShell ? `"${pastePath}"` : `'${pastePath}'`)
-      : pastePath;
-    ptyManager.write(resolved, pasted);
+    // Bracketed paste only (no Enter), deferred until the prompt is idle so it
+    // never corrupts a running agent's input line.
+    ptyManager.pasteNoSubmit(resolved, pasted);
 
     res.json({ ok: true, path: savedPath, pastedAs: pasted });
   } catch (err) {

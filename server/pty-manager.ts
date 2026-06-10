@@ -496,6 +496,32 @@ export class PtyManager {
     return sessionId;
   }
 
+  // Paste text into the input line WITHOUT submitting (bracketed paste, no
+  // Enter) — used for the screenshot path so the user can add a message and
+  // submit themselves. Waits for an idle prompt like the dispatch outbox, but
+  // pastes anyway after the cap so the path is never silently dropped.
+  pasteNoSubmit(sessionId: string, text: string): void {
+    const doPaste = () => {
+      if (this.sessions.has(sessionId)) {
+        this.write(sessionId, `\x1b[200~${text}\x1b[201~`);
+      }
+    };
+    if (this.canAutoInject(sessionId)) {
+      doPaste();
+      return;
+    }
+    const startedAt = Date.now();
+    const tick = () => {
+      if (!this.sessions.has(sessionId)) return;
+      if (this.canAutoInject(sessionId) || Date.now() - startedAt > 30_000) {
+        doPaste();
+        return;
+      }
+      setTimeout(tick, 250);
+    };
+    setTimeout(tick, 250);
+  }
+
   // Poll until the session is at a safe, idle prompt (canAutoInject), then submit
   // the command. Gives up after 30s; stops if the session dies first.
   private injectInitialCommand(sessionId: string, command: string): void {
