@@ -377,6 +377,77 @@ async function readOutput(target, ...extraArgs) {
     return { kind: 'ok', capture: body };
   };
 
+  // 8.1: fetch metadata of the latest task between SELF and target (no capture
+  // file required). Returns { task, hasManifest, hasReport } or a discriminated
+  // miss so the caller can fall back to capture/rendered reads.
+  const tryLatestTaskMeta = async () => {
+    if (!SELF) return { kind: 'no-self' };
+    let res;
+    try {
+      res = await ttFetch(`${BASE}/api/tasks/latest/${encodeURIComponent(SELF)}/${enc}`);
+    } catch (e) {
+      return { kind: 'error', message: (e && e.message) || String(e) };
+    }
+    let body;
+    try { body = await res.json(); } catch { body = null; }
+    if (res.status === 404) {
+      if (body && body.code === 'no-task') return { kind: 'no-task' };
+      return { kind: 'error', message: (body && (body.error || body.code)) || 'HTTP 404' };
+    }
+    if (!res.ok || !body || body.error) return { kind: 'error', message: (body && body.error) || `HTTP ${res.status}` };
+    return { kind: 'ok', meta: body };
+  };
+
+  // 8.1: render the small manifest header block that precedes a report.
+  const formatManifestBlock = (task) => {
+    const lines = [];
+    const changed = Array.isArray(task.changed) && task.changed.length ? task.changed.join(', ') : '(none)';
+    const unresolved = Array.isArray(task.unresolved) && task.unresolved.length ? task.unresolved.join(', ') : '(none)';
+    const summary = task.summary ? String(task.summary).replace(/\n+/g, ' ') : '';
+    lines.push(`[tboard task ${task.taskId}] status=${task.status}${summary ? ` summary="${summary}"` : ''}`);
+    lines.push(`changed: ${changed}`);
+    lines.push(`unresolved: ${unresolved}`);
+    return lines.join('\n');
+  };
+
+  // 8.1: report-first emit. When a manifest exists for the latest task, print
+  // the manifest block + report.md body (server-elided) instead of the raw
+  // capture. Returns true when it emitted; false to let the caller fall back.
+  const emitReportFirst = async (meta) => {
+    const task = meta.task;
+    if (!meta.hasManifest) return false;
+    const block = formatManifestBlock(task);
+    if (!meta.hasReport) {
+      // Manifest but no report file → manifest block + fall back to capture.
+      process.stdout.write(block + '\n');
+      return false;
+    }
+    let res;
+    try {
+      res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(task.taskId)}/report${mbParam ? '?' + mbParam.slice(1) : ''}`);
+    } catch (e) {
+      console.error(`Error reading report: ${(e && e.message) || e}`);
+      process.exit(1);
+    }
+    const data = await res.json().catch(() => null);
+    if (res.status === 413) {
+      process.stdout.write(block + '\n');
+      process.stderr.write(`[tt] report too large to inline (${data && data.size} bytes). Read it at: ${data && data.path}\n`);
+      return true;
+    }
+    if (!res.ok || !data || data.error) {
+      console.error(`Error reading report: ${(data && data.error) || 'HTTP ' + res.status}`);
+      process.exit(1);
+    }
+    const filename = data.filename || 'report.md';
+    process.stdout.write(block + '\n');
+    process.stdout.write(`--- report (${filename}) ---\n`);
+    process.stdout.write(data.content || '');
+    if (data.content && !data.content.endsWith('\n')) process.stdout.write('\n');
+    noteElision(data);
+    return true;
+  };
+
   // Mode: wait for completion then read.
   // Polling uses the rendered buffer's `isProcessing` signal (independent of
   // task lifecycle). After the poll settles, if the caller asked for a
@@ -400,22 +471,45 @@ async function readOutput(target, ...extraArgs) {
       }
       await new Promise(r => setTimeout(r, 2000));
     }
-    // After the agent settles, prefer the task capture when a task exists
-    // and the caller asked for a task-oriented view. Error surfacing is
-    // symmetric across --full and --since-send: any genuine capture read
-    // failure (transport, server-error, missing capture) exits non-zero.
-    // Only `no-task` / `no-self` keeps the rendered snapshot as a
-    // best-effort legacy fallback (matching the non-wait behavior).
-    if (full || sinceSend) {
-      const attempt = await tryLatestTaskCapture();
-      if (attempt.kind === 'ok') {
-        lastOutput = attempt.capture.output || '';
-        if (attempt.capture.truncated) process.stderr.write('(capture was truncated at 50MB limit)\n');
-      } else if (attempt.kind === 'error') {
-        console.error(`Error reading task capture: ${attempt.message}`);
+    // 8.1: report-first default. After the agent settles, if a task with a
+    // manifest exists between SELF and target, return the manifest block +
+    // report.md instead of the raw capture — the SUB's executive summary, not
+    // its full transcript, is what MAIN needs. Escape hatches keep prior
+    // behavior:
+    //   --capture            → raw task capture (8.2-elided)
+    //   --full / --since-send → raw task capture (existing meaning, preserved)
+    // Fallbacks: no manifest / no report / no task → capture, then rendered.
+    const wantsCapture = capture || full || sinceSend;
+    if (!wantsCapture) {
+      const metaAttempt = await tryLatestTaskMeta();
+      if (metaAttempt.kind === 'ok') {
+        const emitted = await emitReportFirst(metaAttempt.meta);
+        if (emitted) return;
+        // Manifest present but no report → manifest block already printed;
+        // append the capture below as the detail body.
+      } else if (metaAttempt.kind === 'error') {
+        console.error(`Error reading task: ${metaAttempt.message}`);
         process.exit(1);
       }
+      // no-task / no-self → fall through to capture/rendered fallback.
     }
+
+    // Capture path: explicit --capture/--full/--since-send, or report-first
+    // fallback. Genuine capture read failures exit non-zero; only no-task /
+    // no-self keeps the rendered snapshot.
+    const attempt = await tryLatestTaskCapture();
+    if (attempt.kind === 'ok') {
+      lastOutput = attempt.capture.output || '';
+      process.stdout.write(lastOutput);
+      if (lastOutput && !lastOutput.endsWith('\n')) process.stdout.write('\n');
+      noteElision(attempt.capture);
+      if (attempt.capture.truncated) process.stderr.write('(capture was truncated at 50MB limit)\n');
+      return;
+    } else if (attempt.kind === 'error') {
+      console.error(`Error reading task capture: ${attempt.message}`);
+      process.exit(1);
+    }
+    // no-task / no-self → emit the last rendered snapshot from the poll loop.
     process.stdout.write(lastOutput);
     if (lastOutput && !lastOutput.endsWith('\n')) process.stdout.write('\n');
     return;
@@ -1273,7 +1367,7 @@ async function taskCommand(args) {
     case 'dir':
       return taskDir(args[1]);
     case 'report':
-      return taskReport(args[1]);
+      return taskReport(args[1], ...args.slice(2));
     case 'manifest':
       return taskManifest(args[1]);
     case 'files':
@@ -1418,19 +1512,38 @@ async function taskDir(taskId) {
   console.log(data.dir);
 }
 
-async function taskReport(taskId) {
+async function taskReport(taskId, ...rest) {
   if (!taskId) {
-    console.error('Usage: tt task report <task_id>');
+    console.error('Usage: tt task report <task_id> [--all] [--max-bytes <n>]');
     process.exit(1);
   }
-  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report`);
-  const data = await res.json();
-  if (data.error) {
-    console.error(`Error: ${data.error}`);
+  // 8.1: report reads are middle-elided server-side (default 65536). --all (or
+  // --max-bytes 0) returns the full file; --max-bytes <n> sets a custom budget.
+  let maxBytes = null;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--all') { maxBytes = 0; continue; }
+    const inline = String(a).match(/^--max-bytes=(\d+)$/);
+    if (inline) { maxBytes = parseInt(inline[1]); continue; }
+    if (a === '--max-bytes') { maxBytes = parseInt(rest[++i]); continue; }
+  }
+  const q = maxBytes === null ? '' : `?maxBytes=${maxBytes}`;
+  const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report${q}`);
+  const data = await res.json().catch(() => null);
+  if (res.status === 413) {
+    console.error(`Error: report too large (${data && data.size} bytes). Read it directly at: ${data && data.path}`);
+    process.exit(1);
+  }
+  if (!data || data.error) {
+    console.error(`Error: ${(data && data.error) || 'HTTP ' + res.status}`);
     process.exit(1);
   }
   process.stdout.write(data.content);
   if (data.content && !data.content.endsWith('\n')) process.stdout.write('\n');
+  if (data.elided) {
+    const kb = Math.round((data.omittedBytes || 0) / 1024);
+    process.stderr.write(`[tt] report elided (~${kb} KB omitted). Use --all for full report.\n`);
+  }
 }
 
 async function taskManifest(taskId) {
@@ -1732,18 +1845,20 @@ async function mcpStdioServer() {
 
   server.registerTool('tboard_task_report', {
     title: 'Read a task report file',
-    description: 'Return the text content of the report file SUB wrote for this task (the file named in task.reportFile, resolved under the task output dir).',
+    description: 'Return the text content of the report file SUB wrote for this task (the file named in task.reportFile, resolved under the task output dir). Large reports are middle-elided by default (~64KB budget); pass maxBytes=0 for the full file. A 10MB hard limit applies — over that, read the file directly from the task dir.',
     inputSchema: {
       taskId: z.string().min(1),
+      maxBytes: z.number().int().min(0).optional(),
     },
-  }, async ({ taskId }) => runTool(async () => {
-    const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report`);
+  }, async ({ taskId, maxBytes }) => runTool(async () => {
+    const q = maxBytes === undefined ? '' : `?maxBytes=${maxBytes}`;
+    const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report${q}`);
     const parsed = await asJson(res);
     if (!parsed.ok) throw new Error(parsed.error);
     if (parsed.data.error) throw new Error(parsed.data.error);
     return {
       content: [{ type: 'text', text: parsed.data.content || '' }],
-      structuredContent: { taskId, filename: parsed.data.filename, content: parsed.data.content || '' },
+      structuredContent: { taskId, filename: parsed.data.filename, content: parsed.data.content || '', elided: !!parsed.data.elided, omittedBytes: parsed.data.omittedBytes || 0 },
     };
   }));
 
@@ -2074,7 +2189,7 @@ Usage:
   tt task current                    Print task_id for the latest pending task directed at SELF
   tt task show <task_id>             Show structured detail for one task
   tt task dir <task_id>              Print the output directory for this task (where SUB writes reports)
-  tt task report <task_id>           Read the report file SUB wrote for this task
+  tt task report <task_id>           Read the report file SUB wrote (middle-elided; --all / --max-bytes <n>)
   tt task manifest <task_id>         Read the structured manifest.json for this task
   tt task files <task_id>            List files in the task's output directory
   tt task ls                         List tasks where SELF is MAIN (alias of "tt tasks")

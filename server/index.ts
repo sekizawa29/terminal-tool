@@ -663,6 +663,13 @@ app.post('/api/links', (req, res) => {
     `    If you did not capture the task_id, recover it with: tt task current`,
     ``,
     `  REPORTING (for substantial tasks — implementation, review, analysis, bug fix):`,
+    `    Token discipline: MAIN reads your report, NOT your full transcript. Keep MAIN's`,
+    `    context small with a 3-layer structure:`,
+    `      1. manifest (summary/changed/unresolved on tt task complete) — machine-readable, tiny.`,
+    `      2. report.md — an EXECUTIVE SUMMARY (~2KB max): conclusion, counts, severity, next action.`,
+    `      3. Bulk artifacts (full review, test logs, diffs) → SEPARATE files in the task dir;`,
+    `         reference them from report.md by name + 1-line note (e.g. "details: review.md (12 findings: P0x1 P1x4)").`,
+    `    Do NOT paste long output into the terminal — write it to a file instead.`,
     `    Each task gets its OWN output directory. Obtain the path with:`,
     `      tt task dir <task_id>           Prints the absolute path to this task's output dir`,
     `    Write your report file inside that directory:`,
@@ -754,6 +761,10 @@ app.post('/api/links/reconnect', (req, res) => {
     `    If you did not capture the task_id, recover it with: tt task current`,
     ``,
     `  REPORTING (for substantial tasks — implementation, review, analysis, bug fix):`,
+    `    Token discipline: MAIN reads your report, NOT your transcript. 3 layers:`,
+    `      1. manifest (summary/changed/unresolved) — tiny. 2. report.md — exec summary (~2KB).`,
+    `      3. bulk artifacts (full review/logs/diffs) → separate files in the task dir, referenced from report.md.`,
+    `    Do NOT paste long output into the terminal — write it to a file.`,
     `    Each task gets its OWN output directory. Obtain the path with:`,
     `      tt task dir <task_id>           Prints the absolute path to this task's output dir`,
     `    Write your report file inside that directory:`,
@@ -1353,6 +1364,27 @@ app.get('/api/tasks/:sessionId', (req, res) => {
 
   const summary = ptyManager.getTaskSummary(resolved);
   res.json({ sessionId: resolved, tasks: enriched, summary });
+});
+
+// Metadata of the latest task between MAIN (source) and SUB (target), without
+// requiring a capture file. Used by `tt read --wait` (8.1) to decide whether to
+// return the report-first view (manifest + report.md) before falling back to
+// the raw capture. Returns 404 code=no-task when there is no task to anchor on.
+app.get('/api/tasks/latest/:sourceSessionId/:targetSessionId', (req, res) => {
+  const sourceResolved = resolveSession(req.params.sourceSessionId);
+  const targetResolved = resolveSession(req.params.targetSessionId);
+  if (!sourceResolved || !targetResolved) {
+    res.status(404).json({ error: 'Session not found', code: 'session-not-found' });
+    return;
+  }
+  const task = ptyManager.findLatestTask(sourceResolved, targetResolved);
+  if (!task) {
+    res.status(404).json({ error: 'No task found between these sessions', code: 'no-task' });
+    return;
+  }
+  const hasManifest = ptyManager.readTaskManifest(task.taskId) !== null;
+  const hasReport = ptyManager.statTaskReport(task.taskId) !== null;
+  res.json({ task, hasManifest, hasReport });
 });
 
 // Read full task capture from disk (latest task between MAIN and SUB)
