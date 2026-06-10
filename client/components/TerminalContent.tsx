@@ -240,6 +240,7 @@ export default function TerminalContent({
     // reconnect with exponential backoff instead of leaving a dead terminal.
     let unmounted = false;
     let exited = false;
+    let hasConnected = false;
     let reconnectAttempt = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -255,6 +256,12 @@ export default function TerminalContent({
       ws.onopen = () => {
         reconnectAttempt = 0;
         notify('connected');
+        // On a *re*connection the server is about to replay scrollback. Clear the
+        // screen here (open fires before any message) so the replay doesn't
+        // double-draw — but only now that the socket actually attached, so a
+        // failed reconnect never wipes the still-visible local history.
+        if (hasConnected) term.reset();
+        hasConnected = true;
         // Send current size so the pty matches the (possibly resized) viewport.
         ws.send('\x00' + JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       };
@@ -289,14 +296,14 @@ export default function TerminalContent({
           }
           return;
         }
-        // Otherwise retry with backoff. The server replays scrollback on
-        // re-attach, so reset the screen first to avoid double-drawing.
+        // Otherwise retry with backoff. The screen is cleared in onopen once the
+        // new socket attaches (not here), so a reconnect that ultimately fails
+        // leaves the existing scrollback visible instead of a blank screen.
         notify('reconnecting');
         const delay = RECONNECT_DELAYS[Math.min(reconnectAttempt, RECONNECT_DELAYS.length - 1)];
         reconnectAttempt++;
         reconnectTimer = setTimeout(() => {
           if (unmounted) return;
-          term.reset();
           connect();
         }, delay);
       };
