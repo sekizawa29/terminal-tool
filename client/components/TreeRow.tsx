@@ -44,6 +44,7 @@ interface TreeRowProps {
   onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
   onClick: () => void;
   onDoubleClick: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }
 
 // A single explorer row: indent guides, folder/file icon, name, and size. All
@@ -61,6 +62,7 @@ export default function TreeRow({
   onDrop,
   onClick,
   onDoubleClick,
+  onContextMenu,
 }: TreeRowProps) {
   const isDir = node.entry.isDirectory;
   const iconInfo = isDir ? null : getFileIcon(node.entry.extension);
@@ -79,6 +81,7 @@ export default function TreeRow({
       onDrop={onDrop}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
       style={{
         display: 'flex',
         alignItems: 'center',

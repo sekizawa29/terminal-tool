@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiFetch, readApiPayload, getApiError } from '../api.js';
+import { apiFetch, withToken, readApiPayload, getApiError } from '../api.js';
 import type { FileEntry } from '../types.js';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.js';
 import {
   type TreeNode,
   createTreeNodes,
@@ -16,6 +17,22 @@ interface ExplorerContentProps {
   isActive: boolean;
   onOpenFile: (filePath: string, fileName: string) => void;
   onNavigate?: (newRoot: string) => void;
+  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string) => void;
+}
+
+interface MenuState {
+  x: number;
+  y: number;
+  node: TreeNode;
+}
+
+// A floating name prompt for create/rename (inline-ish overlay near the row).
+interface PromptState {
+  x: number;
+  y: number;
+  title: string;
+  value: string;
+  onSubmit: (value: string) => void;
 }
 
 interface FetchResult {
@@ -63,7 +80,7 @@ async function hydrateExpandedNodes(
   );
 }
 
-export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavigate }: ExplorerContentProps) {
+export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavigate, onSpawnHere }: ExplorerContentProps) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +88,8 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
   const [currentPath, setCurrentPath] = useState(rootPath);
   const [showHidden, setShowHidden] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [prompt, setPrompt] = useState<PromptState | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const treeRef = useRef<TreeNode[]>([]);
   const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -176,6 +195,79 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
     loadRoot(parent, parent);
     onNavigate?.(parent);
   }, [currentPath, loadRoot, onNavigate]);
+
+  const refresh = useCallback(() => {
+    loadRoot(currentPath, selectedPath, { preserveExpanded: true });
+  }, [currentPath, selectedPath, loadRoot]);
+
+  const callFileOp = useCallback(async (endpoint: string, body: unknown, errLabel: string) => {
+    setActionError(null);
+    try {
+      const res = await apiFetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readApiPayload(res);
+      if (!res.ok) throw new Error(getApiError(data, errLabel));
+      refresh();
+    } catch (err) {
+      setActionError(String(err));
+    }
+  }, [refresh]);
+
+  const openPrompt = useCallback((x: number, y: number, title: string, value: string, onSubmit: (v: string) => void) => {
+    setPrompt({ x, y, title, value, onSubmit });
+  }, []);
+
+  const buildMenuItems = useCallback((node: TreeNode, x: number, y: number): ContextMenuItem[] => {
+    const { path: p, isDirectory, name } = node.entry;
+    const items: ContextMenuItem[] = [];
+    if (isDirectory) {
+      if (onSpawnHere) {
+        items.push({ label: 'ここでターミナルを開く', onClick: () => onSpawnHere('terminal', p) });
+        items.push({ label: 'ここで Claude を開く', onClick: () => onSpawnHere('claude', p) });
+        items.push({ label: 'ここで Codex を開く', onClick: () => onSpawnHere('codex', p) });
+      }
+      items.push({
+        label: '新規ファイル',
+        dividerBefore: items.length > 0,
+        onClick: () => openPrompt(x, y, '新規ファイル名', '', (v) =>
+          callFileOp('/api/files/create', { path: `${p}/${v}` }, 'Failed to create file')),
+      });
+      items.push({
+        label: '新規フォルダ',
+        onClick: () => openPrompt(x, y, '新規フォルダ名', '', (v) =>
+          callFileOp('/api/files/mkdir', { path: `${p}/${v}` }, 'Failed to create folder')),
+      });
+    } else {
+      items.push({ label: '開く', onClick: () => onOpenFile(p, name) });
+      items.push({
+        label: 'ダウンロード',
+        onClick: () => {
+          const a = document.createElement('a');
+          a.href = withToken(`/api/files/download?path=${encodeURIComponent(p)}`);
+          a.download = name;
+          a.click();
+        },
+      });
+    }
+    items.push({
+      label: 'リネーム',
+      dividerBefore: true,
+      onClick: () => openPrompt(x, y, '新しい名前', name, (v) =>
+        callFileOp('/api/files/rename', { path: p, newName: v }, 'Failed to rename')),
+    });
+    items.push({
+      label: '削除',
+      danger: true,
+      onClick: () => {
+        if (!window.confirm(`「${name}」を削除しますか?`)) return;
+        callFileOp('/api/files/delete', { path: p, recursive: isDirectory }, 'Failed to delete');
+      },
+    });
+    return items;
+  }, [onSpawnHere, onOpenFile, openPrompt, callFileOp]);
 
   const flatItems = flattenTree(tree);
   const dnd = useExplorerDnD({
@@ -447,6 +539,12 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
               onDrop={rowHandlers.onDrop}
               onClick={() => handleClick(node)}
               onDoubleClick={() => handleDoubleClick(node)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setSelectedPath(node.entry.path);
+                setMenu({ x: e.clientX, y: e.clientY, node });
+              }}
             />
           );
         })}
@@ -463,6 +561,62 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
           </div>
         )}
       </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={buildMenuItems(menu.node, menu.x, menu.y)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+
+      {prompt && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            left: Math.min(prompt.x, window.innerWidth - 220),
+            top: Math.min(prompt.y, window.innerHeight - 80),
+            zIndex: 10002,
+            width: 210,
+            padding: 8,
+            background: 'rgba(28, 29, 46, 0.98)',
+            border: '1px solid rgba(122, 162, 247, 0.25)',
+            borderRadius: 8,
+            boxShadow: '0 10px 30px -8px rgba(0,0,0,0.7)',
+          }}
+        >
+          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginBottom: 5 }}>{prompt.title}</div>
+          <input
+            autoFocus
+            value={prompt.value}
+            onChange={(e) => setPrompt((p) => (p ? { ...p, value: e.target.value } : p))}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                const v = prompt.value.trim();
+                setPrompt(null);
+                if (v) prompt.onSubmit(v);
+              } else if (e.key === 'Escape') {
+                setPrompt(null);
+              }
+            }}
+            style={{
+              width: '100%',
+              height: 26,
+              padding: '0 8px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 5,
+              color: 'var(--text-secondary)',
+              fontSize: 12,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

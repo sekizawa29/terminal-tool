@@ -16,6 +16,7 @@ interface TerminalWindowProps {
   getScale: () => number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
+  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => void;
 }
 
 const MIN_WIDTH = 300;
@@ -25,21 +26,22 @@ const MIN_HEIGHT = 200;
 // memoized body. When a sibling moves, Canvas does not re-render and this
 // container's selector returns the same object, so only the moved window
 // re-renders. tw can briefly be missing during deletion → render nothing.
-export default function TerminalWindow({ id, token, getScale, onZoom, onOpenFile }: {
+export default function TerminalWindow({ id, token, getScale, onZoom, onOpenFile, onSpawnHere }: {
   id: string;
   token: string;
   getScale: () => number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
+  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => void;
 }) {
   const tw = useTerminalStore((s) => s.terminals.get(id));
   if (!tw) return null;
   return (
-    <TerminalWindowBody tw={tw} token={token} getScale={getScale} onZoom={onZoom} onOpenFile={onOpenFile} />
+    <TerminalWindowBody tw={tw} token={token} getScale={getScale} onZoom={onZoom} onOpenFile={onOpenFile} onSpawnHere={onSpawnHere} />
   );
 }
 
-const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScale, onZoom, onOpenFile }: TerminalWindowProps) {
+const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScale, onZoom, onOpenFile, onSpawnHere }: TerminalWindowProps) {
   // Subscribe with fine-grained selectors so a sibling window's update (or any
   // unrelated store change) does not re-render this window. Actions are stable
   // references, and isActive is reduced to a boolean.
@@ -579,6 +581,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
                 updateTerminal(tw.id, { explorerRoot: newRoot, title: newRoot.split('/').pop() || 'Explorer' });
                 saveLayout();
               }}
+              onSpawnHere={onSpawnHere ? (kind, cwd) => onSpawnHere(kind, cwd, tw.x + tw.width + 20, tw.y) : undefined}
             />
           ) : isEditor ? (
             <EditorContent

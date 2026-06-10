@@ -9,9 +9,10 @@ import type { CanvasController } from '../hooks/useCanvas.js';
 interface CanvasProps {
   controller: CanvasController;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
+  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => void;
 }
 
-export default function Canvas({ controller, onOpenFile }: CanvasProps) {
+export default function Canvas({ controller, onOpenFile, onSpawnHere }: CanvasProps) {
   // Subscribe only to the SET of window ids (shallow-compared) so a position
   // update during a drag — which replaces the terminals Map but not its keys —
   // does not re-render Canvas (and thus every window). Each TerminalWindow
@@ -191,6 +192,7 @@ export default function Canvas({ controller, onOpenFile }: CanvasProps) {
               getScale={getScale}
               onZoom={controller.zoom}
               onOpenFile={onOpenFile}
+              onSpawnHere={onSpawnHere}
             />
           ))}
       </div>

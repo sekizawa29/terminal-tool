@@ -219,6 +219,28 @@ export default function App() {
     useTerminalStore.getState().saveLayout();
   }, [token, addTerminal]);
 
+  // Spawn a terminal/claude/codex rooted at cwd at a given world position.
+  const spawnAt = useCallback(
+    (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => {
+      if (kind === 'claude') claudeTerminal(cwd, nearX, nearY);
+      else if (kind === 'codex') codexTerminal(cwd, nearX, nearY);
+      else duplicateTerminal(cwd, nearX, nearY);
+    },
+    [claudeTerminal, codexTerminal, duplicateTerminal]
+  );
+
+  // From the fixed explorer panel (no host window): drop the new window near the
+  // current viewport center in world space.
+  const spawnHereCentered = useCallback(
+    (kind: 'terminal' | 'claude' | 'codex', cwd: string) => {
+      const t = canvas.getTransform();
+      const nx = (window.innerWidth / 2 - t.offsetX) / t.scale - 350;
+      const ny = (window.innerHeight / 2 - t.offsetY) / t.scale - 225;
+      spawnAt(kind, cwd, nx, ny);
+    },
+    [canvas, spawnAt]
+  );
+
   const toggleExplorer = useCallback(() => {
     setExplorerOpen((prev) => !prev);
   }, []);
@@ -542,6 +564,7 @@ export default function App() {
               isActive={true}
               onOpenFile={(filePath, fileName) => openFileEditor(filePath, fileName)}
               onNavigate={(newRoot) => setExplorerRoot(newRoot)}
+              onSpawnHere={spawnHereCentered}
             />
           </div>
         </div>
@@ -552,6 +575,7 @@ export default function App() {
         <Canvas
           controller={canvas}
           onOpenFile={openFileEditor}
+          onSpawnHere={spawnAt}
         />
       </div>
       <Sidebar
