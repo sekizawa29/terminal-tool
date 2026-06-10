@@ -158,9 +158,9 @@ export default function EditorContent({ windowId, filePath, isActive }: EditorCo
       if (res.status === 409) {
         // The file changed on disk since we loaded it; surface the conflict
         // banner instead of silently clobbering the other writer's changes.
-        if (data && typeof data === 'object' && typeof data.currentMtimeMs === 'number') {
-          mtimeRef.current = data.currentMtimeMs;
-        }
+        // Keep the loaded mtime unchanged so a subsequent plain save still
+        // conflicts — only an explicit reload or 上書き保存 may clear it,
+        // otherwise the external edits could be overwritten silently.
         setConflict(true);
         return;
       }

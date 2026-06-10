@@ -20,7 +20,7 @@ interface BrowserContentProps {
 export default function BrowserContent({ url, isActive, onUrlChange }: BrowserContentProps) {
   const [inputUrl, setInputUrl] = useState(url);
   const [currentUrl, setCurrentUrl] = useState(url);
-  const [loading, setLoading] = useState(url !== 'about:blank');
+  const [loading, setLoading] = useState(url !== 'about:blank' && !isSelfOrigin(url));
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -41,7 +41,9 @@ export default function BrowserContent({ url, isActive, onUrlChange }: BrowserCo
     }
     setCurrentUrl(normalized);
     setInputUrl(normalized);
-    setLoading(true);
+    // Self-origin pages render a refusal notice (no iframe), so there is no
+    // onLoad to clear the loading bar — don't start it for them.
+    setLoading(!isSelfOrigin(normalized));
     onUrlChange(normalized);
 
     if (addToHistory) {
