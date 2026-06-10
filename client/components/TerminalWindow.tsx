@@ -80,14 +80,17 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
       bringToFront(tw.id);
       setActive(tw.id);
 
+      // Accumulate the position locally (no store-object mutation), so removing
+      // the old `tw.x += dx` hack doesn't reintroduce a stale-closure drift.
+      const pos = { x: tw.x, y: tw.y };
       const onMouseMove = (e: MouseEvent) => {
         if (!dragging.current) return;
         const dx = (e.clientX - dragStart.current.x) / scale;
         const dy = (e.clientY - dragStart.current.y) / scale;
         dragStart.current = { x: e.clientX, y: e.clientY };
-        updateTerminal(tw.id, { x: tw.x + dx, y: tw.y + dy });
-        tw.x += dx;
-        tw.y += dy;
+        pos.x += dx;
+        pos.y += dy;
+        updateTerminal(tw.id, { x: pos.x, y: pos.y });
       };
 
       const onMouseUp = () => {
@@ -100,18 +103,25 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },
-    [tw, scale, updateTerminal, bringToFront, setActive, saveLayout]
+    [tw.id, tw.x, tw.y, scale, updateTerminal, bringToFront, setActive, saveLayout]
   );
+
+  // Resize deltas arrive incrementally across separate onResize calls, so the
+  // running size lives in a ref, seeded at resize start.
+  const sizeRef = useRef({ width: tw.width, height: tw.height });
+  const onResizeStart = useCallback(() => {
+    sizeRef.current = { width: tw.width, height: tw.height };
+  }, [tw.width, tw.height]);
 
   const onResize = useCallback(
     (dx: number, dy: number) => {
-      const newWidth = Math.max(MIN_WIDTH, tw.width + dx);
-      const newHeight = Math.max(MIN_HEIGHT, tw.height + dy);
-      updateTerminal(tw.id, { width: newWidth, height: newHeight });
-      tw.width = newWidth;
-      tw.height = newHeight;
+      sizeRef.current = {
+        width: Math.max(MIN_WIDTH, sizeRef.current.width + dx),
+        height: Math.max(MIN_HEIGHT, sizeRef.current.height + dy),
+      };
+      updateTerminal(tw.id, { width: sizeRef.current.width, height: sizeRef.current.height });
     },
-    [tw, updateTerminal]
+    [tw.id, updateTerminal]
   );
 
   const onResizeEnd = useCallback(() => {
@@ -517,7 +527,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
               onConnectionChange={setConnState}
             />
           )}
-          <ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} scale={scale} />
+          <ResizeHandle onResize={onResize} onResizeStart={onResizeStart} onResizeEnd={onResizeEnd} scale={scale} />
         </div>
       </div>
 

@@ -2,11 +2,12 @@ import { useCallback, useRef, useState } from 'react';
 
 interface ResizeHandleProps {
   onResize: (dx: number, dy: number) => void;
+  onResizeStart?: () => void;
   onResizeEnd: () => void;
   scale: number;
 }
 
-export default function ResizeHandle({ onResize, onResizeEnd, scale }: ResizeHandleProps) {
+export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, scale }: ResizeHandleProps) {
   const dragging = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
   const [isHovered, setIsHovered] = useState(false);
@@ -19,6 +20,7 @@ export default function ResizeHandle({ onResize, onResizeEnd, scale }: ResizeHan
       dragging.current = true;
       setIsDragging(true);
       startPos.current = { x: e.clientX, y: e.clientY };
+      onResizeStart?.();
 
       const onMouseMove = (e: MouseEvent) => {
         if (!dragging.current) return;
@@ -39,7 +41,7 @@ export default function ResizeHandle({ onResize, onResizeEnd, scale }: ResizeHan
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },
-    [onResize, onResizeEnd, scale]
+    [onResize, onResizeStart, onResizeEnd, scale]
   );
 
   const active = isHovered || isDragging;
