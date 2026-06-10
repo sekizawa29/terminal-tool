@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { getDisplayName } from '../hooks/useSessionPolling.js';
 import { apiFetch } from '../api.js';
+import { isAgentProcess } from '../utils/agents.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
 import { pinDir, unpinDir } from '../api/dirsApi.js';
 import {
@@ -130,15 +131,6 @@ function ToolbarButton({ icon, hint, onClick, active = false, tone = 'default' }
       {icon}
     </button>
   );
-}
-
-const AGENT_PROCESSES = new Set([
-  'claude', 'codex', 'aider', 'cursor', 'copilot',
-  'cline', 'roo',
-]);
-
-function isAgentProcess(process: string): boolean {
-  return AGENT_PROCESSES.has(process);
 }
 
 export default function Sidebar({

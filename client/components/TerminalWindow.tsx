@@ -8,11 +8,7 @@ import ResizeHandle from './ResizeHandle.js';
 import type { TerminalWindow as TWType } from '../types.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { apiFetch } from '../api.js';
-
-const AGENT_PROCESSES = new Set([
-  'claude', 'codex', 'aider', 'cursor', 'copilot',
-  'cline', 'roo',
-]);
+import { AGENT_PROCESSES } from '../utils/agents.js';
 
 interface TerminalWindowProps {
   tw: TWType;
