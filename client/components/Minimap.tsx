@@ -146,7 +146,9 @@ export default function Minimap({ controller }: { controller: CanvasController }
       style={{
         position: 'fixed',
         right: 14,
-        bottom: 14,
+        // Sit above the zoom indicator (right:14, bottom:14, ~30px tall) so the
+        // two bottom-right overlays don't overlap.
+        bottom: 52,
         width: WIDTH,
         zIndex: 9997,
         background: 'rgba(28, 29, 46, 0.82)',
