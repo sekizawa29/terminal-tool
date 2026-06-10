@@ -4,6 +4,10 @@ import type { TerminalWindow, TerminalLink, SessionStatus } from '../types.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
 const LINKS_KEY = 'terminal-board-links';
+// Bump when the persisted shape changes incompatibly. v1 was a bare array; v2
+// wraps it as { version, items } so future migrations have a hook.
+const SCHEMA_VERSION = 2;
+
 interface SavedLayout {
   sessionId: string;
   type?: 'terminal' | 'browser' | 'explorer' | 'editor' | 'memo';
@@ -11,6 +15,7 @@ interface SavedLayout {
   explorerRoot?: string;
   filePath?: string;
   memoText?: string;
+  cwd?: string;
   x: number;
   y: number;
   width: number;
@@ -21,6 +26,34 @@ interface SavedLayout {
 interface SavedLink {
   sourceSessionId: string;
   targetSessionId: string;
+}
+
+// Read a versioned { version, items } blob, migrating the legacy bare-array form
+// (treated as v1) transparently. Unknown future versions yield [].
+function loadVersioned<T>(key: string): T[] {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    // v1: bare array.
+    if (Array.isArray(parsed)) return parsed as T[];
+    // v2+: { version, items }.
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.items)) {
+      if (parsed.version === SCHEMA_VERSION) return parsed.items as T[];
+      return []; // unknown/newer schema — ignore rather than misread
+    }
+  } catch {
+    // corrupted
+  }
+  return [];
+}
+
+function saveVersioned<T>(key: string, items: T[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify({ version: SCHEMA_VERSION, items }));
+  } catch {
+    // quota exceeded
+  }
 }
 
 interface LinkDrag {
@@ -111,7 +144,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   setActive: (id) => set({ activeTerminalId: id }),
 
   saveLayout: () => {
-    const { terminals } = get();
+    const { terminals, sessionStatuses } = get();
     const layout: SavedLayout[] = Array.from(terminals.values()).map((tw) => ({
       sessionId: tw.sessionId,
       type: tw.type,
@@ -119,29 +152,20 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       explorerRoot: tw.explorerRoot,
       filePath: tw.filePath,
       memoText: tw.memoText,
+      // Snapshot the live cwd so a dead-session placeholder (phase 6.4) can offer
+      // to reopen in the same directory after a server restart.
+      cwd: sessionStatuses.get(tw.sessionId)?.cwd,
       x: tw.x,
       y: tw.y,
       width: tw.width,
       height: tw.height,
       title: tw.title,
     }));
-    try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
-    } catch {
-      // quota exceeded
-    }
+    saveVersioned(LAYOUT_KEY, layout);
     get().saveLinks();
   },
 
-  loadLayout: () => {
-    try {
-      const raw = localStorage.getItem(LAYOUT_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {
-      // corrupted
-    }
-    return [];
-  },
+  loadLayout: () => loadVersioned<SavedLayout>(LAYOUT_KEY),
 
   addLink: (sourceId, targetId) => {
     const state = get();
@@ -229,16 +253,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         });
       }
     }
-    try {
-      localStorage.setItem(LINKS_KEY, JSON.stringify(saved));
-    } catch {}
+    saveVersioned(LINKS_KEY, saved);
   },
 
-  loadLinks: () => {
-    try {
-      const raw = localStorage.getItem(LINKS_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {}
-    return [];
-  },
+  loadLinks: () => loadVersioned<SavedLink>(LINKS_KEY),
 }));
