@@ -349,7 +349,7 @@ export class PtyManager {
     return dir;
   }
 
-  create(cols: number, rows: number, cwd?: string, shell?: string): string {
+  create(cols: number, rows: number, cwd?: string, shell?: string, initialCommand?: string): string {
     const sessionId = randomBytes(16).toString('hex');
     // Per-session capability token, injected as TBOARD_TOKEN into this pty's env.
     // Threat model: tboard trusts processes inside its own pty sessions. The token
@@ -485,7 +485,31 @@ export class PtyManager {
     });
 
     this.sessions.set(sessionId, session);
+
+    // Phase 7.4: inject an opening command (e.g. `claude`) once the shell has
+    // finished initializing and is at an idle prompt — instead of a fixed 500ms
+    // client-side delay that loses keystrokes when nvm/conda init is slow.
+    if (initialCommand && initialCommand.trim()) {
+      this.injectInitialCommand(sessionId, initialCommand.trim());
+    }
+
     return sessionId;
+  }
+
+  // Poll until the session is at a safe, idle prompt (canAutoInject), then submit
+  // the command. Gives up after 30s; stops if the session dies first.
+  private injectInitialCommand(sessionId: string, command: string): void {
+    const startedAt = Date.now();
+    const tryInject = () => {
+      if (!this.sessions.has(sessionId)) return;
+      if (Date.now() - startedAt > 30_000) return;
+      if (this.canAutoInject(sessionId)) {
+        this.pasteAndSubmit(sessionId, command, { retryNeedle: command });
+        return;
+      }
+      setTimeout(tryInject, 250);
+    };
+    setTimeout(tryInject, 250);
   }
 
   attach(sessionId: string, ws: WebSocket): void {

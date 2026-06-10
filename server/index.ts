@@ -337,8 +337,11 @@ app.delete('/api/memos/:id', (req, res) => {
 
 // Create terminal
 app.post('/api/terminals', (req, res) => {
-  const { cols = 80, rows = 24, cwd, shell } = req.body || {};
-  const sessionId = ptyManager.create(cols, rows, cwd, shell);
+  const { cols = 80, rows = 24, cwd, shell, initialCommand } = req.body || {};
+  const sessionId = ptyManager.create(
+    cols, rows, cwd, shell,
+    typeof initialCommand === 'string' ? initialCommand : undefined
+  );
   const pid = ptyManager.getPid(sessionId);
   res.json({ sessionId, pid });
 });

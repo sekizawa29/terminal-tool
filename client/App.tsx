@@ -18,11 +18,13 @@ async function fetchToken(): Promise<string> {
   return data.token;
 }
 
-async function createTerminalSession(cols = 80, rows = 24, cwd?: string, shell?: string): Promise<string> {
+async function createTerminalSession(
+  cols = 80, rows = 24, cwd?: string, shell?: string, initialCommand?: string
+): Promise<string> {
   const res = await apiFetch('/api/terminals', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cols, rows, cwd, shell }),
+    body: JSON.stringify({ cols, rows, cwd, shell, initialCommand }),
   });
   const data = await res.json();
   return data.sessionId;
@@ -133,7 +135,9 @@ export default function App() {
   const claudeTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
     if (!token) return;
 
-    const sessionId = await createTerminalSession(80, 24, cwd || undefined);
+    // The server injects `claude` once the shell is at an idle prompt (7.4),
+    // which is robust to slow shell init instead of a fixed client-side delay.
+    const sessionId = await createTerminalSession(80, 24, cwd || undefined, undefined, 'claude');
     const width = 700;
     const height = 450;
 
@@ -151,22 +155,13 @@ export default function App() {
 
     addTerminal(tw);
     useTerminalStore.getState().saveLayout();
-
-    setTimeout(async () => {
-      const tokenVal = useTerminalStore.getState().token;
-      if (!tokenVal) return;
-      await apiFetch(`/api/terminals/${sessionId}/write`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: 'claude\n' }),
-      });
-    }, 500);
   }, [token, addTerminal]);
 
   const codexTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
     if (!token) return;
 
-    const sessionId = await createTerminalSession(80, 24, cwd || undefined);
+    // Server-side prompt-aware injection (7.4), as with claudeTerminal.
+    const sessionId = await createTerminalSession(80, 24, cwd || undefined, undefined, 'codex');
     const width = 700;
     const height = 450;
 
@@ -184,16 +179,6 @@ export default function App() {
 
     addTerminal(tw);
     useTerminalStore.getState().saveLayout();
-
-    setTimeout(async () => {
-      const tokenVal = useTerminalStore.getState().token;
-      if (!tokenVal) return;
-      await apiFetch(`/api/terminals/${sessionId}/write`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: 'codex\n' }),
-      });
-    }, 500);
   }, [token, addTerminal]);
 
   const powershellTerminal = useCallback(async (nearX: number, nearY: number) => {
