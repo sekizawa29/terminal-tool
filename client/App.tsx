@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar.js';
 import ExplorerContent from './components/ExplorerContent.js';
 import { useCanvas } from './hooks/useCanvas.js';
 import { useTerminalStore } from './hooks/useTerminalStore.js';
+import { useSessionPolling } from './hooks/useSessionPolling.js';
 import { apiFetch, setApiToken } from './api.js';
 import type { TerminalWindow } from './types.js';
 
@@ -40,6 +41,9 @@ const SESSION_LIST_MAX = 248 + SESSION_LIST_PAD;
 
 export default function App() {
   const canvas = useCanvas();
+  // Poll session status once for the whole app (statuses + recent dirs land in
+  // the store); mounting it here keeps it alive regardless of the sidebar.
+  useSessionPolling();
   // Individual selectors (stable action refs) instead of subscribing to the
   // whole store, so App + Sidebar don't re-render on every drag / 2s poll.
   const setToken = useTerminalStore((s) => s.setToken);

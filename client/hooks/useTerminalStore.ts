@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { apiFetch } from '../api.js';
 import type { TerminalWindow, TerminalLink, SessionStatus } from '../types.js';
+import { type DirsState, EMPTY_DIRS_STATE } from '../api/dirsApi.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
 const LINKS_KEY = 'terminal-board-links';
@@ -72,9 +73,11 @@ interface TerminalState {
   linkDrag: LinkDrag;
   sessionStatuses: Map<string, SessionStatus>;
   dirtyWindows: Set<string>;
+  dirsState: DirsState;
 
   setToken: (token: string) => void;
   setWindowDirty: (id: string, dirty: boolean) => void;
+  setDirsState: (dirs: DirsState) => void;
   setSessionStatuses: (statuses: Map<string, SessionStatus>) => void;
   addTerminal: (tw: TerminalWindow) => void;
   removeTerminal: (id: string) => void;
@@ -103,8 +106,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   linkDrag: { active: false, sourceId: null, mouseX: 0, mouseY: 0 },
   sessionStatuses: new Map(),
   dirtyWindows: new Set(),
+  dirsState: EMPTY_DIRS_STATE,
 
   setToken: (token) => set({ token }),
+  setDirsState: (dirs) => set({ dirsState: dirs }),
   setWindowDirty: (id, dirty) =>
     set((state) => {
       if (dirty === state.dirtyWindows.has(id)) return state;

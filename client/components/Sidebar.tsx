@@ -1,16 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
-import { apiFetch } from '../api.js';
+import { getDisplayName } from '../hooks/useSessionPolling.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
-import type { SessionStatus } from '../types.js';
-import {
-  type DirsState,
-  EMPTY_DIRS_STATE,
-  fetchDirsState,
-  pushRecentDir,
-  pinDir,
-  unpinDir,
-} from '../api/dirsApi.js';
+import { pinDir, unpinDir } from '../api/dirsApi.js';
 import {
   ClaudeIcon,
   CodexIcon,
@@ -165,13 +157,6 @@ const AGENT_PROCESSES = new Set([
   'cline', 'roo',
 ]);
 
-function getDisplayName(status: SessionStatus | undefined): string {
-  if (!status) return 'Terminal';
-  if (status.name) return status.name;
-  const parts = status.cwdShort.split('/');
-  return parts[parts.length - 1] || status.cwdShort;
-}
-
 function isAgentProcess(process: string): boolean {
   return AGENT_PROCESSES.has(process);
 }
@@ -196,16 +181,12 @@ export default function Sidebar({
   const statuses = useTerminalStore((s) => s.sessionStatuses);
   const bringToFront = useTerminalStore((s) => s.bringToFront);
   const setActive = useTerminalStore((s) => s.setActive);
-  const updateTerminal = useTerminalStore((s) => s.updateTerminal);
-  const setSessionStatuses = useTerminalStore((s) => s.setSessionStatuses);
+  const dirsState = useTerminalStore((s) => s.dirsState);
+  const setDirsState = useTerminalStore((s) => s.setDirsState);
   const [expanded, setExpanded] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [starMenuOpen, setStarMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
-  const [dirsState, setDirsStateLocal] = useState<DirsState>(EMPTY_DIRS_STATE);
-  const lastCwdBySession = useRef<Map<string, string>>(new Map());
-  const dirsStateRef = useRef<DirsState>(EMPTY_DIRS_STATE);
-  dirsStateRef.current = dirsState;
   const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const starWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -245,63 +226,11 @@ export default function Sidebar({
     }, 80);
   };
 
-  useEffect(() => {
-    let active = true;
-    // Pull initial persisted dirs so the menu is hydrated before the first cwd-diff.
-    fetchDirsState().then((state) => {
-      if (active && state) setDirsStateLocal(state);
-    });
-    const poll = async () => {
-      try {
-        const res = await apiFetch('/api/terminals/status');
-        const data = await res.json();
-        if (!active) return;
-        const map = new Map<string, SessionStatus>();
-        for (const s of data.statuses as SessionStatus[]) {
-          map.set(s.sessionId, s);
-        }
-        setSessionStatuses(map);
-        const store = useTerminalStore.getState();
-        for (const tw of store.terminals.values()) {
-          const status = map.get(tw.sessionId);
-          if (status) {
-            const name = getDisplayName(status);
-            if (tw.title !== name) {
-              updateTerminal(tw.id, { title: name });
-            }
-          }
-        }
-        const liveIds = new Set<string>();
-        const newCwds: string[] = [];
-        for (const s of data.statuses as SessionStatus[]) {
-          liveIds.add(s.sessionId);
-          if (!s.cwd) continue;
-          if (lastCwdBySession.current.get(s.sessionId) === s.cwd) continue;
-          lastCwdBySession.current.set(s.sessionId, s.cwd);
-          if (dirsStateRef.current.recent[0] === s.cwd) continue;
-          newCwds.push(s.cwd);
-        }
-        for (const id of lastCwdBySession.current.keys()) {
-          if (!liveIds.has(id)) lastCwdBySession.current.delete(id);
-        }
-        // Push each new cwd to the server in order; server enforces the dedupe + 5-cap.
-        for (const cwd of newCwds) {
-          const updated = await pushRecentDir(cwd);
-          if (!active) return;
-          if (updated) setDirsStateLocal(updated);
-        }
-      } catch { /* server unavailable */ }
-    };
-    poll();
-    const interval = setInterval(poll, 2000);
-    return () => { active = false; clearInterval(interval); };
-  }, [updateTerminal, setSessionStatuses]);
-
   const handleTogglePin = useCallback(async (cwd: string) => {
-    const isPinned = dirsStateRef.current.pinned.includes(cwd);
+    const isPinned = useTerminalStore.getState().dirsState.pinned.includes(cwd);
     const updated = isPinned ? await unpinDir(cwd) : await pinDir(cwd);
-    if (updated) setDirsStateLocal(updated);
-  }, []);
+    if (updated) setDirsState(updated);
+  }, [setDirsState]);
 
   const handleClick = useCallback(
     (id: string) => {
