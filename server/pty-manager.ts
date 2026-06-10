@@ -309,9 +309,8 @@ export class PtyManager {
   private notificationSeq = 0; // global monotonic counter
   private notificationReadSeq = new Map<string, number>(); // sessionId → last read seq
   private taskRegistry = new Map<string, TaskEntry[]>(); // sourceSessionId (MAIN) → tasks
-  // Phase 7.2: dampen findTaskById CPU when unknown task ids are hammered.
+  // Phase 7.2: dampen findTaskById CPU when the same unknown task id is hammered.
   private taskNegativeCache = new Map<string, number>(); // taskId → expiry ms (60s)
-  private lastTaskFsScanAt = 0;                          // throttle fs fallback to >=10s
   private activeCaptures = new Map<string, CaptureHandle[]>(); // targetSessionId → active captures
   private captureDir = CAPTURE_DIR;
   private compressTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -526,13 +525,16 @@ export class PtyManager {
   }
 
   // Poll until the session is at a safe, idle prompt (canAutoInject), then submit
-  // the command. Gives up after 30s; stops if the session dies first.
+  // the command. After a 35s cap, submit anyway (best-effort) so the command is
+  // never silently dropped — matching the old client behavior which always sent
+  // it. (canAutoInject's own no-prompt fallback only flips true at 30s of quiet,
+  // so the cap must exceed that to give detection a chance first.) Stops if the
+  // session dies first.
   private injectInitialCommand(sessionId: string, command: string): void {
     const startedAt = Date.now();
     const tryInject = () => {
       if (!this.sessions.has(sessionId)) return;
-      if (Date.now() - startedAt > 30_000) return;
-      if (this.canAutoInject(sessionId)) {
+      if (this.canAutoInject(sessionId) || Date.now() - startedAt > 35_000) {
         this.pasteAndSubmit(sessionId, command, { retryNeedle: command });
         return;
       }
@@ -1971,18 +1973,15 @@ export class PtyManager {
     }
 
     const now = Date.now();
-    // Negative cache: a recently-missed id short-circuits the fs scan for 60s.
+    // Per-id negative cache: a recently-missed id short-circuits the fs scan for
+    // 60s, so a flood of the same unknown id can't repeatedly walk tmpdir. A
+    // *different* valid id still scans — we must not globally suppress scans, or
+    // a real task could transiently 404 right after an unrelated miss.
     const negExpiry = this.taskNegativeCache.get(taskId);
     if (negExpiry !== undefined) {
       if (negExpiry > now) return null;
       this.taskNegativeCache.delete(taskId);
     }
-    // Throttle the fs fallback so an unknown-id flood can't trigger a full
-    // tmpdir walk on every call.
-    if (now - this.lastTaskFsScanAt < 10_000) {
-      return null;
-    }
-    this.lastTaskFsScanAt = now;
 
     // Filesystem fallback: scan /tmp/tboard-output-<...>/<peer>/<taskId>/manifest.json
     const root = tmpdir();
