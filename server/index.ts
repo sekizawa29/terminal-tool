@@ -1553,6 +1553,36 @@ app.post('/api/files/create', (req, res) => {
   }
 });
 
+// Rename a file or directory in place (new basename in the same parent).
+app.post('/api/files/rename', (req, res) => {
+  const { path: targetPath, newName } = req.body || {};
+  if (typeof targetPath !== 'string' || typeof newName !== 'string' || !newName.trim()) {
+    res.status(400).json({ error: 'path and newName required' });
+    return;
+  }
+  if (/[/\\]/.test(newName)) {
+    res.status(400).json({ error: 'newName must not contain path separators' });
+    return;
+  }
+  try {
+    const resolved = assertAllowedPath(targetPath);
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    const destination = join(dirname(resolved), newName);
+    assertAllowedPath(destination);
+    if (existsSync(destination)) {
+      res.status(409).json({ error: 'Target already exists' });
+      return;
+    }
+    renameSync(resolved, destination);
+    res.json({ ok: true, path: destination, name: basename(destination) });
+  } catch (err) {
+    sendFileError(res, err);
+  }
+});
+
 // Delete a file or (with recursive:true) a directory.
 app.post('/api/files/delete', (req, res) => {
   const { path: targetPath, recursive } = req.body || {};
