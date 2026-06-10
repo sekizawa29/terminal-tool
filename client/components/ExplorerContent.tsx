@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiFetch, withToken } from '../api.js';
+import { apiFetch, withToken, readApiPayload, getApiError } from '../api.js';
 import type { FileEntry } from '../types.js';
 
 interface TreeNode {
@@ -148,26 +148,6 @@ function parseInternalDragData(dataTransfer: DataTransfer): InternalDragPayload 
 
 function getDownloadUrl(filePath: string): string {
   return withToken(`${window.location.origin}/api/files/download?path=${encodeURIComponent(filePath)}`);
-}
-
-// Returns the parsed JSON object (any-typed; callers know the endpoint shape) or
-// the raw text for non-JSON responses.
-async function readApiPayload(res: Response): Promise<any> {
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return await res.json();
-  }
-  return await res.text();
-}
-
-function getApiError(payload: unknown, fallback: string): string {
-  if (payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string') {
-    return payload.error;
-  }
-  if (typeof payload === 'string' && payload.trim()) {
-    return payload.slice(0, 200);
-  }
-  return fallback;
 }
 
 async function readFileAsBase64(file: File): Promise<string> {

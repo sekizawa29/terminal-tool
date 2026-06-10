@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { apiFetch, withToken } from '../api.js';
+import { apiFetch, withToken, readApiPayload, getApiError } from '../api.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -54,26 +54,6 @@ const LANGUAGE_NAMES: Record<string, string> = {
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
-
-// Returns the parsed JSON object (any-typed; callers know the endpoint shape) or
-// the raw text for non-JSON responses.
-async function readApiPayload(res: Response): Promise<any> {
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return await res.json();
-  }
-  return await res.text();
-}
-
-function getApiError(payload: unknown, fallback: string): string {
-  if (payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string') {
-    return payload.error;
-  }
-  if (typeof payload === 'string' && payload.trim()) {
-    return payload.slice(0, 200);
-  }
-  return fallback;
-}
 
 export default function EditorContent({ windowId, filePath, isActive }: EditorContentProps) {
   const [content, setContent] = useState<string | null>(null);
