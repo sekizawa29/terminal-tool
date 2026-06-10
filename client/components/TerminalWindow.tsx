@@ -26,8 +26,15 @@ const MIN_WIDTH = 300;
 const MIN_HEIGHT = 200;
 
 export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }: TerminalWindowProps) {
-  const { updateTerminal, removeTerminal, bringToFront, setActive, activeTerminalId, saveLayout } =
-    useTerminalStore();
+  // Subscribe with fine-grained selectors so a sibling window's update (or any
+  // unrelated store change) does not re-render this window. Actions are stable
+  // references, and isActive is reduced to a boolean.
+  const updateTerminal = useTerminalStore((s) => s.updateTerminal);
+  const removeTerminal = useTerminalStore((s) => s.removeTerminal);
+  const bringToFront = useTerminalStore((s) => s.bringToFront);
+  const setActive = useTerminalStore((s) => s.setActive);
+  const saveLayout = useTerminalStore((s) => s.saveLayout);
+  const isActive = useTerminalStore((s) => s.activeTerminalId === tw.id);
 
   // Subscribe to only the fields we need (avoid re-render on every mousemove)
   const linkDragActive = useTerminalStore((s) => s.linkDrag.active);
@@ -62,7 +69,6 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
     status.isProcessing
   );
 
-  const isActive = activeTerminalId === tw.id;
   const isDropTarget = linkDragActive && linkDragSourceId !== tw.id;
 
   const onTitleMouseDown = useCallback(

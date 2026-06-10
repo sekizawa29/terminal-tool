@@ -354,7 +354,10 @@ export default function Sidebar({
   const terminals = useTerminalStore((s) => s.terminals);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const statuses = useTerminalStore((s) => s.sessionStatuses);
-  const { bringToFront, setActive, updateTerminal, setSessionStatuses } = useTerminalStore();
+  const bringToFront = useTerminalStore((s) => s.bringToFront);
+  const setActive = useTerminalStore((s) => s.setActive);
+  const updateTerminal = useTerminalStore((s) => s.updateTerminal);
+  const setSessionStatuses = useTerminalStore((s) => s.setSessionStatuses);
   const [expanded, setExpanded] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [starMenuOpen, setStarMenuOpen] = useState(false);

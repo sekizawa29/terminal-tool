@@ -40,7 +40,11 @@ const SESSION_LIST_MAX = 248 + SESSION_LIST_PAD;
 
 export default function App() {
   const canvas = useCanvas();
-  const { setToken, addTerminal, loadLayout } = useTerminalStore();
+  // Individual selectors (stable action refs) instead of subscribing to the
+  // whole store, so App + Sidebar don't re-render on every drag / 2s poll.
+  const setToken = useTerminalStore((s) => s.setToken);
+  const addTerminal = useTerminalStore((s) => s.addTerminal);
+  const loadLayout = useTerminalStore((s) => s.loadLayout);
   const token = useTerminalStore((s) => s.token);
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [explorerRoot, setExplorerRoot] = useState('~');

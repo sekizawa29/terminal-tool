@@ -8,7 +8,8 @@ interface MemoContentProps {
 
 export default function MemoContent({ windowId, isActive }: MemoContentProps) {
   const text = useTerminalStore((s) => s.terminals.get(windowId)?.memoText ?? '');
-  const { updateTerminal, saveLayout } = useTerminalStore();
+  const updateTerminal = useTerminalStore((s) => s.updateTerminal);
+  const saveLayout = useTerminalStore((s) => s.saveLayout);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-focus on creation
