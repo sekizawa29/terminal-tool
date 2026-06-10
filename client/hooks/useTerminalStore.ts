@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { apiFetch } from '../api.js';
-import type { TerminalWindow, TerminalLink, SessionStatus } from '../types.js';
+import type { TerminalWindow, TerminalLink, SessionStatus, AttentionInfo } from '../types.js';
 import { type DirsState, EMPTY_DIRS_STATE } from '../api/dirsApi.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
@@ -74,10 +74,13 @@ interface TerminalState {
   sessionStatuses: Map<string, SessionStatus>;
   dirtyWindows: Set<string>;
   dirsState: DirsState;
+  attention: Map<string, AttentionInfo>;
 
   setToken: (token: string) => void;
   setWindowDirty: (id: string, dirty: boolean) => void;
   setDirsState: (dirs: DirsState) => void;
+  setAttention: (windowId: string, info: AttentionInfo) => void;
+  clearAttention: (windowId: string) => void;
   setSessionStatuses: (statuses: Map<string, SessionStatus>) => void;
   addTerminal: (tw: TerminalWindow) => void;
   removeTerminal: (id: string) => void;
@@ -107,9 +110,23 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   sessionStatuses: new Map(),
   dirtyWindows: new Set(),
   dirsState: EMPTY_DIRS_STATE,
+  attention: new Map(),
 
   setToken: (token) => set({ token }),
   setDirsState: (dirs) => set({ dirsState: dirs }),
+  setAttention: (windowId, info) =>
+    set((state) => {
+      const attention = new Map(state.attention);
+      attention.set(windowId, info);
+      return { attention };
+    }),
+  clearAttention: (windowId) =>
+    set((state) => {
+      if (!state.attention.has(windowId)) return state;
+      const attention = new Map(state.attention);
+      attention.delete(windowId);
+      return { attention };
+    }),
   setWindowDirty: (id, dirty) =>
     set((state) => {
       if (dirty === state.dirtyWindows.has(id)) return state;
@@ -154,7 +171,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         dirtyWindows = new Set(dirtyWindows);
         dirtyWindows.delete(id);
       }
-      return { terminals, activeTerminalId, links, dirtyWindows };
+      let attention = s.attention;
+      if (attention.has(id)) {
+        attention = new Map(attention);
+        attention.delete(id);
+      }
+      return { terminals, activeTerminalId, links, dirtyWindows, attention };
     });
     get().saveLinks();
   },
@@ -180,7 +202,16 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       return { terminals, nextZIndex: state.nextZIndex + 1 };
     }),
 
-  setActive: (id) => set({ activeTerminalId: id }),
+  setActive: (id) =>
+    set((state) => {
+      // Focusing a window resolves any pending attention on it.
+      if (id && state.attention.has(id)) {
+        const attention = new Map(state.attention);
+        attention.delete(id);
+        return { activeTerminalId: id, attention };
+      }
+      return { activeTerminalId: id };
+    }),
 
   saveLayout: () => {
     const { terminals, sessionStatuses } = get();

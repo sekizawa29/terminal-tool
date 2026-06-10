@@ -29,6 +29,13 @@ export interface TerminalLink {
   targetId: string;
 }
 
+// Offscreen-attention marker for a window (e.g. an agent finished while the
+// window was out of view). Keyed by windowId in the store.
+export interface AttentionInfo {
+  kind: 'finished';
+  at: number;
+}
+
 export interface CanvasState {
   offsetX: number;
   offsetY: number;

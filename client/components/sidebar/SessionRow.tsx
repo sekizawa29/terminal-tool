@@ -34,6 +34,7 @@ interface SessionRowProps {
   windows: boolean;
   title: string;
   subtitle?: string;
+  attention?: boolean;
   onClick: () => void;
   onClaude: () => void;
   onCodex: () => void;
@@ -52,6 +53,7 @@ export function SessionRow({
   windows,
   title,
   subtitle,
+  attention,
   onClick,
   onClaude,
   onCodex,
@@ -132,6 +134,20 @@ export function SessionRow({
           </span>
         )}
       </span>
+      {attention && (
+        <span
+          title="完了/入力待ち"
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: 'var(--accent-yellow)',
+            boxShadow: '0 0 6px rgba(224, 175, 104, 0.7)',
+            flexShrink: 0,
+            animation: 'statusPulse 2s ease-in-out infinite',
+          }}
+        />
+      )}
       <div
         style={{
           display: 'flex',

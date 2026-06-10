@@ -154,6 +154,7 @@ export default function Sidebar({
   const bringToFront = useTerminalStore((s) => s.bringToFront);
   const setActive = useTerminalStore((s) => s.setActive);
   const removeTerminal = useTerminalStore((s) => s.removeTerminal);
+  const attention = useTerminalStore((s) => s.attention);
   const dirsState = useTerminalStore((s) => s.dirsState);
   const setDirsState = useTerminalStore((s) => s.setDirsState);
   const [expanded, setExpanded] = useState(false);
@@ -402,6 +403,28 @@ export default function Sidebar({
             >
               {terminals.size}
             </span>
+            {attention.size > 0 && (
+              <span
+                title={`${attention.size} 件が完了/入力待ち`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: 15,
+                  height: 15,
+                  padding: '0 4px',
+                  borderRadius: 999,
+                  background: 'var(--accent-yellow)',
+                  color: '#1a1b26',
+                  fontSize: 9,
+                  fontWeight: 700,
+                  fontVariantNumeric: 'tabular-nums',
+                  animation: 'statusPulse 2s ease-in-out infinite',
+                }}
+              >
+                {attention.size}
+              </span>
+            )}
             <CaretIcon open={expanded} />
           </button>
 
@@ -639,6 +662,7 @@ export default function Sidebar({
                   windows={isWindows}
                   title={displayName}
                   subtitle={subtitle}
+                  attention={attention.has(tw.id)}
                   onClick={() => handleClick(tw.id)}
                   onClaude={() => onClaudeTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
                   onCodex={() => onCodexTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Canvas from './components/Canvas.js';
 import Sidebar from './components/Sidebar.js';
 import ExplorerContent from './components/ExplorerContent.js';
+import EdgeBadges from './components/EdgeBadges.js';
 import { useCanvas } from './hooks/useCanvas.js';
 import { useTerminalStore } from './hooks/useTerminalStore.js';
 import { useSessionPolling } from './hooks/useSessionPolling.js';
@@ -43,7 +44,7 @@ export default function App() {
   const canvas = useCanvas();
   // Poll session status once for the whole app (statuses + recent dirs land in
   // the store); mounting it here keeps it alive regardless of the sidebar.
-  useSessionPolling();
+  useSessionPolling(canvas);
   // Individual selectors (stable action refs) instead of subscribing to the
   // whole store, so App + Sidebar don't re-render on every drag / 2s poll.
   const setToken = useTerminalStore((s) => s.setToken);
@@ -54,8 +55,15 @@ export default function App() {
   const [explorerRoot, setExplorerRoot] = useState('~');
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
   const terminalCount = useTerminalStore((s) => s.terminals.size);
+  const attentionCount = useTerminalStore((s) => s.attention.size);
   const sessionListHeight = Math.min(terminalCount * SESSION_ROW + SESSION_LIST_PAD, SESSION_LIST_MAX);
   const explorerTop = TOOLBAR_BOTTOM + (sessionsExpanded ? sessionListHeight : 0) + PANEL_GAP;
+
+  // Reflect total offscreen-attention count in the tab title.
+  useEffect(() => {
+    const base = 'tboard';
+    document.title = attentionCount > 0 ? `(${attentionCount}) ${base}` : base;
+  }, [attentionCount]);
 
   // Fetch token on mount (with StrictMode guard)
   useEffect(() => {
@@ -541,6 +549,7 @@ export default function App() {
         onAutoLayout={handleAutoLayout}
         onExpandChange={setSessionsExpanded}
       />
+      <EdgeBadges controller={canvas} />
       <div className="noise-overlay" />
     </>
   );
