@@ -73,10 +73,17 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const treeRef = useRef<TreeNode[]>([]);
+  const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     treeRef.current = tree;
   }, [tree]);
+
+  useEffect(() => {
+    return () => {
+      if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
+    };
+  }, []);
 
   const loadRoot = useCallback(async (
     path: string,
@@ -138,17 +145,27 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
 
   const handleClick = useCallback((node: TreeNode) => {
     setActionError(null);
+    setSelectedPath(node.entry.path);
     if (node.entry.isDirectory) {
-      setSelectedPath(node.entry.path);
-      toggleExpand(node.entry.path);
+      // Defer the expand toggle so a follow-up double-click (root change) can
+      // cancel it; otherwise both fire and the row expands then immediately
+      // reloads as the new root.
+      if (expandTimerRef.current) clearTimeout(expandTimerRef.current);
+      expandTimerRef.current = setTimeout(() => {
+        expandTimerRef.current = null;
+        toggleExpand(node.entry.path);
+      }, 250);
     } else {
-      setSelectedPath(node.entry.path);
       onOpenFile(node.entry.path, node.entry.name);
     }
   }, [onOpenFile, toggleExpand]);
 
   const handleDoubleClick = useCallback((node: TreeNode) => {
     if (node.entry.isDirectory) {
+      if (expandTimerRef.current) {
+        clearTimeout(expandTimerRef.current);
+        expandTimerRef.current = null;
+      }
       loadRoot(node.entry.path, node.entry.path);
       onNavigate?.(node.entry.path);
     }
