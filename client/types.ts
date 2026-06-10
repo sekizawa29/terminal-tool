@@ -6,6 +6,11 @@ export interface TerminalWindow {
   explorerRoot?: string;
   filePath?: string;
   memoText?: string;
+  // Last-known cwd, used to reopen a dead-session placeholder in place.
+  cwd?: string;
+  // True when the backing session is gone but the window is kept as a
+  // placeholder (server restart / session death) so the board layout survives.
+  dead?: boolean;
   x: number;
   y: number;
   width: number;

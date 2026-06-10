@@ -163,12 +163,29 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
     if (useTerminalStore.getState().dirtyWindows.has(tw.id)) {
       if (!window.confirm('未保存の変更があります。閉じますか?')) return;
     }
-    if (!isBrowser && !isMemo) {
+    if (!isBrowser && !isMemo && !tw.dead) {
       apiFetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
     removeTerminal(tw.id);
     saveLayout();
-  }, [tw.id, tw.sessionId, isBrowser, isMemo, removeTerminal, saveLayout]);
+  }, [tw.id, tw.sessionId, tw.dead, isBrowser, isMemo, removeTerminal, saveLayout]);
+
+  // Reopen a dead-session placeholder in place: spawn a fresh PTY (in the saved
+  // cwd) and swap the window onto the new sessionId so TerminalContent mounts.
+  const reopenDead = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/terminals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: tw.cwd }),
+      });
+      const data = await res.json();
+      if (data?.sessionId) {
+        updateTerminal(tw.id, { sessionId: data.sessionId, dead: false });
+        saveLayout();
+      }
+    } catch { /* server unavailable */ }
+  }, [tw.id, tw.cwd, updateTerminal, saveLayout]);
 
   const onTitleDoubleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -574,6 +591,74 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
               windowId={tw.id}
               isActive={isActive}
             />
+          ) : tw.dead ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 12,
+                width: '100%',
+                height: '100%',
+                padding: 20,
+                textAlign: 'center',
+                background: '#16161e',
+                color: 'var(--text-tertiary)',
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>
+                セッションは終了しました
+              </div>
+              {tw.cwd && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--text-ghost)',
+                    fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
+                    maxWidth: '90%',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    direction: 'rtl',
+                  }}
+                >
+                  <bdi>{tw.cwd}</bdi>
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button
+                  onClick={reopenDead}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: 'rgba(122, 162, 247, 0.2)',
+                    color: 'var(--accent-blue)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  ここで再開
+                </button>
+                <button
+                  onClick={onClose}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 6,
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: 'rgba(255,255,255,0.06)',
+                    color: 'var(--text-secondary)',
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                >
+                  閉じる
+                </button>
+              </div>
+            </div>
           ) : (
             <TerminalContent
               sessionId={tw.sessionId}
@@ -583,6 +668,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
               onZoom={onZoom}
               onExit={onClose}
               onConnectionChange={setConnState}
+              onSessionDead={() => updateTerminal(tw.id, { dead: true })}
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
             />

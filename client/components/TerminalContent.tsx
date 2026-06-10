@@ -25,6 +25,7 @@ interface TerminalContentProps {
   onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
   onExit?: () => void;
   onConnectionChange?: (state: ConnectionState) => void;
+  onSessionDead?: () => void;
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
 }
@@ -43,6 +44,7 @@ export default function TerminalContent({
   onZoom,
   onExit,
   onConnectionChange,
+  onSessionDead,
   searchOpen = false,
   onSearchOpenChange,
 }: TerminalContentProps) {
@@ -65,6 +67,8 @@ export default function TerminalContent({
   onConnChangeRef.current = onConnectionChange;
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onSessionDeadRef = useRef(onSessionDead);
+  onSessionDeadRef.current = onSessionDead;
 
   const sendPaste = useCallback((text: string) => {
     const ws = wsRef.current;
@@ -335,6 +339,12 @@ export default function TerminalContent({
           || event.code === 4001 || event.code === 4003 || event.code === 4004;
         if (fatal) {
           if (!unmounted && !exited) {
+            // 4004 = the session no longer exists; drop to a dead placeholder so
+            // the window (and its layout) survives a server restart.
+            if (event.code === 4004) {
+              onSessionDeadRef.current?.();
+              return;
+            }
             term.write('\r\n\x1b[90m[Connection closed]\x1b[0m\r\n');
             notify('closed');
           }

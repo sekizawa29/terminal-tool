@@ -223,8 +223,9 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       filePath: tw.filePath,
       memoText: tw.memoText,
       // Snapshot the live cwd so a dead-session placeholder (phase 6.4) can offer
-      // to reopen in the same directory after a server restart.
-      cwd: sessionStatuses.get(tw.sessionId)?.cwd,
+      // to reopen in the same directory after a server restart. Dead windows have
+      // no live status, so fall back to the cwd carried on the window.
+      cwd: sessionStatuses.get(tw.sessionId)?.cwd ?? tw.cwd,
       x: tw.x,
       y: tw.y,
       width: tw.width,

@@ -385,6 +385,25 @@ export default function App() {
           };
           addTerminal(tw);
           reconnected++;
+        } else if (layout.sessionId && (!layout.type || layout.type === 'terminal')) {
+          // Session is gone (server restart / killed) — keep the window as a
+          // dead placeholder so its position survives and can be reopened.
+          terminalCounter++;
+          const tw: TerminalWindow = {
+            id: crypto.randomUUID(),
+            sessionId: layout.sessionId,
+            type: 'terminal',
+            dead: true,
+            cwd: layout.cwd,
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+            zIndex: 0,
+            title: layout.title || `Terminal ${terminalCounter}`,
+          };
+          addTerminal(tw);
+          reconnected++;
         }
       }
 
