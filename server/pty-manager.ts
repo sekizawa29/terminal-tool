@@ -217,12 +217,15 @@ const NOTIFICATION_MAX_MSG_BYTES = 4 * 1024; // 4KB per message
 // A task/IPC message waiting for the target agent to reach a safe prompt before
 // it is pasted in. Decouples dispatch from the recipient's busy state so a send
 // to a generating agent is queued instead of corrupting its input line.
+type DeliveryState = 'queued' | 'delivered' | 'unconfirmed';
+
 interface PendingDispatch {
   id: string;            // taskId / turnId, or a random id
   paste: string;         // full text handed to pasteAndSubmit
   retryNeedle: string;
   enqueuedAt: number;
   kind: 'task' | 'ipc';
+  onResult?: (state: DeliveryState) => void;
 }
 const DISPATCH_OUTBOX_LIMIT = 20; // per session; over this, dispatch is rejected (429)
 
@@ -240,6 +243,10 @@ export interface TaskEntry {
   targetName: string;
   command: string;
   status: 'pending' | 'done' | 'failed';
+  // Delivery tracking (phase 3.2): distinguishes "sitting in the outbox" from
+  // "pasted and confirmed submitted" from "pasted but the needle never cleared".
+  delivery?: 'queued' | 'delivered' | 'unconfirmed';
+  deliveredAt?: number;
   result?: string;
   summary?: string;
   reportFile?: string;
@@ -599,6 +606,9 @@ export class PtyManager {
       enterDelayMs?: number;
       retryDelayMs?: number;
       retryNeedle?: string;
+      /** Phase 3.2: invoked once after the retry window with whether the paste
+       *  was confirmed submitted (needle no longer lingering in the prompt). */
+      onConfirm?: (confirmed: boolean) => void;
     }
   ): void {
     const session = this.sessions.get(sessionId);
@@ -607,6 +617,7 @@ export class PtyManager {
     const enterDelayMs = Math.max(0, options?.enterDelayMs ?? 350);
     const retryDelayMs = Math.max(enterDelayMs + 250, options?.retryDelayMs ?? 1200);
     const retryNeedle = normalizeInlineWhitespace(options?.retryNeedle ?? text).slice(0, 120);
+    const onConfirm = options?.onConfirm;
 
     this.write(sessionId, `\x1b[200~${text}\x1b[201~`);
     setTimeout(() => {
@@ -615,16 +626,27 @@ export class PtyManager {
       }
     }, enterDelayMs);
 
-    if (!retryNeedle) return;
+    if (!retryNeedle) {
+      // No needle to verify against — report optimistically once Enter is sent.
+      if (onConfirm) setTimeout(() => onConfirm(this.sessions.has(sessionId)), enterDelayMs);
+      return;
+    }
 
     // Codex/Claude prompts occasionally keep the pasted text in the live prompt
     // if Enter lands too early. Retry once only when the same prompt is still present.
     setTimeout(() => {
-      if (!this.sessions.has(sessionId)) return;
+      if (!this.sessions.has(sessionId)) { onConfirm?.(false); return; }
       const promptText = this.getPromptTextAtEnd(sessionId);
-      if (!promptText) return;
-      if (normalizeInlineWhitespace(promptText).includes(retryNeedle)) {
+      const lingering = promptText !== null
+        && normalizeInlineWhitespace(promptText).includes(retryNeedle);
+      if (lingering) {
+        // Needle still on the prompt line: press Enter again, but we can no
+        // longer be certain it was accepted — report unconfirmed.
         this.write(sessionId, '\r');
+        onConfirm?.(false);
+      } else {
+        // Needle gone (submitted) or no prompt detected — treat as delivered.
+        onConfirm?.(true);
       }
     }, retryDelayMs);
   }
@@ -1585,13 +1607,24 @@ export class PtyManager {
   dispatchToAgent(
     sessionId: string,
     paste: string,
-    opts: { retryNeedle: string; kind: 'task' | 'ipc'; id?: string }
+    opts: {
+      retryNeedle: string;
+      kind: 'task' | 'ipc';
+      id?: string;
+      /** Reports the delivery state as it evolves: 'delivered'/'unconfirmed'
+       *  after an immediate paste's confirmation window, or 'queued' now and
+       *  'delivered'/'unconfirmed' later when the outbox flushes. */
+      onResult?: (state: DeliveryState) => void;
+    }
   ): 'delivered' | 'queued' {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`dispatchToAgent: unknown session ${sessionId}`);
 
     if (this.canAutoInject(sessionId)) {
-      this.pasteAndSubmit(sessionId, paste, { retryNeedle: opts.retryNeedle });
+      this.pasteAndSubmit(sessionId, paste, {
+        retryNeedle: opts.retryNeedle,
+        onConfirm: (ok) => opts.onResult?.(ok ? 'delivered' : 'unconfirmed'),
+      });
       return 'delivered';
     }
 
@@ -1605,8 +1638,10 @@ export class PtyManager {
       retryNeedle: opts.retryNeedle,
       enqueuedAt: Date.now(),
       kind: opts.kind,
+      onResult: opts.onResult,
     });
     this.dispatchOutbox.set(sessionId, outbox);
+    opts.onResult?.('queued');
     // Fallback timer in case no further PTY output arrives to trigger a flush.
     this.scheduleNotificationRetry(sessionId);
     return 'queued';
@@ -1639,7 +1674,10 @@ export class PtyManager {
     if (hasOutbox) {
       const item = outbox!.shift()!;
       if (outbox!.length === 0) this.dispatchOutbox.delete(sessionId);
-      this.pasteAndSubmit(sessionId, item.paste, { retryNeedle: item.retryNeedle });
+      this.pasteAndSubmit(sessionId, item.paste, {
+        retryNeedle: item.retryNeedle,
+        onConfirm: (ok) => item.onResult?.(ok ? 'delivered' : 'unconfirmed'),
+      });
       if (outbox!.length > 0 || queued.length > 0) {
         this.scheduleNotificationRetry(sessionId);
       }
@@ -1825,6 +1863,7 @@ export class PtyManager {
       targetName,
       command: truncatedCmd,
       status: 'pending',
+      delivery: 'queued', // refined by dispatchToAgent's onResult callback
       createdAt: Date.now(),
       outputDir: frozenOutputDir,
     });
@@ -1839,6 +1878,17 @@ export class PtyManager {
     this.startCapture(taskId, targetSessionId);
 
     return taskId;
+  }
+
+  /** Update a task's delivery state (queued → delivered/unconfirmed). Stamps
+   *  deliveredAt on the first transition to 'delivered'. No-op for unknown ids. */
+  setTaskDelivery(taskId: string, delivery: 'queued' | 'delivered' | 'unconfirmed'): void {
+    const task = this.findTaskById(taskId);
+    if (!task) return;
+    task.delivery = delivery;
+    if (delivery === 'delivered' && !task.deliveredAt) {
+      task.deliveredAt = Date.now();
+    }
   }
 
   /**

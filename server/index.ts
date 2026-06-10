@@ -716,6 +716,7 @@ app.post('/api/tasks/send', (req, res) => {
       retryNeedle: paste,
       kind: 'task',
       id: taskId,
+      onResult: taskId ? (state) => ptyManager.setTaskDelivery(taskId, state) : undefined,
     });
     res.json({ ok: true, sessionId: resolved, message, taskId, delivery });
   } catch (err) {

@@ -819,15 +819,21 @@ async function showTasks(target) {
 
   const shortTask = (id) => (id || '').slice(0, 8);
 
+  // Show delivery state when it's not the normal confirmed-delivered case, so
+  // MAIN can tell "still queued behind a busy agent" from "delivered, working".
+  const deliveryTag = (t) =>
+    t.delivery === 'queued' ? ' [queued]'
+      : t.delivery === 'unconfirmed' ? ' [delivery unconfirmed]' : '';
+
   for (const t of incomplete) {
     const tid = shortTask(t.taskId).padEnd(8);
     const name = (t.targetName || '').padEnd(10);
     const cmd = t.command.length > 30 ? t.command.slice(0, 27) + '...' : t.command;
     const cmdPad = cmd.padEnd(32);
     if (t.displayStatus === 'working') {
-      console.log(`  ${tid} ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})`);
+      console.log(`  ${tid} ${name} ⟳ working  ${cmdPad} (${formatAgo(t.createdAt)})${deliveryTag(t)}`);
     } else {
-      console.log(`  ${tid} ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})`);
+      console.log(`  ${tid} ${name} … pending  ${cmdPad} (${formatAgo(t.createdAt)})${deliveryTag(t)}`);
     }
   }
 
