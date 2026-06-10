@@ -111,15 +111,23 @@ tboard 内のターミナルでは `tt` コマンドが自動的に使えます:
 ```bash
 tt ls                          # 全ターミナル一覧
 tt send <target> <message>     # 別のターミナルにコマンド送信
-tt read <target> [lines]       # ターミナル出力の読み取り（クリーン）
-tt read <target> --wait        # エージェント完了まで待機して読み取り
+tt read <target> [lines]       # ターミナル出力の読み取り（クリーン・既定32KBで中央省略）
+tt read <target> --wait        # 完了まで待機し、report.md を優先して読み取り（manifest＋本文）
+tt read <target> --wait --capture # 完了まで待機し、report ではなく生キャプチャを読み取り
+tt read <target> --all         # 全文（省略なし）
+tt read <target> --max-bytes N # 読み取りバイト上限（既定32KB・中央省略・0で無制限）
 tt ipc <target> <message>      # コマンド送信＋応答待ち
 tt peers                       # リンク中のターミナル一覧
 tt peer ipc "message"          # リンク先にメッセージ送信＋応答待ち
-tt peer read --wait            # リンク先の完了を待機して読み取り
+tt peer read --wait            # リンク先の完了を待機して読み取り（report 優先）
+tt task report <id>            # SUB の report.md を読み取り（既定64KBで中央省略・--all で全文）
+tt task manifest <id>          # 構造化 manifest.json を読み取り
+tt stats [reads]               # 読み取りバイト計測（calls / returned / elided）
 tt status                      # 現在のターミナル状態
 tt history <target>            # IPC 通信履歴の表示
 ```
+
+> トークン効率化（フェーズ8）: MAIN が読むバイト数を構造的に削減します。`tt read` 既定で大きな出力は「先頭＋末尾を残し中間を省略」、`--wait` は生キャプチャより報告書（report.md）を優先、連続する類似の進捗行は畳み込み。全文は常にディスクに残り、`--all` で取得できます。`tt stats` で削減効果を確認できます。
 
 ### 環境変数
 

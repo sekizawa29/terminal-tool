@@ -1451,6 +1451,22 @@ app.get('/api/terminals/:sessionId/rendered', (req, res) => {
   });
 });
 
+// Read accounting (8.4): per-API and per-session byte/elision totals since the
+// server started. In-memory, not persisted; resets on restart. Lets MAIN see
+// where read tokens are going (and how much 8.2/8.3 saved) to decide what to
+// tighten next. Not on the WS hot path — HTTP read APIs only.
+app.get('/api/stats/reads', (_req, res) => {
+  const totals: Record<string, ReadStats> = {};
+  for (const [api, s] of readStatsTotals) totals[api] = { ...s };
+  const sessions: Record<string, Record<string, ReadStats>> = {};
+  for (const [sid, m] of readStatsSessions) {
+    const byApi: Record<string, ReadStats> = {};
+    for (const [api, s] of m) byApi[api] = { ...s };
+    sessions[sid] = byApi;
+  }
+  res.json({ since: readStatsSince, totals, sessions });
+});
+
 // Case-insensitive substring search across every live session's rendered
 // buffer. Capped at 20 matches per session and 200 overall.
 app.get('/api/search', (req, res) => {

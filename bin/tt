@@ -140,6 +140,8 @@ async function main() {
       return linkReconnect(args);
     case 'memo':
       return memoCommand(args);
+    case 'stats':
+      return showStats(args[0]);
     case 'mcp-stdio':
       return mcpStdioServer();
     default:
@@ -2198,6 +2200,7 @@ Usage:
   tt memo read <id|title>            Print a memo's text (title prefix match)
   tt memo write <id> [text]          Upsert a memo (text omitted → read stdin)
   tt status [id|name]                Show terminal status as JSON
+  tt stats [reads]                   Show read-byte accounting (calls / returned / elided)
   tt self                            Show this terminal's session ID
   tt mcp-stdio                       Run an MCP stdio server exposing the task API
                                      (for agent integration — opt-in via .mcp.json)
@@ -2253,6 +2256,62 @@ Threat model:
 function pad(str, width) {
   if (str.length >= width) return str.slice(0, width - 1) + ' ';
   return str + ' '.repeat(width - str.length);
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n}B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)}K`;
+  return `${(n / 1048576).toFixed(1)}M`;
+}
+
+// 8.4: read-byte accounting. Shows per-API totals and the top sessions by bytes
+// returned, so the output itself stays small (top 10 sessions max).
+async function showStats(sub) {
+  if (sub && sub !== 'reads') {
+    console.error('Usage: tt stats [reads]');
+    process.exit(1);
+  }
+  const res = await ttFetch(`${BASE}/api/stats/reads`);
+  const data = await res.json().catch(() => null);
+  if (!data || data.error) {
+    console.error(`Error: ${(data && data.error) || 'HTTP ' + res.status}`);
+    process.exit(1);
+  }
+  console.log(`Read stats since ${data.since}`);
+  console.log('');
+  console.log(pad('API', 12) + pad('CALLS', 8) + pad('RETURNED', 12) + 'ELIDED');
+  console.log('-'.repeat(44));
+  const apiOrder = ['rendered', 'capture', 'report', 'manifest', 'buffer'];
+  const totals = data.totals || {};
+  const seen = new Set();
+  const printApiRow = (api) => {
+    const s = totals[api];
+    if (!s) return;
+    seen.add(api);
+    console.log(pad(api, 12) + pad(String(s.calls), 8) + pad(fmtBytes(s.bytesReturned), 12) + fmtBytes(s.bytesElided));
+  };
+  for (const api of apiOrder) printApiRow(api);
+  for (const api of Object.keys(totals)) if (!seen.has(api)) printApiRow(api);
+  if (Object.keys(totals).length === 0) {
+    console.log('(no reads recorded yet)');
+    return;
+  }
+
+  // Top sessions by total bytesReturned across all APIs.
+  const sessions = data.sessions || {};
+  const ranked = Object.entries(sessions).map(([sid, byApi]) => {
+    let calls = 0, returned = 0, elided = 0;
+    for (const s of Object.values(byApi)) { calls += s.calls; returned += s.bytesReturned; elided += s.bytesElided; }
+    return { sid, calls, returned, elided };
+  }).sort((a, b) => b.returned - a.returned).slice(0, 10);
+  if (ranked.length > 0) {
+    console.log('');
+    console.log(pad('SESSION', 12) + pad('CALLS', 8) + pad('RETURNED', 12) + 'ELIDED');
+    console.log('-'.repeat(44));
+    for (const r of ranked) {
+      console.log(pad(r.sid.slice(0, 10), 12) + pad(String(r.calls), 8) + pad(fmtBytes(r.returned), 12) + fmtBytes(r.elided));
+    }
+  }
 }
 
 main().catch((e) => {
