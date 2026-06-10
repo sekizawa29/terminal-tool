@@ -39,13 +39,24 @@
 - `52d4b1e` 4.7 xterm パッチガード + バージョン固定
 - **4.8(ビューポートカリング)はスキップ**(ドキュメント許容の任意ストレッチ項目)
 
-## 残フェーズ
+### フェーズ5: 補助機能の安全性とリファクタ ✅(Codexレビュー済み・P2/P3修正済み)
+- `ea13e5f` 5.1 DOMPurify サニタイズ / `76a4595` 5.2 エディタ競合検出 + dirtyクローズガード
+- `dc30763` 5.3 iframe sandbox + `/api/probe-frame` / `2e7259b`〜`f5b130c` 5.4 分割(api/icons/dirsApi/polling/sidebar/treeUtils/TreeRow/useExplorerDnD)+ `c714e0c` サーバー重複排除
+- `51a0182` 5.5 click/dblclick 250ms / `38b15af` 5.6 ピン留め・閉じる・cwd2行目 / `c9f82e6` レビュー指摘(P2 409バイパス / P3 ローディング)
 
-- **フェーズ5**: 補助機能の安全性とリファクタ(`05-aux-safety-refactor.md`)
-  - 5.1 DOMPurify(**dompurify 未インストール。`npm i dompurify @types/dompurify` が必要**)
-  - 5.2 エディタ競合検出、5.3 iframe sandbox、5.4 巨大コンポーネント分割、5.5 click/dblclick、5.6 サイドバー操作性
-- **フェーズ6**: UX 新機能(`06-ux-features.md`)— 4.4 の CanvasController(getTransform/subscribe)と 2.2 のスキーマ版数に依存(両方完了済み)
-- **フェーズ7**: 付録 小粒修正(`07-appendix-small-fixes.md`)
+### フェーズ6: UX 新機能 ✅(Codexレビュー済み・P2×3修正済み)
+- `0da9659` 基盤(agents/viewport)/ `821bbe4` 6.1 注意喚起 / `b9e32f2` 6.2 ミニマップ
+- `686ae0a`+`428ae08` 6.3 検索 / `7c7edbd` 6.4 死亡セッション復元 / `75bd160`+`d7dda50`+`fa63b1f` 6.5 ファイル操作
+- `8739fe4` 6.8 ブラウザ完成 / `7fe3268` 6.7 リンクUX / `204f8b9` 6.6 メモ永続化+CLI/MCP / `3e446ae` レビュー指摘(P2: メモflush/ミニマップref/サイドバーDELETE)
+
+### フェーズ7: 付録 小粒修正 ✅(Codexレビュー実行中)
+- `88e107e` 7.3 スクロールバック行頭境界 + 7.6 reduce / `594e1fb` 7.4 プロンプト検出注入 + 7.5 デッドコード除去
+- `c1fd10f` 7.1 スクショパス安全ペースト / `635ae3a` 7.2 findTaskById 負キャッシュ+走査スロットル
+- **7.7 はコード変更不要**(saveLayout 21箇所が全経路を網羅、cwd 永続化・dead は復元時に再導出を確認)
+- **7.8 はスキップ**(任意項目。recent-dirs ポーリングは実害小で仕様上スキップ可)
+
+## 完了
+全フェーズ(0〜7)完了。スコープ外のキーボードナビ(Cmd+1..9 / Cmd+K)は未実装。
 
 ## 重要な注意点(次セッションへ)
 
