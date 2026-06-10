@@ -276,6 +276,10 @@ export default function Sidebar({
     if (!isNonTerminal) {
       apiFetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
+    // Memos are bound to their window — drop the server record too.
+    if (tw.type === 'memo' && tw.sessionId) {
+      apiFetch(`/api/memos/${encodeURIComponent(tw.sessionId)}`, { method: 'DELETE' }).catch(() => {});
+    }
     removeTerminal(id);
   }, [removeTerminal]);
 

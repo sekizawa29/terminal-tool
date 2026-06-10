@@ -111,10 +111,14 @@ export default function Minimap({ controller }: { controller: CanvasController }
     const worldY = box.minY + (my - box.offY) / box.scale;
     controller.focusOn(worldX, worldY, 0, 0);
   };
+  // Keep the persistent drag listener pointed at the latest closure (current
+  // box/scale/offset), so a drag after the bounds change maps correctly.
+  const recenterRef = useRef(recenterFromEvent);
+  recenterRef.current = recenterFromEvent;
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (draggingRef.current) recenterFromEvent(e);
+      if (draggingRef.current) recenterRef.current(e);
     };
     const onUp = () => { draggingRef.current = false; };
     window.addEventListener('mousemove', onMove);
@@ -123,9 +127,6 @@ export default function Minimap({ controller }: { controller: CanvasController }
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-    // recenterFromEvent closes over the latest box via render scope; this effect
-    // only wires the persistent listeners once.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const colorFor = (id: string, sessionId: string): string => {

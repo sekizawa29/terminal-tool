@@ -14,6 +14,24 @@ export default function MemoContent({ windowId, isActive }: MemoContentProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState('');
   const [hydrated, setHydrated] = useState(false);
+  // Mirror the latest text/id/title and a dirty flag so a flush on unmount or
+  // page reload (within the debounce window) doesn't drop the last edit.
+  const latestRef = useRef({ text: '', memoId: '', title: 'Memo', dirty: false });
+  latestRef.current.memoId = memoId;
+  latestRef.current.title = title;
+
+  const flushMemo = useCallback(() => {
+    const { text: t, memoId: id, title: ti, dirty } = latestRef.current;
+    if (!dirty || !id) return;
+    latestRef.current.dirty = false;
+    // keepalive lets the request finish even as the page unloads.
+    apiFetch(`/api/memos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: t, title: ti }),
+      keepalive: true,
+    }).catch(() => {});
+  }, []);
 
   // Auto-focus on creation
   useEffect(() => {
@@ -60,6 +78,7 @@ export default function MemoContent({ windowId, isActive }: MemoContentProps) {
   useEffect(() => {
     if (!hydrated || !memoId) return;
     const timer = setTimeout(() => {
+      latestRef.current.dirty = false;
       apiFetch(`/api/memos/${encodeURIComponent(memoId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -69,8 +88,19 @@ export default function MemoContent({ windowId, isActive }: MemoContentProps) {
     return () => clearTimeout(timer);
   }, [text, hydrated, memoId, title]);
 
+  // Flush any pending edit on reload / tab close (within the debounce window).
+  // NOT on React unmount: explicit window close DELETEs the memo first, and
+  // flushing there would resurrect it on the server.
+  useEffect(() => {
+    window.addEventListener('beforeunload', flushMemo);
+    return () => window.removeEventListener('beforeunload', flushMemo);
+  }, [flushMemo]);
+
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value);
+    const v = e.target.value;
+    latestRef.current.text = v;
+    latestRef.current.dirty = true;
+    setText(v);
   }, []);
 
   const handleCopy = useCallback(() => {
