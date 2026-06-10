@@ -716,6 +716,14 @@ app.post('/api/tasks/send', (req, res) => {
     }
   }
 
+  // Reject before registering a task if the target is busy and its outbox is
+  // full — otherwise registerTask would leave a ghost pending task that never
+  // dispatches. (No await between here and dispatchToAgent, so this is exact.)
+  if (ptyManager.dispatchWouldOverflow(resolved)) {
+    res.status(429).json({ error: 'target is busy and its dispatch queue is full; retry later' });
+    return;
+  }
+
   let taskId: string | undefined;
   if (sourceSessionId && ptyManager.isMainToSub(sourceSessionId, resolved)) {
     taskId = ptyManager.registerTask(sourceSessionId, resolved, message);
@@ -767,6 +775,13 @@ app.post('/api/ipc/send', (req, res) => {
       res.status(403).json({ error: 'Not linked: IPC send requires a peer relationship' });
       return;
     }
+  }
+
+  // Reject before creating a pending turn if the target's outbox is full, so we
+  // don't leave a ghost pending turn that never dispatches.
+  if (ptyManager.dispatchWouldOverflow(resolved)) {
+    res.status(429).json({ error: 'target is busy and its dispatch queue is full; retry later' });
+    return;
   }
 
   // Legacy IPC: create pending turn + marker so `/api/ipc/response` can

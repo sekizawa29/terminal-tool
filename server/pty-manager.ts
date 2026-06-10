@@ -1633,6 +1633,15 @@ export class PtyManager {
     return 'queued';
   }
 
+  /** True if a dispatch to `sessionId` right now would be rejected: the target
+   *  is busy (so the message must queue) and its outbox is already full. Lets a
+   *  caller reject before doing irreversible work (e.g. registering a task). */
+  dispatchWouldOverflow(sessionId: string): boolean {
+    if (this.canAutoInject(sessionId)) return false; // would deliver immediately
+    const outbox = this.dispatchOutbox.get(sessionId);
+    return !!(outbox && outbox.length >= DISPATCH_OUTBOX_LIMIT);
+  }
+
   /** Flush the outbox (task/IPC) first, then queued notifications, to PTY when
    *  the session is idle. One item per pass so messages never stack up. */
   tryFlushNotifications(sessionId: string): void {
@@ -2279,7 +2288,10 @@ export class PtyManager {
     let output = raw.toString('utf-8');
     if (clean) {
       output = stripAnsiCodes(output);
-      output = stripAgentNoise(output, this.getProfile(sessionId));
+      // This is a task capture; clean it with the profile of the SUB that
+      // produced it (falls back to generic when the session is gone).
+      const targetSessionId = this.findTaskById(taskId)?.targetSessionId ?? '';
+      output = stripAgentNoise(output, this.getProfile(targetSessionId));
     }
 
     return { output, status, truncated };
