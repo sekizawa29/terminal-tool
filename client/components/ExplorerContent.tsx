@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch, withToken } from '../api.js';
 import type { FileEntry } from '../types.js';
 
 interface TreeNode {
@@ -146,10 +147,12 @@ function parseInternalDragData(dataTransfer: DataTransfer): InternalDragPayload 
 }
 
 function getDownloadUrl(filePath: string): string {
-  return `${window.location.origin}/api/files/download?path=${encodeURIComponent(filePath)}`;
+  return withToken(`${window.location.origin}/api/files/download?path=${encodeURIComponent(filePath)}`);
 }
 
-async function readApiPayload(res: Response): Promise<unknown> {
+// Returns the parsed JSON object (any-typed; callers know the endpoint shape) or
+// the raw text for non-JSON responses.
+async function readApiPayload(res: Response): Promise<any> {
   const contentType = res.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
     return await res.json();
@@ -391,7 +394,7 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
     if (internalPayload) {
       if (!canDropInto(targetDir, dataTransfer)) return;
 
-      const res = await fetch('/api/files/move', {
+      const res = await apiFetch('/api/files/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath: internalPayload.path, targetDir }),
@@ -411,7 +414,7 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
       let lastPath: string | null = null;
       for (const file of externalFiles) {
         const data = await readFileAsBase64(file);
-        const res = await fetch('/api/files/upload', {
+        const res = await apiFetch('/api/files/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filename: file.name, data, targetDir }),

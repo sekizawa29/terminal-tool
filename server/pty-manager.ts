@@ -1690,7 +1690,27 @@ export class PtyManager {
     if (!token) return false;
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    const expected = session.sessionToken;
+    return this.tokenEquals(session.sessionToken, token);
+  }
+
+  /**
+   * Returns true if `token` matches the capability token of *any* live session.
+   * Used by the HTTP auth middleware to accept requests originating from inside
+   * a tboard pty (they carry their TBOARD_TOKEN). Timing-safe per-session compare.
+   */
+  isValidSessionToken(token: string | undefined | null): boolean {
+    if (!token) return false;
+    let ok = false;
+    // Scan all sessions without short-circuiting so total time does not leak
+    // which (if any) session matched.
+    for (const [, session] of this.sessions) {
+      if (this.tokenEquals(session.sessionToken, token)) ok = true;
+    }
+    return ok;
+  }
+
+  /** Timing-safe string comparison. Length mismatch returns false immediately. */
+  private tokenEquals(expected: string | undefined, token: string): boolean {
     if (!expected || expected.length !== token.length) return false;
     let diff = 0;
     for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ token.charCodeAt(i);

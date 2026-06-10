@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { apiFetch, withToken } from '../api.js';
 import { marked } from 'marked';
 
 interface EditorContentProps {
@@ -51,7 +52,9 @@ const LANGUAGE_NAMES: Record<string, string> = {
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico']);
 
-async function readApiPayload(res: Response): Promise<unknown> {
+// Returns the parsed JSON object (any-typed; callers know the endpoint shape) or
+// the raw text for non-JSON responses.
+async function readApiPayload(res: Response): Promise<any> {
   const contentType = res.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
     return await res.json();
@@ -113,7 +116,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         setFileName(filePath.split('/').pop() || '');
         setFileSize(0);
       } else {
-        const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+        const res = await apiFetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
         const data = await readApiPayload(res);
         if (!res.ok) {
           throw new Error(getApiError(data, 'Failed to load file'));
@@ -150,7 +153,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch('/api/files/write', {
+      const res = await apiFetch('/api/files/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: filePath, content }),
@@ -374,7 +377,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
                 }}
               >
                 <img
-                  src={`/api/files/read?path=${encodeURIComponent(filePath)}&mode=raw`}
+                  src={withToken(`/api/files/raw?path=${encodeURIComponent(filePath)}`)}
                   alt={fileName}
                   style={{
                     maxWidth: '100%',

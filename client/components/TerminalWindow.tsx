@@ -7,6 +7,7 @@ import MemoContent from './MemoContent.js';
 import ResizeHandle from './ResizeHandle.js';
 import type { TerminalWindow as TWType } from '../types.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
+import { apiFetch } from '../api.js';
 
 const AGENT_PROCESSES = new Set([
   'claude', 'codex', 'aider', 'cursor', 'copilot',
@@ -117,7 +118,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
 
   const onClose = useCallback(() => {
     if (!isBrowser && !isMemo) {
-      fetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
+      apiFetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
     removeTerminal(tw.id);
     saveLayout();
@@ -136,7 +137,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
       updateTerminal(tw.id, { title: trimmed });
       // Sync name to backend for terminal panels
       if (!isBrowser && !isMemo && tw.sessionId) {
-        fetch(`/api/terminals/${tw.sessionId}/name`, {
+        apiFetch(`/api/terminals/${tw.sessionId}/name`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: trimmed }),
@@ -158,7 +159,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
     setCaptureState('capturing');
     setCaptureError('');
     try {
-      const res = await fetch(`/api/terminals/${tw.sessionId}/screenshot`, { method: 'POST' });
+      const res = await apiFetch(`/api/terminals/${tw.sessionId}/screenshot`, { method: 'POST' });
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try {

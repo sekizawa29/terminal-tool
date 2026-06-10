@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar.js';
 import ExplorerContent from './components/ExplorerContent.js';
 import { useCanvas } from './hooks/useCanvas.js';
 import { useTerminalStore } from './hooks/useTerminalStore.js';
+import { apiFetch, setApiToken } from './api.js';
 import type { TerminalWindow } from './types.js';
 
 let terminalCounter = 0;
@@ -15,7 +16,7 @@ async function fetchToken(): Promise<string> {
 }
 
 async function createTerminalSession(cols = 80, rows = 24, cwd?: string, shell?: string): Promise<string> {
-  const res = await fetch('/api/terminals', {
+  const res = await apiFetch('/api/terminals', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ cols, rows, cwd, shell }),
@@ -25,7 +26,7 @@ async function createTerminalSession(cols = 80, rows = 24, cwd?: string, shell?:
 }
 
 async function fetchActiveSessions(): Promise<string[]> {
-  const res = await fetch('/api/terminals');
+  const res = await apiFetch('/api/terminals');
   const data = await res.json();
   return data.sessions;
 }
@@ -52,7 +53,10 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     fetchToken().then((t) => {
-      if (!cancelled) setToken(t);
+      if (!cancelled) {
+        setApiToken(t);
+        setToken(t);
+      }
     });
     return () => { cancelled = true; };
   }, [setToken]);
@@ -134,7 +138,7 @@ export default function App() {
     setTimeout(async () => {
       const tokenVal = useTerminalStore.getState().token;
       if (!tokenVal) return;
-      await fetch(`/api/terminals/${sessionId}/write`, {
+      await apiFetch(`/api/terminals/${sessionId}/write`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: 'claude\n' }),
@@ -167,7 +171,7 @@ export default function App() {
     setTimeout(async () => {
       const tokenVal = useTerminalStore.getState().token;
       if (!tokenVal) return;
-      await fetch(`/api/terminals/${sessionId}/write`, {
+      await apiFetch(`/api/terminals/${sessionId}/write`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: 'codex\n' }),

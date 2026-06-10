@@ -1,7 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { resolve, dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
@@ -89,14 +89,65 @@ function saveDirsState(): void {
 
 dirsState = loadDirsState();
 
-// Auth token store (simple in-memory)
-const validTokens = new Set<string>();
+// Single server token, generated once at startup. Browser clients fetch it from
+// GET /api/token and send it back as the x-tboard-token header on every /api call
+// (and as ?token= for raw/download URLs that cannot set headers).
+const serverToken = randomBytes(32).toString('hex');
 
-// Token endpoint
-app.get('/api/token', (_req, res) => {
-  const token = randomBytes(32).toString('hex');
-  validTokens.add(token);
-  res.json({ token });
+// Matches localhost / 127.0.0.1 (optionally with a port) for the Host header.
+const LOOPBACK_HOST_RE = /^(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+// Timing-safe equality against the single server token.
+function isServerToken(token: string | undefined): boolean {
+  if (!token) return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(serverToken);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+// Endpoints whose credentials may arrive as a ?token= query param, because the
+// browser cannot attach headers to <img src>, <a href> or DownloadURL drags.
+const QUERY_TOKEN_PATHS = new Set(['/files/raw', '/files/download']);
+
+// Authentication gate for every /api/* route. Registered before any route so it
+// runs first. Accepts: requests over the Unix socket (no remoteAddress; trusted
+// via filesystem permissions), the server token, or any live session token.
+app.use('/api', (req, res, next) => {
+  // GET /api/token is public; it is protected by its own Host-header check.
+  if (req.method === 'GET' && req.path === '/token') {
+    next();
+    return;
+  }
+  // Unix socket requests have no remoteAddress. These come from bin/tt, which is
+  // already protected by the socket file's permissions.
+  if (req.socket.remoteAddress === undefined) {
+    next();
+    return;
+  }
+  let token = req.get('x-tboard-token') || undefined;
+  // Allow ?token= for the header-less browser fetch paths (images, downloads).
+  if (!token && req.method === 'GET' && QUERY_TOKEN_PATHS.has(req.path)) {
+    const q = req.query.token;
+    if (typeof q === 'string') token = q;
+  }
+  if (isServerToken(token) || ptyManager.isValidSessionToken(token)) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: 'unauthorized' });
+});
+
+// Token endpoint. Guarded by a Host-header check to defeat DNS rebinding: a
+// malicious page that resolves an attacker domain to 127.0.0.1 would still send
+// its own Host, which will not match loopback, so the token is never handed out.
+app.get('/api/token', (req, res) => {
+  const host = req.headers.host || '';
+  if (!LOOPBACK_HOST_RE.test(host)) {
+    res.status(403).json({ error: 'forbidden' });
+    return;
+  }
+  res.json({ token: serverToken });
 });
 
 // ── Recent + pinned directories (persisted to ~/.local/state/tboard/dirs.json) ──
@@ -1416,8 +1467,8 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  // Token check
-  if (!token || !validTokens.has(token)) {
+  // Token check: accept the server token or any live session's capability token.
+  if (!token || !(token === serverToken || ptyManager.isValidSessionToken(token))) {
     ws.close(4001, 'Invalid token');
     return;
   }

@@ -62,7 +62,12 @@ async function ttFetch(urlOrPath, options = {}) {
   // HTTP fallback: ensure BASE is set
   if (!BASE) await detectBase();
   const url = urlOrPath.startsWith('http') ? urlOrPath : `${BASE}${urlOrPath}`;
-  return fetch(url, options);
+  // The HTTP API requires auth (the socket path is trusted by file permissions).
+  // Attach our session capability token so the server accepts the request.
+  const httpOptions = TOKEN
+    ? { ...options, headers: { ...(options.headers || {}), 'X-Tboard-Token': TOKEN } }
+    : options;
+  return fetch(url, httpOptions);
 }
 
 // Auto-detect server URL if not set (scan common ports)

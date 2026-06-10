@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
+import { apiFetch } from '../api.js';
 import type { CanvasTransform } from '../hooks/useCanvas.js';
 import type { SessionStatus } from '../types.js';
 
@@ -151,7 +152,7 @@ const EMPTY_DIRS_STATE: DirsState = { recent: [], pinned: [] };
 
 async function fetchDirsState(): Promise<DirsState | null> {
   try {
-    const res = await fetch('/api/dirs');
+    const res = await apiFetch('/api/dirs');
     if (!res.ok) return null;
     const data = await res.json();
     return {
@@ -165,7 +166,7 @@ async function fetchDirsState(): Promise<DirsState | null> {
 
 async function pushRecentDir(cwd: string): Promise<DirsState | null> {
   try {
-    const res = await fetch('/api/dirs/recent', {
+    const res = await apiFetch('/api/dirs/recent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cwd }),
@@ -179,7 +180,7 @@ async function pushRecentDir(cwd: string): Promise<DirsState | null> {
 
 async function pinDir(cwd: string): Promise<DirsState | null> {
   try {
-    const res = await fetch('/api/dirs/pinned', {
+    const res = await apiFetch('/api/dirs/pinned', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cwd }),
@@ -193,7 +194,7 @@ async function pinDir(cwd: string): Promise<DirsState | null> {
 
 async function unpinDir(cwd: string): Promise<DirsState | null> {
   try {
-    const res = await fetch('/api/dirs/pinned', {
+    const res = await apiFetch('/api/dirs/pinned', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cwd }),
@@ -409,7 +410,7 @@ export default function Sidebar({
     });
     const poll = async () => {
       try {
-        const res = await fetch('/api/terminals/status');
+        const res = await apiFetch('/api/terminals/status');
         const data = await res.json();
         if (!active) return;
         const map = new Map<string, SessionStatus>();

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { apiFetch } from '../api.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -325,7 +326,7 @@ export default function TerminalContent({
     // Get terminal's CWD
     let cwd = '';
     try {
-      const res = await fetch('/api/terminals/status');
+      const res = await apiFetch('/api/terminals/status');
       const data = await res.json();
       const status = data.statuses.find((s: { sessionId: string }) => s.sessionId === sessionId);
       cwd = status?.cwd || '';
@@ -348,7 +349,7 @@ export default function TerminalContent({
       });
 
       try {
-        const res = await fetch('/api/upload', {
+        const res = await apiFetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filename: file.name, data: base64, cwd }),

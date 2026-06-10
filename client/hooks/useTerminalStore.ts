@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { apiFetch } from '../api.js';
 import type { TerminalWindow, TerminalLink, SessionStatus } from '../types.js';
 
 const LAYOUT_KEY = 'terminal-board-layout';
@@ -159,7 +160,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const source = state.terminals.get(sourceId);
     if (target) {
       const subCount = newLinks.filter((l) => l.sourceId === sourceId).length;
-      fetch(`/api/terminals/${target.sessionId}/name`, {
+      apiFetch(`/api/terminals/${target.sessionId}/name`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: `sub-${subCount}` }),
@@ -168,7 +169,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
     // Register link on server for peer routing
     if (source && target) {
-      fetch('/api/links', {
+      apiFetch('/api/links', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId }),
@@ -187,7 +188,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       const source = state.terminals.get(link.sourceId);
       const target = state.terminals.get(link.targetId);
       if (source && target) {
-        fetch('/api/links', {
+        apiFetch('/api/links', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId }),
