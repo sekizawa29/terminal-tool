@@ -15,6 +15,7 @@ import { gunzipSync, createGzip } from 'zlib';
 import { pipeline } from 'stream/promises';
 import type { WebSocket } from 'ws';
 import type { ExitMessage, ResizeMessage } from './types.js';
+import { profileForProcess, type AgentProfile } from './agent-profiles.js';
 
 // @xterm/headless is CJS — use createRequire for ESM compat
 const require = createRequire(import.meta.url);
@@ -48,7 +49,7 @@ function normalizeInlineWhitespace(str: string): string {
  * Retained because `tt peer read` / `/api/terminals/:id/rendered` are still
  * useful for debug peeks and for agents not yet adapted to the task flow.
  */
-function stripAgentNoise(text: string): string {
+function stripAgentNoise(text: string, profile: AgentProfile): string {
   const lines = text.split('\n');
   const cleaned: string[] = [];
 
@@ -63,56 +64,15 @@ function stripAgentNoise(text: string): string {
       continue;
     }
 
-    // Status bar: "esc to interrupt", "auto mode unavailable", timer, tips
-    if (/esctointerrupt/i.test(trimmed) || /auto\s*mode\s*(temporarily\s*)?unavailable/i.test(trimmed)) continue;
-    if (/^esc\s+to\s+interrupt/i.test(trimmed)) continue;
-    if (/^Tip:/i.test(trimmed)) continue;
-    if (/^Press\s+Ctrl/i.test(trimmed)) continue;
-    if (/^\(\d+s\s*·\s*timeout\b/.test(trimmed)) continue;
+    // TUI chrome to drop entirely (status bars, spinners, separators, hints).
+    if (profile.isNoiseLine(trimmed)) continue;
 
-    // Spinner/loading: "✶ Nebulizing…", "*Tomfoolering…", "✢thinking with high effort"
-    if (/^[✶✻✽✢✹✷✸✺✼✾✿❀●○⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏*·]+\s*[A-Za-z]+.*/.test(trimmed)) continue;
-    if (/^[A-Z][a-z]+ing…?\s*$/.test(trimmed)) continue;
-    // "thinking with high effort", "(thinking with high effort)"
-    if (/^\(?thinking\s+with\s+(high|medium|low)\s+effort\)?$/i.test(trimmed)) continue;
-
-    // Horizontal separators
-    if (/^[─━═]{5,}$/.test(trimmed)) continue;
-
-    // Prompt chrome
-    if (/^❯/.test(trimmed)) continue;
-    if (/\?\s+(for shortcuts|for help)/i.test(trimmed)) continue;
-    if (/^●\s*(high|medium|low)\s*·\s*\//.test(trimmed)) continue;
-
-    // Single decorative symbol
-    if (trimmed.length === 1 && /[✶✻✽✢✹✷✸✺✼✾✿❀●○·*⎿⎡⎤⎣⎦╭╮╰╯│]/.test(trimmed)) continue;
-
-    // Tool-call chrome: "● ToolName(args)" → "[ToolName] args"
-    const toolCallMatch = trimmed.match(/^●\s*(\w+)\((.+)\)\s*$/);
-    if (toolCallMatch) {
-      cleaned.push(`[${toolCallMatch[1]}] ${toolCallMatch[2]}`);
+    // Decorated lines (tool call / result) rewritten to plain text.
+    const rewritten = profile.rewriteLine(trimmed);
+    if (rewritten !== null) {
+      cleaned.push(rewritten);
       continue;
     }
-    // "●content" (bare result)
-    const bareResult = trimmed.match(/^●\s*(.+)$/);
-    if (bareResult && !bareResult[1].includes('(')) {
-      cleaned.push(bareResult[1]);
-      continue;
-    }
-    // "⎿  result" decorator
-    const resultPrefix = trimmed.match(/^⎿\s+(.+)$/);
-    if (resultPrefix) {
-      cleaned.push(resultPrefix[1]);
-      continue;
-    }
-
-    // Status badges & hook output
-    if (/^\(ctrl\+[a-z] to \w+\)$/i.test(trimmed)) continue;
-    if (/^Running…$/.test(trimmed)) continue;
-    if (/\(running \w+ hook\)/i.test(trimmed)) continue;
-    if (/^…\s*\+\d+ lines/.test(trimmed)) continue;
-    // Cooked/timer summaries
-    if (/^[✶✻✽✢✹✷✸✺✼✾✿❀●○·*]\s*Cooked\s+for\b/i.test(trimmed)) continue;
 
     cleaned.push(line);
   }
@@ -325,6 +285,7 @@ interface PtySession {
   outputBurstStart: number; // when current continuous output burst started
   lastInputAt: number;     // timestamp of last user input via WebSocket
   shellName: string; // normalized base name of shell (e.g. 'bash', 'zsh', 'cmd', 'powershell')
+  lastForegroundProcess?: string; // cached foreground process name (for agent-profile selection)
   shellType: 'linux' | 'windows'; // whether this is a WSL/Linux or Windows shell
   name?: string; // user-assigned label
   onDataDisposable: pty.IDisposable | null;
@@ -802,6 +763,9 @@ export class PtyManager {
       }
     }
 
+    // Cache for agent-profile selection (getProfile reads this off-hot-path).
+    session.lastForegroundProcess = foregroundProcess;
+
     return { sessionId, pid, cwd, cwdShort, foregroundProcess, isRunning, isProcessing, name: session.name, shellType: session.shellType, lastOutputAt: session.lastOutputAt };
   }
 
@@ -900,32 +864,30 @@ export class PtyManager {
    * near the bottom of the rendered terminal screen.
    * Scans from the bottom, skipping blank and status-bar lines.
    */
+  /** Select the agent profile for a session from its cached foreground process
+   *  name (updated by getSessionStatus). Defaults to the generic shell profile. */
+  private getProfile(sessionId: string): AgentProfile {
+    return profileForProcess(this.sessions.get(sessionId)?.lastForegroundProcess);
+  }
+
   private getPromptTextAtEnd(sessionId: string): string | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     const buf = session.headlessTerm.buffer.active;
     const totalLines = buf.baseY + buf.cursorY + 1;
 
-    // Scan up to 10 lines from the bottom (covers status bars, separators)
+    // Collect up to the last 10 non-blank lines (newest last), then let the
+    // agent profile decide whether they show an idle prompt / a draft / nothing.
     const scanStart = Math.max(0, totalLines - 10);
-    for (let y = totalLines - 1; y >= scanStart; y--) {
+    const tail: string[] = [];
+    for (let y = scanStart; y <= totalLines - 1; y++) {
       const line = buf.getLine(y);
       if (!line) continue;
       const text = line.translateToString(true).trim();
-      if (!text) continue; // skip blank
-      if (/^[─━═]{5,}$/.test(text)) continue; // skip separator
-      if (/esc\s+to\s+interrupt/i.test(text)) continue; // skip status bar
-      if (/^Tip:/i.test(text)) continue; // skip tips
-      if (/^Press\s+Ctrl/i.test(text)) continue; // skip ctrl hints
-      if (/^\(ctrl\+[a-z] to \w+\)$/i.test(text)) continue; // skip ctrl badges
-      if (/\?\s+(for shortcuts|for help)/i.test(text)) continue; // skip help hints
-      if (/^●\s*(high|medium|low)\s*·\s*\//i.test(text)) continue; // skip model/status badge
-      if (/auto\s*mode/i.test(text)) continue; // skip auto mode status
-      if (/^❯/.test(text)) return text.replace(/^❯\s*/, '').trim();
-      // If we hit a non-prompt, non-skippable line, stop
-      return null;
+      if (!text) continue;
+      tail.push(text);
     }
-    return null;
+    return this.getProfile(sessionId).promptText(tail);
   }
 
   private hasPromptAtEnd(sessionId: string): boolean {
@@ -945,6 +907,7 @@ export class PtyManager {
     const isProcessing = status?.isProcessing ?? false;
 
     const lines = this.getRenderedLines(sessionId);
+    const profile = this.getProfile(sessionId);
     let echoLine = -1;
 
     // Primary: marker-based match on prompt echo lines only
@@ -952,7 +915,7 @@ export class PtyManager {
     if (marker) {
       for (let i = lines.length - 1; i >= 0; i--) {
         const trimmed = lines[i].trim();
-        if (trimmed.startsWith('❯') && trimmed.includes(marker)) {
+        if (profile.isPromptLine(trimmed) && trimmed.includes(marker)) {
           echoLine = i;
           break;
         }
@@ -964,7 +927,7 @@ export class PtyManager {
       const needle = sentMessage.slice(0, 60);
       for (let i = lines.length - 1; i >= 0; i--) {
         const trimmed = lines[i].trim();
-        if (trimmed.startsWith('❯') && trimmed.includes(needle)) {
+        if (profile.isPromptLine(trimmed) && trimmed.includes(needle)) {
           echoLine = i;
           break;
         }
@@ -990,11 +953,11 @@ export class PtyManager {
     for (let i = echoLine + 1; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (/^[─━═]{5,}$/.test(trimmed)) break;
-      if (/^❯/.test(trimmed)) break;
+      if (profile.isPromptLine(trimmed)) break;
       responseLines.push(lines[i]);
     }
 
-    let output = stripAgentNoise(responseLines.join('\n'));
+    let output = stripAgentNoise(responseLines.join('\n'), profile);
     return { output, isProcessing };
   }
 
@@ -1009,12 +972,13 @@ export class PtyManager {
     const status = this.getSessionStatus(sessionId);
     const isProcessing = status?.isProcessing ?? false;
     const lines = this.getRenderedLines(sessionId);
+    const profile = this.getProfile(sessionId);
 
-    // Find the last ❯ prompt line
+    // Find the last prompt line that holds a (drafted/echoed) command.
     let promptLine = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
       const trimmed = lines[i].trim();
-      if (/^❯\s+\S/.test(trimmed)) {
+      if (profile.isPromptLine(trimmed) && profile.stripPromptMarker(trimmed).length > 0) {
         promptLine = i;
         break;
       }
@@ -1024,17 +988,17 @@ export class PtyManager {
       return { prompt: '', output: '', isProcessing };
     }
 
-    const prompt = lines[promptLine].trim().replace(/^❯\s*/, '').trim();
+    const prompt = profile.stripPromptMarker(lines[promptLine].trim());
 
     const responseLines: string[] = [];
     for (let i = promptLine + 1; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (/^[─━═]{5,}$/.test(trimmed)) break;
-      if (/^❯/.test(trimmed)) break;
+      if (profile.isPromptLine(trimmed)) break;
       responseLines.push(lines[i]);
     }
 
-    const output = stripAgentNoise(responseLines.join('\n'));
+    const output = stripAgentNoise(responseLines.join('\n'), profile);
     return { prompt, output, isProcessing };
   }
 
@@ -1054,7 +1018,7 @@ export class PtyManager {
 
     let output = lines.join('\n');
     if (clean) {
-      output = stripAgentNoise(output);
+      output = stripAgentNoise(output, this.getProfile(sessionId));
     }
     return output;
   }
@@ -1079,10 +1043,11 @@ export class PtyManager {
     const lines = this.getRenderedLines(sessionId);
 
     // Find the last IPC marker on a prompt echo line
+    const profile = this.getProfile(sessionId);
     let markerLine = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
       const trimmed = lines[i].trim();
-      if (trimmed.startsWith('❯') && /\[ipc:[0-9a-f]{8}\]/.test(trimmed)) {
+      if (profile.isPromptLine(trimmed) && /\[ipc:[0-9a-f]{8}\]/.test(trimmed)) {
         markerLine = i;
         break;
       }
@@ -1094,7 +1059,7 @@ export class PtyManager {
 
     let output = outputLines.join('\n');
     if (clean) {
-      output = stripAgentNoise(output);
+      output = stripAgentNoise(output, profile);
     }
     return output;
   }
@@ -1236,7 +1201,7 @@ export class PtyManager {
     const newOffset = session.buffer.length;
     let output = stripAnsiCodes(rawOutput);
     if (clean) {
-      output = stripAgentNoise(output);
+      output = stripAgentNoise(output, this.getProfile(sessionId));
     }
 
     return { output, offset: newOffset };
@@ -2288,7 +2253,7 @@ export class PtyManager {
     let output = raw.toString('utf-8');
     if (clean) {
       output = stripAnsiCodes(output);
-      output = stripAgentNoise(output);
+      output = stripAgentNoise(output, this.getProfile(sessionId));
     }
 
     return { output, status, truncated };
