@@ -1780,6 +1780,11 @@ export class PtyManager {
     return this.linkMainToSubs.get(sourceId)?.has(targetId) ?? false;
   }
 
+  /** Number of sub-agents currently linked under `mainId` (for auto-naming). */
+  getSubCount(mainId: string): number {
+    return this.linkMainToSubs.get(mainId)?.size ?? 0;
+  }
+
   /**
    * Verify that `token` is the capability token issued to `sessionId` at creation.
    * Within the declared threat model (see token generation in create()), this binds

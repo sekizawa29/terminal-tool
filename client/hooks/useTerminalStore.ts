@@ -83,6 +83,7 @@ interface TerminalState {
   loadLayout: () => SavedLayout[];
 
   addLink: (sourceId: string, targetId: string) => void;
+  restoreLink: (sourceId: string, targetId: string) => void;
   removeLink: (linkId: string) => void;
   startLinkDrag: (sourceId: string) => void;
   updateLinkDrag: (mouseX: number, mouseY: number) => void;
@@ -111,14 +112,31 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       return { terminals, nextZIndex: state.nextZIndex + 1, activeTerminalId: tw.id };
     }),
 
-  removeTerminal: (id) =>
-    set((state) => {
-      const terminals = new Map(state.terminals);
+  removeTerminal: (id) => {
+    const state = get();
+    // Unregister every link touching this window on the server so no stale peer
+    // route survives (the client used to only filter its local list).
+    const touched = state.links.filter((l) => l.sourceId === id || l.targetId === id);
+    for (const l of touched) {
+      const source = state.terminals.get(l.sourceId);
+      const target = state.terminals.get(l.targetId);
+      if (source && target) {
+        apiFetch('/api/links', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId }),
+        }).catch(() => {});
+      }
+    }
+    set((s) => {
+      const terminals = new Map(s.terminals);
       terminals.delete(id);
-      const links = state.links.filter((l) => l.sourceId !== id && l.targetId !== id);
-      const activeTerminalId = state.activeTerminalId === id ? null : state.activeTerminalId;
+      const links = s.links.filter((l) => l.sourceId !== id && l.targetId !== id);
+      const activeTerminalId = s.activeTerminalId === id ? null : s.activeTerminalId;
       return { terminals, activeTerminalId, links };
-    }),
+    });
+    get().saveLinks();
+  },
 
   updateTerminal: (id, updates) =>
     set((state) => {
@@ -179,19 +197,39 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const newLinks = [...state.links, { id, sourceId, targetId }];
     set({ links: newLinks });
 
-    // Auto-name the target terminal on the server
+    // Register the link on the server with autoName so the SUB gets its sub-N
+    // name assigned server-side (single source of truth; no separate PUT /name).
     const target = state.terminals.get(targetId);
     const source = state.terminals.get(sourceId);
-    if (target) {
-      const subCount = newLinks.filter((l) => l.sourceId === sourceId).length;
-      apiFetch(`/api/terminals/${target.sessionId}/name`, {
-        method: 'PUT',
+    if (source && target) {
+      apiFetch('/api/links', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: `sub-${subCount}` }),
-      }).catch(() => {});
+        body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId, autoName: true }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.assignedName) {
+            get().updateTerminal(targetId, { title: data.assignedName });
+            get().saveLayout();
+          }
+        })
+        .catch(() => {});
     }
 
-    // Register link on server for peer routing
+    get().saveLinks();
+  },
+
+  // Re-register an existing link on reload WITHOUT auto-naming or context
+  // re-injection (the server's POST /api/links is idempotent for live peers).
+  restoreLink: (sourceId, targetId) => {
+    const state = get();
+    if (sourceId === targetId) return;
+    if (state.links.some((l) => l.sourceId === sourceId && l.targetId === targetId)) return;
+    const id = crypto.randomUUID();
+    set({ links: [...state.links, { id, sourceId, targetId }] });
+    const source = state.terminals.get(sourceId);
+    const target = state.terminals.get(targetId);
     if (source && target) {
       apiFetch('/api/links', {
         method: 'POST',
@@ -199,8 +237,6 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         body: JSON.stringify({ sourceId: source.sessionId, targetId: target.sessionId }),
       }).catch(() => {});
     }
-
-    get().saveLinks();
   },
 
   removeLink: (linkId) => {

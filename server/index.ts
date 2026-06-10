@@ -454,24 +454,38 @@ app.post('/api/links', (req, res) => {
     res.status(404).json({ error: 'session not found' });
     return;
   }
-  // Detect a reconnection: either the server still has these two registered as
-  // peers (their PTYs survived a UI/WebSocket drop such as display sleep), or the
-  // user removed the link moments ago and is re-drawing it. Either way the agents
-  // already hold their collaboration context in scrollback.
+  const { autoName } = req.body || {};
+
+  // Idempotent: if the server still has these two linked (a reload re-registering
+  // an existing link, or PTYs that survived a WebSocket drop), do nothing — no
+  // context re-injection, no rename, no reconnect notice.
+  if (ptyManager.arePeers(sourceId, targetId)) {
+    res.json({ ok: true, alreadyLinked: true });
+    return;
+  }
+
+  // Detect a reconnection: the user removed the link moments ago and is re-drawing
+  // it. The agents still hold their collaboration context in scrollback.
   const pairKey = linkPairKey(sourceId, targetId);
   const unlinkedAt = recentlyUnlinked.get(pairKey);
   const recentlyDropped = unlinkedAt !== undefined && Date.now() - unlinkedAt < RECONNECT_WINDOW_MS;
-  const isReconnect = ptyManager.arePeers(sourceId, targetId) || recentlyDropped;
   recentlyUnlinked.delete(pairKey);
 
   ptyManager.addLink(sourceId, targetId);
+
+  // Auto-name the SUB server-side (only when asked and it has no name yet) so a
+  // reload restoring the link never overwrites a user's custom name.
+  let assignedName: string | undefined;
+  if (autoName && !ptyManager.getName(targetId)) {
+    assignedName = ptyManager.setName(targetId, `sub-${ptyManager.getSubCount(sourceId)}`);
+  }
 
   const sourceName = ptyManager.getName(sourceId) || sourceId.slice(0, 8);
   const targetName = ptyManager.getName(targetId) || targetId.slice(0, 8);
 
   // Reconnection: tell BOTH agents the connection dropped and is back (fact only,
   // no action instruction) and skip the verbose new-link protocol dump.
-  if (isReconnect) {
+  if (recentlyDropped) {
     const submitDelay = 500;
     const notices: [string, string][] = [
       [sourceId, `[tboard] SYSTEM (automated notice, not user input): The connection to "${targetName}" was lost and has been re-established (reconnected).`],
@@ -548,7 +562,7 @@ app.post('/api/links', (req, res) => {
     setTimeout(() => ptyManager.write(id, '\r'), submitDelay);
   }
 
-  res.json({ ok: true });
+  res.json({ ok: true, assignedName });
 });
 
 // Reconnect: link a new session as a replacement for a disconnected peer

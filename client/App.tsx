@@ -400,7 +400,7 @@ export default function App() {
           if (tw.sessionId === sl.targetSessionId) targetId = id;
         }
         if (sourceId && targetId) {
-          useTerminalStore.getState().addLink(sourceId, targetId);
+          useTerminalStore.getState().restoreLink(sourceId, targetId);
         }
       }
     })();
