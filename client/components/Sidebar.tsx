@@ -4,8 +4,6 @@ import { getDisplayName } from '../hooks/useSessionPolling.js';
 import { apiFetch } from '../api.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
 import { pinDir, unpinDir } from '../api/dirsApi.js';
-
-const SIDEBAR_PINNED_KEY = 'terminal-board-sidebar-pinned';
 import {
   PowerShellIcon,
   TerminalIcon,
@@ -23,6 +21,8 @@ import { SectionLabel } from './sidebar/SectionLabel.js';
 import { DropdownItem } from './sidebar/DropdownItem.js';
 import { RecentDirItem } from './sidebar/RecentDirItem.js';
 import { SessionRow } from './sidebar/SessionRow.js';
+
+const SIDEBAR_PINNED_KEY = 'terminal-board-sidebar-pinned';
 
 interface SidebarProps {
   controller: CanvasController;
