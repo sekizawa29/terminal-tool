@@ -4,35 +4,14 @@ import TerminalWindow from './TerminalWindow.js';
 import LinkLines from './LinkLines.js';
 import ZoomIndicator from './ZoomIndicator.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
-import type { CanvasTransform } from '../hooks/useCanvas.js';
+import type { CanvasController } from '../hooks/useCanvas.js';
 
 interface CanvasProps {
-  transform: CanvasTransform;
-  startPan: (clientX: number, clientY: number) => void;
-  updatePan: (clientX: number, clientY: number) => void;
-  panBy: (deltaX: number, deltaY: number) => void;
-  endPan: () => void;
-  zoom: (deltaY: number, clientX: number, clientY: number) => void;
-  setScale: (scale: number, anchorX?: number, anchorY?: number) => void;
-  getIsSpaceDown: () => boolean;
-  getIsPanning: () => boolean;
-  setSpaceDown: (down: boolean) => void;
+  controller: CanvasController;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
 }
 
-export default function Canvas({
-  transform,
-  startPan,
-  updatePan,
-  panBy,
-  endPan,
-  zoom,
-  setScale,
-  getIsSpaceDown,
-  getIsPanning,
-  setSpaceDown,
-  onOpenFile,
-}: CanvasProps) {
+export default function Canvas({ controller, onOpenFile }: CanvasProps) {
   // Subscribe only to the SET of window ids (shallow-compared) so a position
   // update during a drag — which replaces the terminals Map but not its keys —
   // does not re-render Canvas (and thus every window). Each TerminalWindow
@@ -41,8 +20,10 @@ export default function Canvas({
   const token = useTerminalStore((s) => s.token);
   const linkDragActive = useTerminalStore((s) => s.linkDrag.active);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const transformRef = useRef(transform);
-  transformRef.current = transform;
+
+  // Event-time scale getter passed to windows so they read the current zoom
+  // without re-rendering when it changes.
+  const getScale = useCallback(() => controller.getTransform().scale, [controller]);
 
   // Space key tracking
   useEffect(() => {
@@ -52,14 +33,14 @@ export default function Canvas({
         const isInTerminal = active?.closest('.xterm');
         if (!isInTerminal) {
           e.preventDefault();
-          setSpaceDown(true);
+          controller.setSpaceDown(true);
         }
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
-        setSpaceDown(false);
-        endPan();
+        controller.setSpaceDown(false);
+        controller.endPan();
       }
     };
 
@@ -69,38 +50,38 @@ export default function Canvas({
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [setSpaceDown, endPan]);
+  }, [controller]);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       const isBackground = e.target === canvasRef.current || e.target === canvasRef.current?.firstElementChild;
-      if ((isBackground && e.button === 0) || (getIsSpaceDown() && e.button === 0) || e.button === 1) {
+      if ((isBackground && e.button === 0) || (controller.getIsSpaceDown() && e.button === 0) || e.button === 1) {
         e.preventDefault();
-        startPan(e.clientX, e.clientY);
+        controller.startPan(e.clientX, e.clientY);
       }
     },
-    [getIsSpaceDown, startPan]
+    [controller]
   );
 
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (getIsPanning()) {
-        updatePan(e.clientX, e.clientY);
+      if (controller.getIsPanning()) {
+        controller.updatePan(e.clientX, e.clientY);
       }
     },
-    [getIsPanning, updatePan]
+    [controller]
   );
 
   const onMouseUp = useCallback(() => {
-    endPan();
-  }, [endPan]);
+    controller.endPan();
+  }, [controller]);
 
   // Global wheel zoom – works even when mouse is over panels
   useEffect(() => {
     const handler = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
-        zoom(e.deltaY, e.clientX, e.clientY);
+        controller.zoom(e.deltaY, e.clientX, e.clientY);
         return;
       }
 
@@ -108,12 +89,12 @@ export default function Canvas({
       const inWindow = target instanceof Element && target.closest('.terminal-window-enter');
       if (!inWindow) {
         e.preventDefault();
-        panBy(-e.deltaX, -e.deltaY);
+        controller.panBy(-e.deltaX, -e.deltaY);
       }
     };
     window.addEventListener('wheel', handler, { passive: false });
     return () => window.removeEventListener('wheel', handler);
-  }, [panBy, zoom]);
+  }, [controller]);
 
   // Prevent middle-click autoscroll
   useEffect(() => {
@@ -131,7 +112,7 @@ export default function Canvas({
     if (!linkDragActive) return;
 
     const onMove = (e: MouseEvent) => {
-      const t = transformRef.current;
+      const t = controller.getTransform();
       const canvasX = (e.clientX - t.offsetX) / t.scale;
       const canvasY = (e.clientY - t.offsetY) / t.scale;
       useTerminalStore.getState().updateLinkDrag(canvasX, canvasY);
@@ -147,9 +128,10 @@ export default function Canvas({
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
-  }, [linkDragActive]);
+  }, [linkDragActive, controller]);
 
-  const dotOpacity = Math.min(0.28, 0.15 + transform.scale * 0.06);
+  const initial = controller.getTransform();
+  const initialDotOpacity = Math.min(0.28, 0.15 + initial.scale * 0.06);
 
   return (
     <div
@@ -162,7 +144,7 @@ export default function Canvas({
         inset: 0,
         overflow: 'hidden',
         background: 'var(--bg-deepest)',
-        cursor: linkDragActive ? 'crosshair' : getIsPanning() ? 'grabbing' : 'grab',
+        cursor: linkDragActive ? 'crosshair' : 'grab',
       }}
     >
       {/* Subtle radial gradient — depth atmosphere */}
@@ -175,22 +157,24 @@ export default function Canvas({
         }}
       />
 
-      {/* Dot grid */}
+      {/* Dot grid — updated imperatively by the controller (gridRef) */}
       <div
+        ref={controller.gridRef}
         style={{
           position: 'absolute',
           inset: 0,
-          backgroundImage: `radial-gradient(circle, rgba(192, 202, 245, ${dotOpacity}) 0.8px, transparent 0.8px)`,
-          backgroundSize: `${20 * transform.scale}px ${20 * transform.scale}px`,
-          backgroundPosition: `${transform.offsetX}px ${transform.offsetY}px`,
+          backgroundImage: `radial-gradient(circle, rgba(192, 202, 245, ${initialDotOpacity}) 0.8px, transparent 0.8px)`,
+          backgroundSize: `${20 * initial.scale}px ${20 * initial.scale}px`,
+          backgroundPosition: `${initial.offsetX}px ${initial.offsetY}px`,
           pointerEvents: 'none',
         }}
       />
 
-      {/* Transform container */}
+      {/* Transform container — updated imperatively by the controller (containerRef) */}
       <div
+        ref={controller.containerRef}
         style={{
-          transform: `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale})`,
+          transform: `translate(${initial.offsetX}px, ${initial.offsetY}px) scale(${initial.scale})`,
           transformOrigin: '0 0',
           position: 'absolute',
           top: 0,
@@ -204,14 +188,14 @@ export default function Canvas({
               key={id}
               id={id}
               token={token}
-              scale={transform.scale}
-              onZoom={zoom}
+              getScale={getScale}
+              onZoom={controller.zoom}
               onOpenFile={onOpenFile}
             />
           ))}
       </div>
 
-      <ZoomIndicator scale={transform.scale} setScale={setScale} />
+      <ZoomIndicator controller={controller} />
     </div>
   );
 }

@@ -1,19 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { MIN_SCALE, MAX_SCALE } from '../hooks/useCanvas.js';
+import type { CanvasController } from '../hooks/useCanvas.js';
 
 interface ZoomIndicatorProps {
-  scale: number;
-  setScale: (scale: number, anchorX?: number, anchorY?: number) => void;
+  controller: CanvasController;
 }
 
 const MIN_PCT = Math.round(MIN_SCALE * 100);
 const MAX_PCT = Math.round(MAX_SCALE * 100);
 const STEP_PCT = 10;
 
-export default function ZoomIndicator({ scale, setScale }: ZoomIndicatorProps) {
+export default function ZoomIndicator({ controller }: ZoomIndicatorProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Re-render only this small component when the zoom changes (controller drives
+  // transform imperatively otherwise).
+  const scale = useSyncExternalStore(controller.subscribe, () => controller.getTransform().scale);
+  const setScale = controller.setScale;
 
   const currentPct = Math.round(scale * 100);
 

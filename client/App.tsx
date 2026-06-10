@@ -69,7 +69,7 @@ export default function App() {
     if (!token) return;
 
     const sessionId = await createTerminalSession();
-    const { offsetX, offsetY, scale } = canvas.transform;
+    const { offsetX, offsetY, scale } = canvas.getTransform();
 
     // Place at viewport center
     const centerX = (window.innerWidth / 2 - offsetX) / scale;
@@ -92,7 +92,7 @@ export default function App() {
 
     addTerminal(tw);
     useTerminalStore.getState().saveLayout();
-  }, [token, canvas.transform, addTerminal]);
+  }, [token, canvas, addTerminal]);
 
   const duplicateTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
     if (!token) return;
@@ -211,7 +211,7 @@ export default function App() {
   }, []);
 
   const addMemoPanel = useCallback(() => {
-    const { offsetX, offsetY, scale } = canvas.transform;
+    const { offsetX, offsetY, scale } = canvas.getTransform();
     const centerX = (window.innerWidth / 2 - offsetX) / scale;
     const centerY = (window.innerHeight / 2 - offsetY) / scale;
 
@@ -251,7 +251,7 @@ export default function App() {
     const height = 500;
 
     // Place at viewport center if no position given (e.g. from fixed explorer)
-    const { offsetX, offsetY, scale } = canvas.transform;
+    const { offsetX, offsetY, scale } = canvas.getTransform();
     const cx = nearX ?? (window.innerWidth / 2 - offsetX) / scale;
     const cy = nearY ?? (window.innerHeight / 2 - offsetY) / scale;
 
@@ -518,21 +518,12 @@ export default function App() {
       {/* Canvas */}
       <div style={{ position: 'fixed', inset: 0 }}>
         <Canvas
-          transform={canvas.transform}
-          startPan={canvas.startPan}
-          updatePan={canvas.updatePan}
-          endPan={canvas.endPan}
-          panBy={canvas.panBy}
-          zoom={canvas.zoom}
-          setScale={canvas.setScale}
-          getIsSpaceDown={canvas.getIsSpaceDown}
-          getIsPanning={canvas.getIsPanning}
-          setSpaceDown={canvas.setSpaceDown}
+          controller={canvas}
           onOpenFile={openFileEditor}
         />
       </div>
       <Sidebar
-        transform={canvas.transform}
+        controller={canvas}
         onAddTerminal={addNewTerminal}
         onToggleExplorer={toggleExplorer}
         explorerOpen={explorerOpen}

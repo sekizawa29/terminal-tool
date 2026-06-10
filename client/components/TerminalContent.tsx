@@ -10,7 +10,7 @@ interface TerminalContentProps {
   sessionId: string;
   token: string;
   isActive: boolean;
-  scale: number;
+  getScale: () => number;
   onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
   onExit?: () => void;
   onConnectionChange?: (state: ConnectionState) => void;
@@ -23,7 +23,7 @@ export default function TerminalContent({
   sessionId,
   token,
   isActive,
-  scale,
+  getScale,
   onZoom,
   onExit,
   onConnectionChange,
@@ -35,8 +35,9 @@ export default function TerminalContent({
   const prevSizeRef = useRef({ cols: 0, rows: 0 });
   const tokenRef = useRef(token);
   tokenRef.current = token;
-  const scaleRef = useRef(scale);
-  scaleRef.current = scale;
+  // Read the live zoom at mouse-event time so the window never re-renders on zoom.
+  const getScaleRef = useRef(getScale);
+  getScaleRef.current = getScale;
   const onConnChangeRef = useRef(onConnectionChange);
   onConnChangeRef.current = onConnectionChange;
   const onExitRef = useRef(onExit);
@@ -143,7 +144,7 @@ export default function TerminalContent({
       const ms = core._mouseService;
       const origGetCoords = ms.getCoords.bind(ms);
       ms.getCoords = function(event: any, element: HTMLElement, colCount: number, rowCount: number, isSelection?: boolean) {
-        const s = scaleRef.current;
+        const s = getScaleRef.current();
         if (s !== 1) {
           const rect = element.getBoundingClientRect();
           event = {
@@ -155,7 +156,7 @@ export default function TerminalContent({
       };
       const origGetMouseReportCoords = ms.getMouseReportCoords.bind(ms);
       ms.getMouseReportCoords = function(event: any, element: HTMLElement) {
-        const s = scaleRef.current;
+        const s = getScaleRef.current();
         if (s !== 1) {
           const rect = element.getBoundingClientRect();
           event = {

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import type { RefObject } from 'react';
 import type { TerminalWindow } from '../types.js';
 
 const MIN_SCALE = 0.1;
@@ -6,7 +7,6 @@ const MAX_SCALE = 3.0;
 
 const CANVAS_KEY = 'terminal-board-canvas';
 const CANVAS_VERSION = 1;
-const DEFAULT_TRANSFORM: CanvasTransform = { offsetX: 0, offsetY: 0, scale: 1 };
 
 export interface CanvasTransform {
   offsetX: number;
@@ -14,8 +14,35 @@ export interface CanvasTransform {
   scale: number;
 }
 
-// Restore the persisted pan/zoom, clamping scale through the same bounds the
-// live controls use. Any malformed/absent value falls back to the origin at 100%.
+const DEFAULT_TRANSFORM: CanvasTransform = { offsetX: 0, offsetY: 0, scale: 1 };
+
+// The controller owns the pan/zoom transform in a ref and applies it to the DOM
+// imperatively (no React state), so panning/zooming never re-renders the tree.
+// Consumers that need to react to transform changes subscribe() (e.g. the zoom
+// indicator, minimap, edge badges); event-time consumers just call getTransform().
+export interface CanvasController {
+  getTransform(): CanvasTransform;
+  subscribe(cb: () => void): () => void;
+  startPan(clientX: number, clientY: number): void;
+  updatePan(clientX: number, clientY: number): void;
+  endPan(): void;
+  panBy(deltaX: number, deltaY: number): void;
+  zoom(deltaY: number, clientX: number, clientY: number): void;
+  setScale(scale: number, anchorX?: number, anchorY?: number): void;
+  focusOn(x: number, y: number, width: number, height: number): void;
+  zoomToFit(terminals: Map<string, TerminalWindow>): void;
+  setSpaceDown(down: boolean): void;
+  getIsSpaceDown(): boolean;
+  getIsPanning(): boolean;
+  // Attach to the transform container and the dot-grid background respectively.
+  containerRef: RefObject<HTMLDivElement>;
+  gridRef: RefObject<HTMLDivElement>;
+}
+
+function clampScale(s: number): number {
+  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+}
+
 function loadTransform(): CanvasTransform {
   try {
     const raw = localStorage.getItem(CANVAS_KEY);
@@ -23,11 +50,7 @@ function loadTransform(): CanvasTransform {
     const p = JSON.parse(raw);
     if (p && typeof p === 'object' && p.version === CANVAS_VERSION
       && typeof p.offsetX === 'number' && typeof p.offsetY === 'number' && typeof p.scale === 'number') {
-      return {
-        offsetX: p.offsetX,
-        offsetY: p.offsetY,
-        scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, p.scale)),
-      };
+      return { offsetX: p.offsetX, offsetY: p.offsetY, scale: clampScale(p.scale) };
     }
   } catch {
     // corrupted
@@ -35,149 +58,184 @@ function loadTransform(): CanvasTransform {
   return DEFAULT_TRANSFORM;
 }
 
-export function useCanvas() {
-  const [transform, setTransform] = useState<CanvasTransform>(loadTransform);
-
-  // Persist pan/zoom 500ms after the last change so a burst of pan/zoom events
-  // collapses into a single write. (Phase 4.4 will move transform to a ref; this
-  // "save on change, debounced" shape ports directly to the subscribe model.)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(CANVAS_KEY, JSON.stringify({ version: CANVAS_VERSION, ...transform }));
-      } catch {
-        // quota exceeded
-      }
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [transform]);
+export function useCanvas(): CanvasController {
+  const transformRef = useRef<CanvasTransform>(loadTransform());
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const listenersRef = useRef<Set<() => void>>(new Set());
 
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const panOffset = useRef({ x: 0, y: 0 });
   const spaceDown = useRef(false);
 
-  const startPan = useCallback((clientX: number, clientY: number) => {
-    isPanning.current = true;
-    panStart.current = { x: clientX, y: clientY };
-    panOffset.current = { x: transform.offsetX, y: transform.offsetY };
-  }, [transform.offsetX, transform.offsetY]);
+  // Build the controller exactly once; every method closes over stable refs.
+  const controllerRef = useRef<CanvasController | null>(null);
+  if (controllerRef.current === null) {
+    const applyToDom = () => {
+      const t = transformRef.current;
+      const c = containerRef.current;
+      if (c) {
+        c.style.transform = `translate(${t.offsetX}px, ${t.offsetY}px) scale(${t.scale})`;
+      }
+      const g = gridRef.current;
+      if (g) {
+        const dotOpacity = Math.min(0.28, 0.15 + t.scale * 0.06);
+        g.style.backgroundImage = `radial-gradient(circle, rgba(192, 202, 245, ${dotOpacity}) 0.8px, transparent 0.8px)`;
+        g.style.backgroundSize = `${20 * t.scale}px ${20 * t.scale}px`;
+        g.style.backgroundPosition = `${t.offsetX}px ${t.offsetY}px`;
+      }
+    };
 
-  const updatePan = useCallback((clientX: number, clientY: number) => {
-    if (!isPanning.current) return;
-    const dx = clientX - panStart.current.x;
-    const dy = clientY - panStart.current.y;
-    setTransform(t => ({
-      ...t,
-      offsetX: panOffset.current.x + dx,
-      offsetY: panOffset.current.y + dy,
-    }));
-  }, []);
+    const commit = () => {
+      applyToDom();
+      for (const cb of listenersRef.current) {
+        try { cb(); } catch { /* listener error shouldn't break panning */ }
+      }
+    };
 
-  const panBy = useCallback((deltaX: number, deltaY: number) => {
-    if (deltaX === 0 && deltaY === 0) return;
-    setTransform((t) => ({
-      ...t,
-      offsetX: t.offsetX + deltaX,
-      offsetY: t.offsetY + deltaY,
-    }));
-  }, []);
+    controllerRef.current = {
+      getTransform: () => transformRef.current,
+      subscribe(cb) {
+        listenersRef.current.add(cb);
+        return () => { listenersRef.current.delete(cb); };
+      },
+      startPan(clientX, clientY) {
+        isPanning.current = true;
+        panStart.current = { x: clientX, y: clientY };
+        panOffset.current = { x: transformRef.current.offsetX, y: transformRef.current.offsetY };
+        if (containerRef.current?.parentElement) containerRef.current.parentElement.style.cursor = 'grabbing';
+      },
+      updatePan(clientX, clientY) {
+        if (!isPanning.current) return;
+        const dx = clientX - panStart.current.x;
+        const dy = clientY - panStart.current.y;
+        transformRef.current = {
+          ...transformRef.current,
+          offsetX: panOffset.current.x + dx,
+          offsetY: panOffset.current.y + dy,
+        };
+        commit();
+      },
+      endPan() {
+        isPanning.current = false;
+        if (containerRef.current?.parentElement) {
+          containerRef.current.parentElement.style.cursor = 'grab';
+        }
+      },
+      panBy(deltaX, deltaY) {
+        if (deltaX === 0 && deltaY === 0) return;
+        const t = transformRef.current;
+        transformRef.current = { ...t, offsetX: t.offsetX + deltaX, offsetY: t.offsetY + deltaY };
+        commit();
+      },
+      zoom(deltaY, clientX, clientY) {
+        const t = transformRef.current;
+        const factor = deltaY < 0 ? 1.1 : 0.9;
+        const newScale = clampScale(t.scale * factor);
+        const scaleChange = newScale / t.scale;
+        transformRef.current = {
+          offsetX: clientX - (clientX - t.offsetX) * scaleChange,
+          offsetY: clientY - (clientY - t.offsetY) * scaleChange,
+          scale: newScale,
+        };
+        commit();
+      },
+      setScale(newScale, anchorX, anchorY) {
+        const t = transformRef.current;
+        const clamped = clampScale(newScale);
+        if (clamped === t.scale) return;
+        const ax = anchorX ?? window.innerWidth / 2;
+        const ay = anchorY ?? window.innerHeight / 2;
+        const scaleChange = clamped / t.scale;
+        transformRef.current = {
+          offsetX: ax - (ax - t.offsetX) * scaleChange,
+          offsetY: ay - (ay - t.offsetY) * scaleChange,
+          scale: clamped,
+        };
+        commit();
+      },
+      focusOn(x, y, width, height) {
+        const t = transformRef.current;
+        const centerX = x + width / 2;
+        const centerY = y + height / 2;
+        transformRef.current = {
+          ...t,
+          offsetX: window.innerWidth / 2 - centerX * t.scale,
+          offsetY: window.innerHeight / 2 - centerY * t.scale,
+        };
+        commit();
+      },
+      zoomToFit(terminals) {
+        if (terminals.size === 0) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const tw of terminals.values()) {
+          minX = Math.min(minX, tw.x);
+          minY = Math.min(minY, tw.y);
+          maxX = Math.max(maxX, tw.x + tw.width);
+          maxY = Math.max(maxY, tw.y + tw.height);
+        }
+        const padding = 60;
+        const bboxW = maxX - minX;
+        const bboxH = maxY - minY;
+        const vpW = window.innerWidth;
+        const vpH = window.innerHeight;
+        const scaleX = (vpW - padding * 2) / bboxW;
+        const scaleY = (vpH - padding * 2) / bboxH;
+        const newScale = clampScale(Math.min(scaleX, scaleY));
+        const bboxCenterX = (minX + maxX) / 2;
+        const bboxCenterY = (minY + maxY) / 2;
+        transformRef.current = {
+          scale: newScale,
+          offsetX: vpW / 2 - bboxCenterX * newScale,
+          offsetY: vpH / 2 - bboxCenterY * newScale,
+        };
+        commit();
+      },
+      setSpaceDown(down) { spaceDown.current = down; },
+      getIsSpaceDown: () => spaceDown.current,
+      getIsPanning: () => isPanning.current,
+      containerRef,
+      gridRef,
+    };
+  }
 
-  const endPan = useCallback(() => {
-    isPanning.current = false;
-  }, []);
+  const controller = controllerRef.current;
 
-  const zoom = useCallback((deltaY: number, clientX: number, clientY: number) => {
-    setTransform(t => {
-      const factor = deltaY < 0 ? 1.1 : 0.9;
-      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale * factor));
-      const scaleChange = newScale / t.scale;
-      const newOffsetX = clientX - (clientX - t.offsetX) * scaleChange;
-      const newOffsetY = clientY - (clientY - t.offsetY) * scaleChange;
-      return { offsetX: newOffsetX, offsetY: newOffsetY, scale: newScale };
-    });
-  }, []);
-
-  const setScale = useCallback((newScale: number, anchorX?: number, anchorY?: number) => {
-    setTransform(t => {
-      const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
-      if (clamped === t.scale) return t;
-      const ax = anchorX ?? window.innerWidth / 2;
-      const ay = anchorY ?? window.innerHeight / 2;
-      const scaleChange = clamped / t.scale;
-      return {
-        offsetX: ax - (ax - t.offsetX) * scaleChange,
-        offsetY: ay - (ay - t.offsetY) * scaleChange,
-        scale: clamped,
-      };
-    });
-  }, []);
-
-  const setSpaceDown = useCallback((down: boolean) => {
-    spaceDown.current = down;
-  }, []);
-
-  const getIsSpaceDown = useCallback(() => spaceDown.current, []);
-  const getIsPanning = useCallback(() => isPanning.current, []);
-
-  // Pan canvas so that a given terminal (x, y, w, h) is centered in the viewport
-  const focusOn = useCallback((x: number, y: number, width: number, height: number) => {
-    setTransform(t => {
-      const centerX = x + width / 2;
-      const centerY = y + height / 2;
-      return {
-        ...t,
-        offsetX: window.innerWidth / 2 - centerX * t.scale,
-        offsetY: window.innerHeight / 2 - centerY * t.scale,
-      };
-    });
-  }, []);
-
-  const zoomToFit = useCallback((terminals: Map<string, TerminalWindow>) => {
-    if (terminals.size === 0) return;
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const tw of terminals.values()) {
-      minX = Math.min(minX, tw.x);
-      minY = Math.min(minY, tw.y);
-      maxX = Math.max(maxX, tw.x + tw.width);
-      maxY = Math.max(maxY, tw.y + tw.height);
+  // Apply the restored transform to the DOM once the refs are attached.
+  useEffect(() => {
+    const t = transformRef.current;
+    const c = containerRef.current;
+    if (c) c.style.transform = `translate(${t.offsetX}px, ${t.offsetY}px) scale(${t.scale})`;
+    const g = gridRef.current;
+    if (g) {
+      const dotOpacity = Math.min(0.28, 0.15 + t.scale * 0.06);
+      g.style.backgroundImage = `radial-gradient(circle, rgba(192, 202, 245, ${dotOpacity}) 0.8px, transparent 0.8px)`;
+      g.style.backgroundSize = `${20 * t.scale}px ${20 * t.scale}px`;
+      g.style.backgroundPosition = `${t.offsetX}px ${t.offsetY}px`;
     }
-
-    const padding = 60;
-    const bboxW = maxX - minX;
-    const bboxH = maxY - minY;
-    const vpW = window.innerWidth;
-    const vpH = window.innerHeight;
-
-    const scaleX = (vpW - padding * 2) / bboxW;
-    const scaleY = (vpH - padding * 2) / bboxH;
-    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(scaleX, scaleY)));
-
-    const bboxCenterX = (minX + maxX) / 2;
-    const bboxCenterY = (minY + maxY) / 2;
-
-    setTransform({
-      scale: newScale,
-      offsetX: vpW / 2 - bboxCenterX * newScale,
-      offsetY: vpH / 2 - bboxCenterY * newScale,
-    });
   }, []);
 
-  return {
-    transform,
-    startPan,
-    updatePan,
-    panBy,
-    endPan,
-    zoom,
-    setScale,
-    focusOn,
-    zoomToFit,
-    setSpaceDown,
-    getIsSpaceDown,
-    getIsPanning,
-  };
+  // Persist pan/zoom 500ms after the last change (debounced via subscribe).
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = controller.subscribe(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        try {
+          localStorage.setItem(CANVAS_KEY, JSON.stringify({ version: CANVAS_VERSION, ...transformRef.current }));
+        } catch {
+          // quota exceeded
+        }
+      }, 500);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [controller]);
+
+  return controller;
 }
 
 export { MIN_SCALE, MAX_SCALE };

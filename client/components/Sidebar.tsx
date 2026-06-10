@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { apiFetch } from '../api.js';
-import type { CanvasTransform } from '../hooks/useCanvas.js';
+import type { CanvasController } from '../hooks/useCanvas.js';
 import type { SessionStatus } from '../types.js';
 
 interface SidebarProps {
-  transform: CanvasTransform;
+  controller: CanvasController;
   onAddTerminal: () => void;
   onToggleExplorer: () => void;
   explorerOpen: boolean;
@@ -337,7 +337,7 @@ function isAgentProcess(process: string): boolean {
 }
 
 export default function Sidebar({
-  transform,
+  controller,
   onAddTerminal,
   onToggleExplorer,
   explorerOpen,
@@ -680,7 +680,7 @@ export default function Sidebar({
                     hint="WIN"
                     onClick={() => {
                       setAddMenuOpen(false);
-                      const { offsetX, offsetY, scale } = transform;
+                      const { offsetX, offsetY, scale } = controller.getTransform();
                       const cx = (window.innerWidth / 2 - offsetX) / scale;
                       const cy = (window.innerHeight / 2 - offsetY) / scale;
                       onPowershellTerminal(cx - 350, cy - 225);
@@ -702,7 +702,7 @@ export default function Sidebar({
                 : 'ピン / 最近のディレクトリ (履歴なし)';
               const spawn = (dir: string, kind: 'terminal' | 'claude' | 'codex') => {
                 setStarMenuOpen(false);
-                const { offsetX, offsetY, scale } = transform;
+                const { offsetX, offsetY, scale } = controller.getTransform();
                 const cx = (window.innerWidth / 2 - offsetX) / scale;
                 const cy = (window.innerHeight / 2 - offsetY) / scale;
                 const x = cx - 350;

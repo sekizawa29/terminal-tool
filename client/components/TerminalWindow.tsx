@@ -17,7 +17,7 @@ const AGENT_PROCESSES = new Set([
 interface TerminalWindowProps {
   tw: TWType;
   token: string;
-  scale: number;
+  getScale: () => number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
 }
@@ -29,21 +29,21 @@ const MIN_HEIGHT = 200;
 // memoized body. When a sibling moves, Canvas does not re-render and this
 // container's selector returns the same object, so only the moved window
 // re-renders. tw can briefly be missing during deletion → render nothing.
-export default function TerminalWindow({ id, token, scale, onZoom, onOpenFile }: {
+export default function TerminalWindow({ id, token, getScale, onZoom, onOpenFile }: {
   id: string;
   token: string;
-  scale: number;
+  getScale: () => number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
 }) {
   const tw = useTerminalStore((s) => s.terminals.get(id));
   if (!tw) return null;
   return (
-    <TerminalWindowBody tw={tw} token={token} scale={scale} onZoom={onZoom} onOpenFile={onOpenFile} />
+    <TerminalWindowBody tw={tw} token={token} getScale={getScale} onZoom={onZoom} onOpenFile={onOpenFile} />
   );
 }
 
-const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, scale, onZoom, onOpenFile }: TerminalWindowProps) {
+const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScale, onZoom, onOpenFile }: TerminalWindowProps) {
   // Subscribe with fine-grained selectors so a sibling window's update (or any
   // unrelated store change) does not re-render this window. Actions are stable
   // references, and isActive is reduced to a boolean.
@@ -103,6 +103,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, scale, 
       const pos = { x: tw.x, y: tw.y };
       const onMouseMove = (e: MouseEvent) => {
         if (!dragging.current) return;
+        const scale = getScale();
         const dx = (e.clientX - dragStart.current.x) / scale;
         const dy = (e.clientY - dragStart.current.y) / scale;
         dragStart.current = { x: e.clientX, y: e.clientY };
@@ -121,7 +122,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, scale, 
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },
-    [tw.id, tw.x, tw.y, scale, updateTerminal, bringToFront, setActive, saveLayout]
+    [tw.id, tw.x, tw.y, getScale, updateTerminal, bringToFront, setActive, saveLayout]
   );
 
   // Resize deltas arrive incrementally across separate onResize calls, so the
@@ -539,13 +540,13 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, scale, 
               sessionId={tw.sessionId}
               token={token}
               isActive={isActive}
-              scale={scale}
+              getScale={getScale}
               onZoom={onZoom}
               onExit={onClose}
               onConnectionChange={setConnState}
             />
           )}
-          <ResizeHandle onResize={onResize} onResizeStart={onResizeStart} onResizeEnd={onResizeEnd} scale={scale} />
+          <ResizeHandle onResize={onResize} onResizeStart={onResizeStart} onResizeEnd={onResizeEnd} getScale={getScale} />
         </div>
       </div>
 

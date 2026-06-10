@@ -4,10 +4,10 @@ interface ResizeHandleProps {
   onResize: (dx: number, dy: number) => void;
   onResizeStart?: () => void;
   onResizeEnd: () => void;
-  scale: number;
+  getScale: () => number;
 }
 
-export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, scale }: ResizeHandleProps) {
+export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, getScale }: ResizeHandleProps) {
   const dragging = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
   const [isHovered, setIsHovered] = useState(false);
@@ -24,6 +24,7 @@ export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, sca
 
       const onMouseMove = (e: MouseEvent) => {
         if (!dragging.current) return;
+        const scale = getScale();
         const dx = (e.clientX - startPos.current.x) / scale;
         const dy = (e.clientY - startPos.current.y) / scale;
         startPos.current = { x: e.clientX, y: e.clientY };
@@ -41,7 +42,7 @@ export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, sca
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },
-    [onResize, onResizeStart, onResizeEnd, scale]
+    [onResize, onResizeStart, onResizeEnd, getScale]
   );
 
   const active = isHovered || isDragging;
