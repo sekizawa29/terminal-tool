@@ -2,9 +2,9 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { randomBytes, timingSafeEqual } from 'crypto';
-import { resolve, dirname, join, extname, basename } from 'path';
+import { resolve, dirname, join, extname, basename, sep } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync, realpathSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { PtyManager, type NotificationEntry } from './pty-manager.js';
 import { captureRegionPng, canCaptureScreen, wslPathToWindows, ScreenshotError } from './screenshot.js';
@@ -44,6 +44,65 @@ function getFileInfo(filePath: string) {
 function isDescendantPath(parentPath: string, childPath: string): boolean {
   const normalizedParent = parentPath.endsWith('/') ? parentPath : `${parentPath}/`;
   return childPath === parentPath || childPath.startsWith(normalizedParent);
+}
+
+// ── File API path containment ─────────────────────────────────────────
+// Every filesystem endpoint must stay within an allowlist of roots so a caller
+// (even an authenticated one) cannot read /etc/passwd or write ~/.zshrc outside
+// the intended sandbox. Defaults to the home dir and the OS tmp dir; extend via
+// TBOARD_ALLOWED_ROOTS (colon-separated) e.g. to expose /mnt/c on WSL.
+const ALLOWED_ROOTS: string[] = (process.env.TBOARD_ALLOWED_ROOTS
+  ? process.env.TBOARD_ALLOWED_ROOTS.split(':')
+  : [homedir(), tmpdir()]
+).filter(Boolean).map((p) => { try { return realpathSync(p); } catch { return resolve(p); } });
+
+class PathNotAllowedError extends Error {
+  constructor(p: string) {
+    super(`path not allowed: ${p}`);
+    this.name = 'PathNotAllowedError';
+  }
+}
+
+// Expand a leading ~ to the home directory, then absolutize.
+function expandPath(p: string): string {
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return resolve(homedir(), p.slice(2));
+  return resolve(p);
+}
+
+// Resolve `p` to an absolute path and assert it lives under an allowed root.
+// Symlink-safe: it realpaths the nearest existing ancestor so a symlink that
+// escapes the sandbox is rejected even if its own path string looks contained.
+function assertAllowedPath(p: string): string {
+  const abs = expandPath(p);
+  let probe = abs;
+  while (!existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  let real: string;
+  try {
+    real = realpathSync(probe);
+  } catch {
+    real = probe;
+  }
+  // Re-append the part of `abs` past the existing ancestor so the comparison
+  // uses the real (symlink-resolved) prefix plus the not-yet-created tail.
+  const tail = abs.slice(probe.length);
+  const candidate = real + tail;
+  const ok = ALLOWED_ROOTS.some((root) => candidate === root || candidate.startsWith(root + sep));
+  if (!ok) throw new PathNotAllowedError(abs);
+  return abs;
+}
+
+// Map an error thrown during a file op to a response. PathNotAllowedError → 403.
+function sendFileError(res: import('express').Response, err: unknown, status = 400): void {
+  if (err instanceof PathNotAllowedError) {
+    res.status(403).json({ error: 'path not allowed' });
+    return;
+  }
+  res.status(status).json({ error: String(err) });
 }
 
 // ── Persistent directory store (recent + pinned) ──────────────────────
@@ -280,12 +339,12 @@ app.post('/api/upload', (req, res) => {
   }
   try {
     const sanitized = filename.replace(/[/\\]/g, '_');
-    const filePath = join(cwd, sanitized);
+    const filePath = assertAllowedPath(join(cwd, sanitized));
     const buf = Buffer.from(data, 'base64');
     writeFileSync(filePath, buf);
     res.json({ path: filePath });
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    sendFileError(res, err, 500);
   }
 });
 
@@ -1188,7 +1247,7 @@ app.post('/api/files/write', (req, res) => {
     return;
   }
   try {
-    const resolved = resolve(filePath);
+    const resolved = assertAllowedPath(filePath);
     const st = statSync(resolved);
     if (st.isDirectory()) {
       res.status(400).json({ error: 'Cannot write to a directory' });
@@ -1198,7 +1257,7 @@ app.post('/api/files/write', (req, res) => {
     writeFileSync(resolved, content, 'utf-8');
     res.json({ ok: true, ...getFileInfo(resolved) });
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1210,8 +1269,8 @@ app.post('/api/files/move', (req, res) => {
     return;
   }
   try {
-    const resolvedSource = resolve(sourcePath);
-    const resolvedTargetDir = resolve(targetDir);
+    const resolvedSource = assertAllowedPath(sourcePath);
+    const resolvedTargetDir = assertAllowedPath(targetDir);
     const sourceStat = statSync(resolvedSource);
     const targetStat = statSync(resolvedTargetDir);
     if (!targetStat.isDirectory()) {
@@ -1236,7 +1295,7 @@ app.post('/api/files/move', (req, res) => {
     renameSync(resolvedSource, destinationPath);
     res.json({ ok: true, path: destinationPath, name: basename(destinationPath) });
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1248,7 +1307,7 @@ app.post('/api/files/upload', (req, res) => {
     return;
   }
   try {
-    const resolvedTargetDir = resolve(targetDir);
+    const resolvedTargetDir = assertAllowedPath(targetDir);
     const st = statSync(resolvedTargetDir);
     if (!st.isDirectory()) {
       res.status(400).json({ error: 'targetDir must be a directory' });
@@ -1257,6 +1316,7 @@ app.post('/api/files/upload', (req, res) => {
 
     const sanitized = filename.replace(/[/\\]/g, '_');
     const destinationPath = join(resolvedTargetDir, sanitized);
+    assertAllowedPath(destinationPath);
     if (existsSync(destinationPath)) {
       res.status(409).json({ error: 'Target already exists' });
       return;
@@ -1266,7 +1326,7 @@ app.post('/api/files/upload', (req, res) => {
     writeFileSync(destinationPath, buf);
     res.json({ ok: true, ...getFileInfo(destinationPath) });
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1274,7 +1334,7 @@ app.post('/api/files/upload', (req, res) => {
 app.get('/api/files', (req, res) => {
   const dirPath = (req.query.path as string) || process.env.HOME || '/';
   try {
-    const resolved = resolve(dirPath);
+    const resolved = assertAllowedPath(dirPath);
     const entries = readdirSync(resolved, { withFileTypes: true });
     const files = entries
       .filter((e) => !e.name.startsWith('.')) // hide dotfiles by default
@@ -1303,7 +1363,7 @@ app.get('/api/files', (req, res) => {
       });
     res.json({ path: resolved, files });
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1311,7 +1371,7 @@ app.get('/api/files', (req, res) => {
 app.get('/api/files/all', (req, res) => {
   const dirPath = (req.query.path as string) || process.env.HOME || '/';
   try {
-    const resolved = resolve(dirPath);
+    const resolved = assertAllowedPath(dirPath);
     const entries = readdirSync(resolved, { withFileTypes: true });
     const files = entries
       .map((e) => {
@@ -1338,7 +1398,7 @@ app.get('/api/files/all', (req, res) => {
       });
     res.json({ path: resolved, files });
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1358,7 +1418,7 @@ app.get('/api/files/read', (req, res) => {
     return;
   }
   try {
-    const resolved = resolve(filePath);
+    const resolved = assertAllowedPath(filePath);
     const st = statSync(resolved);
     const ext = extname(resolved).slice(1).toLowerCase();
 
@@ -1388,7 +1448,7 @@ app.get('/api/files/read', (req, res) => {
       size: st.size,
     });
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1411,7 +1471,7 @@ app.get('/api/files/raw', (req, res) => {
     return;
   }
   try {
-    const resolved = resolve(filePath);
+    const resolved = assertAllowedPath(filePath);
     const st = statSync(resolved);
     if (st.size > 10 * 1024 * 1024) {
       res.status(413).json({ error: 'File too large (max 10MB)' });
@@ -1422,7 +1482,7 @@ app.get('/api/files/raw', (req, res) => {
     res.setHeader('Content-Type', mime);
     res.send(readFileSync(resolved));
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
@@ -1433,7 +1493,7 @@ app.get('/api/files/download', (req, res) => {
     return;
   }
   try {
-    const resolved = resolve(filePath);
+    const resolved = assertAllowedPath(filePath);
     const st = statSync(resolved);
     if (st.isDirectory()) {
       res.status(400).json({ error: 'Cannot download a directory' });
@@ -1441,7 +1501,7 @@ app.get('/api/files/download', (req, res) => {
     }
     res.download(resolved, basename(resolved));
   } catch (err) {
-    res.status(400).json({ error: String(err) });
+    sendFileError(res, err);
   }
 });
 
