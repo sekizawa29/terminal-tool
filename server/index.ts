@@ -1481,38 +1481,44 @@ app.post('/api/files/upload', (req, res) => {
   }
 });
 
-// List directory contents
+// Build the listing payload for a directory. includeHidden controls whether
+// dotfiles are returned; otherwise identical for both list endpoints.
+function listDirectoryPayload(dirPath: string, includeHidden: boolean) {
+  const resolved = assertAllowedPath(dirPath);
+  const entries = readdirSync(resolved, { withFileTypes: true });
+  const files = entries
+    .filter((e) => includeHidden || !e.name.startsWith('.'))
+    .map((e) => {
+      const fullPath = join(resolved, e.name);
+      let size = 0;
+      let modified = '';
+      try {
+        const st = statSync(fullPath);
+        size = st.size;
+        modified = st.mtime.toISOString();
+      } catch { /* permission denied */ }
+      return {
+        name: e.name,
+        path: fullPath,
+        isDirectory: e.isDirectory(),
+        size,
+        modified,
+        extension: e.isDirectory() ? '' : extname(e.name).slice(1),
+      };
+    })
+    .sort((a, b) => {
+      // directories first, then alphabetical
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  return { path: resolved, files };
+}
+
+// List directory contents (dotfiles hidden by default)
 app.get('/api/files', (req, res) => {
   const dirPath = (req.query.path as string) || process.env.HOME || '/';
   try {
-    const resolved = assertAllowedPath(dirPath);
-    const entries = readdirSync(resolved, { withFileTypes: true });
-    const files = entries
-      .filter((e) => !e.name.startsWith('.')) // hide dotfiles by default
-      .map((e) => {
-        const fullPath = join(resolved, e.name);
-        let size = 0;
-        let modified = '';
-        try {
-          const st = statSync(fullPath);
-          size = st.size;
-          modified = st.mtime.toISOString();
-        } catch { /* permission denied */ }
-        return {
-          name: e.name,
-          path: fullPath,
-          isDirectory: e.isDirectory(),
-          size,
-          modified,
-          extension: e.isDirectory() ? '' : extname(e.name).slice(1),
-        };
-      })
-      .sort((a, b) => {
-        // directories first, then alphabetical
-        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-    res.json({ path: resolved, files });
+    res.json(listDirectoryPayload(dirPath, false));
   } catch (err) {
     sendFileError(res, err);
   }
@@ -1522,32 +1528,7 @@ app.get('/api/files', (req, res) => {
 app.get('/api/files/all', (req, res) => {
   const dirPath = (req.query.path as string) || process.env.HOME || '/';
   try {
-    const resolved = assertAllowedPath(dirPath);
-    const entries = readdirSync(resolved, { withFileTypes: true });
-    const files = entries
-      .map((e) => {
-        const fullPath = join(resolved, e.name);
-        let size = 0;
-        let modified = '';
-        try {
-          const st = statSync(fullPath);
-          size = st.size;
-          modified = st.mtime.toISOString();
-        } catch { /* permission denied */ }
-        return {
-          name: e.name,
-          path: fullPath,
-          isDirectory: e.isDirectory(),
-          size,
-          modified,
-          extension: e.isDirectory() ? '' : extname(e.name).slice(1),
-        };
-      })
-      .sort((a, b) => {
-        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-    res.json({ path: resolved, files });
+    res.json(listDirectoryPayload(dirPath, true));
   } catch (err) {
     sendFileError(res, err);
   }
@@ -1605,17 +1586,6 @@ app.get('/api/files/read', (req, res) => {
 });
 
 // Serve raw file (for images, binary files)
-const MIME_TYPES: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  svg: 'image/svg+xml',
-  webp: 'image/webp',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-};
-
 app.get('/api/files/raw', (req, res) => {
   const filePath = req.query.path as string;
   if (!filePath) {
@@ -1630,7 +1600,7 @@ app.get('/api/files/raw', (req, res) => {
       return;
     }
     const ext = extname(resolved).slice(1).toLowerCase();
-    const mime = MIME_TYPES[ext] || 'application/octet-stream';
+    const mime = IMAGE_MIME[ext] || 'application/octet-stream';
     res.setHeader('Content-Type', mime);
     res.send(readFileSync(resolved));
   } catch (err) {
