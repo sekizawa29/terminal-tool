@@ -16,6 +16,7 @@ function LinkLine({ link }: { link: TerminalLink }) {
   const terminals = useTerminalStore((s) => s.terminals);
   const removeLink = useTerminalStore((s) => s.removeLink);
   const [hovered, setHovered] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const source = terminals.get(link.sourceId);
   const target = terminals.get(link.targetId);
@@ -29,13 +30,15 @@ function LinkLine({ link }: { link: TerminalLink }) {
   const tx = target.x;
   const ty = target.y + target.height / 2;
 
-  // Midpoint for delete button
+  // Midpoint for the label / delete confirmation
   const mx = (sx + tx) / 2;
   const my = (sy + ty) / 2;
+  const subName = target.title || 'sub';
 
   return (
     <g>
-      {/* Wide hit area for hover/click */}
+      {/* Wide hit area for hover/click — click opens a confirm popover (no
+          instant delete, which was easy to trigger by accident) */}
       <path
         d={d}
         fill="none"
@@ -44,7 +47,10 @@ function LinkLine({ link }: { link: TerminalLink }) {
         style={{ pointerEvents: 'auto', cursor: 'pointer' }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        onClick={() => removeLink(link.id)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setConfirming(true);
+        }}
       />
       {/* Visible bezier curve */}
       <path
@@ -83,30 +89,40 @@ function LinkLine({ link }: { link: TerminalLink }) {
           opacity: hovered ? 1 : 0.8,
         }}
       />
-      {/* Delete button on hover */}
-      {hovered && (
-        <g
-          style={{ cursor: 'pointer', pointerEvents: 'auto' }}
-          onClick={(e) => {
-            e.stopPropagation();
-            removeLink(link.id);
-          }}
-        >
-          <circle
-            cx={mx}
-            cy={my}
-            r={11}
-            fill="var(--bg-elevated)"
-            stroke="var(--accent-red)"
-            strokeWidth={1.5}
-            style={{ filter: 'drop-shadow(0 0 6px rgba(0,0,0,0.4))' }}
+      {/* Direction label on hover (MAIN → sub) */}
+      {hovered && !confirming && (
+        <g style={{ pointerEvents: 'none' }}>
+          <rect
+            x={mx - 62} y={my - 11} width={124} height={22} rx={6}
+            fill="rgba(26,27,38,0.92)" stroke="rgba(125,207,255,0.35)" strokeWidth={1}
           />
-          <path
-            d={`M ${mx - 3.5} ${my - 3.5} L ${mx + 3.5} ${my + 3.5} M ${mx + 3.5} ${my - 3.5} L ${mx - 3.5} ${my + 3.5}`}
-            stroke="var(--accent-red)"
-            strokeWidth={1.8}
-            strokeLinecap="round"
+          <text
+            x={mx} y={my + 4}
+            textAnchor="middle"
+            fontSize={11}
+            fill="#c0caf5"
+            style={{ fontFamily: 'Inter, sans-serif', fontWeight: 600 }}
+          >
+            MAIN → {subName.length > 12 ? `${subName.slice(0, 12)}…` : subName}
+          </text>
+        </g>
+      )}
+      {/* Click-to-confirm unlink popover */}
+      {confirming && (
+        <g style={{ pointerEvents: 'auto' }}>
+          <rect
+            x={mx - 62} y={my - 14} width={124} height={28} rx={7}
+            fill="rgba(26,27,38,0.98)" stroke="rgba(122,162,247,0.3)" strokeWidth={1}
+            style={{ filter: 'drop-shadow(0 0 6px rgba(0,0,0,0.5))' }}
           />
+          <g style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setConfirming(false); removeLink(link.id); }}>
+            <rect x={mx - 58} y={my - 10} width={66} height={20} rx={5} fill="rgba(247,118,142,0.18)" />
+            <text x={mx - 25} y={my + 4} textAnchor="middle" fontSize={11} fill="var(--accent-red)" style={{ fontWeight: 600 }}>リンク解除</text>
+          </g>
+          <g style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setConfirming(false); }}>
+            <rect x={mx + 10} y={my - 10} width={48} height={20} rx={5} fill="rgba(255,255,255,0.06)" />
+            <text x={mx + 34} y={my + 4} textAnchor="middle" fontSize={11} fill="var(--text-secondary)">取消</text>
+          </g>
         </g>
       )}
     </g>

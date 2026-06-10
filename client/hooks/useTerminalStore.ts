@@ -249,6 +249,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const id = crypto.randomUUID();
     const newLinks = [...state.links, { id, sourceId, targetId }];
     set({ links: newLinks });
+    // First link ever created — retire the discovery hint permanently.
+    try { localStorage.setItem('terminal-board-link-hint-shown', '1'); } catch { /* quota */ }
 
     // Register the link on the server with autoName so the SUB gets its sub-N
     // name assigned server-side (single source of truth; no separate PUT /name).

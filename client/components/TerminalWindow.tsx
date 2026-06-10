@@ -10,6 +10,8 @@ import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { apiFetch } from '../api.js';
 import { AGENT_PROCESSES } from '../utils/agents.js';
 
+const LINK_HINT_KEY = 'terminal-board-link-hint-shown';
+
 interface TerminalWindowProps {
   tw: TWType;
   token: string;
@@ -58,6 +60,8 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
   const startLinkDrag = useTerminalStore((s) => s.startLinkDrag);
   const addLink = useTerminalStore((s) => s.addLink);
   const endLinkDrag = useTerminalStore((s) => s.endLinkDrag);
+  const terminalCount = useTerminalStore((s) => s.terminals.size);
+  const linkCount = useTerminalStore((s) => s.links.length);
 
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
@@ -73,12 +77,19 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
   const [captureError, setCaptureError] = useState<string>('');
   const [connState, setConnState] = useState<'connected' | 'reconnecting' | 'closed'>('connected');
   const [searchOpen, setSearchOpen] = useState(false);
+  const linkHintShown = useRef<boolean>((() => {
+    try { return localStorage.getItem(LINK_HINT_KEY) === '1'; } catch { return false; }
+  })());
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isBrowser = tw.type === 'browser';
   const isExplorer = tw.type === 'explorer';
   const isEditor = tw.type === 'editor';
   const isMemo = tw.type === 'memo';
+  const isTerminal = !isBrowser && !isExplorer && !isEditor && !isMemo;
+  // One-time discovery hint for the link feature: only while hovering a terminal,
+  // with 2+ windows and no link ever made.
+  const showLinkHint = isTerminal && isHovered && terminalCount >= 2 && linkCount === 0 && !linkHintShown.current;
   const status = useTerminalStore((s) => s.sessionStatuses.get(tw.sessionId));
   const isWindows = status?.shellType === 'windows';
   const isAgentProcessing = !!(
@@ -485,9 +496,33 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
             )}
           </div>
 
-          {/* Right: search + capture buttons for terminal panels, spacer otherwise */}
+          {/* Right: link + search + capture buttons for terminal panels, spacer otherwise */}
           {!isBrowser && !isExplorer && !isEditor && !isMemo ? (
             <>
+            <button
+              onMouseDown={onStartConnector}
+              title="ドラッグして別のターミナルと接続"
+              aria-label="リンクを作成"
+              style={{
+                width: 18,
+                height: 18,
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'crosshair',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: linkDragActive && linkDragSourceId === tw.id ? 'var(--accent-cyan)' : 'var(--text-tertiary)',
+                opacity: isActive || isHovered ? 1 : 0.6,
+                transition: 'color var(--duration-fast), opacity var(--duration-fast)',
+                marginRight: 2,
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6.5 9.5l3-3M6 6.2L4.8 7.4a2.4 2.4 0 003.4 3.4L9.4 9.6M10 9.8l1.2-1.2a2.4 2.4 0 00-3.4-3.4L6.6 6.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
             <button
               onClick={(e) => { e.stopPropagation(); setSearchOpen((v) => !v); }}
               onMouseDown={(e) => e.stopPropagation()}
@@ -697,7 +732,9 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
             border: '2px solid var(--bg-base)',
             cursor: 'crosshair',
             zIndex: 20,
-            opacity: isHovered || linkDragActive ? 1 : 0,
+            // Always visible (0.35) so the link affordance is discoverable;
+            // brightens on window/dot hover or during a drag.
+            opacity: isHovered || connectorHovered || linkDragActive ? 1 : 0.35,
             transition: 'opacity 0.2s, background 0.15s',
             transform: connectorHovered
               ? 'translateY(-50%) scale(1.3)'
@@ -707,6 +744,32 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
               : '0 0 4px rgba(125, 207, 255, 0.2)',
           }}
         />
+      )}
+
+      {/* First-time link hint near the connector dot */}
+      {showLinkHint && (
+        <div
+          style={{
+            position: 'absolute',
+            right: -10,
+            top: '50%',
+            transform: 'translate(100%, -50%)',
+            marginLeft: 10,
+            padding: '4px 9px',
+            background: 'rgba(26, 27, 38, 0.96)',
+            border: '1px solid rgba(125, 207, 255, 0.35)',
+            borderRadius: 6,
+            color: 'var(--accent-cyan)',
+            fontSize: 11,
+            fontWeight: 500,
+            whiteSpace: 'nowrap',
+            zIndex: 21,
+            pointerEvents: 'none',
+            boxShadow: '0 2px 10px -2px rgba(0,0,0,0.5)',
+          }}
+        >
+          ドラッグして別のターミナルと接続
+        </div>
       )}
 
       {/* Left connector — target indicator during link drag (only for terminals) */}
