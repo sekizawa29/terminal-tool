@@ -55,8 +55,15 @@
 - **7.7 はコード変更不要**(saveLayout 21箇所が全経路を網羅、cwd 永続化・dead は復元時に再導出を確認)
 - **7.8 はスキップ**(任意項目。recent-dirs ポーリングは実害小で仕様上スキップ可)
 
+### フェーズ8: トークン効率化 ✅(専用 worktree feature/token-efficiency で実装・未マージ)
+- `74d4b3f` 8.2 中央省略 elideMiddle(rendered/capture 読み出しを既定32KBで先頭+末尾残し中央省略・`--all`/`--max-bytes`/`maxBytes=0` で全文・保存データ不変)
+- `e30ab94` 8.1 報告書ファースト(`tt read --wait` が manifest 存在時に report.md を優先返却・`--capture` で生キャプチャ・report API に64KB省略+10MBハードリミット413・SUB注入に3層プロトコル規約)
+- `fe935e6` 8.3 連続類似行の畳み込み collapseSimilarLines(4行以上の進捗連打を first+last+マーカーに・数字正規化の完全一致のみ採用・`+`/`-`/`|` 除外で diff/表は無傷・clean パスのみ)
+- `241c8ba` 8.4 読み出しバイト計測(`/api/stats/reads` + `tt stats`・in-memory・WS ホットパス非対象・例外安全)
+- 検証: elideMiddle / collapseSimilarLines はピュア関数を tsx で境界網羅。report/capture/stats の各 API は一時サーバー(PORT=3299・Unix ソケット)＋ディスクfixtureで省略・413・計測・`tt task report --all`/`tt stats` を curl/CLI で実機確認。**PTY 生成が当サンドボックスの posix_spawnp 制限で不可のため、`tt send → tt task complete → tt read --wait` のライブ往復(8.1受け入れ基準)は未実機**。コードパス＋report-first ロジックは fixture で個別検証済み。マージ・tboard 再起動・ライブ往復確認はユーザー判断。
+
 ## 完了
-全フェーズ(0〜7)完了。スコープ外のキーボードナビ(Cmd+1..9 / Cmd+K)は未実装。
+全フェーズ(0〜7)完了 + フェーズ8(別 worktree・未マージ)。スコープ外のキーボードナビ(Cmd+1..9 / Cmd+K)は未実装。
 
 ## 重要な注意点(次セッションへ)
 
