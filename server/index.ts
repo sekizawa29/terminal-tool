@@ -1259,6 +1259,38 @@ app.get('/api/terminals/:sessionId/rendered', (req, res) => {
   });
 });
 
+// Case-insensitive substring search across every live session's rendered
+// buffer. Capped at 20 matches per session and 200 overall.
+app.get('/api/search', (req, res) => {
+  const q = ((req.query.q as string) || '').trim();
+  if (!q) {
+    res.json({ results: [] });
+    return;
+  }
+  const needle = q.toLowerCase();
+  const results: { sessionId: string; name: string; lineText: string; lineIndex: number }[] = [];
+  let total = 0;
+  for (const st of ptyManager.getAllStatuses()) {
+    if (total >= 200) break;
+    const buffer = ptyManager.getRenderedBuffer(st.sessionId, undefined, true);
+    if (!buffer) continue;
+    const lines = buffer.split('\n');
+    let perSession = 0;
+    for (let i = 0; i < lines.length && perSession < 20 && total < 200; i++) {
+      if (!lines[i].toLowerCase().includes(needle)) continue;
+      results.push({
+        sessionId: st.sessionId,
+        name: st.name || st.cwdShort || st.sessionId,
+        lineText: lines[i].trim().slice(0, 200),
+        lineIndex: i,
+      });
+      perSession++;
+      total++;
+    }
+  }
+  res.json({ results });
+});
+
 // Kill a specific terminal (supports short ID / name resolution)
 app.delete('/api/terminals/:sessionId', (req, res) => {
   const resolved = resolveSession(req.params.sessionId);
