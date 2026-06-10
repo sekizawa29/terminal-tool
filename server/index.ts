@@ -6,7 +6,7 @@ import { resolve, dirname, join, extname, basename, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync, realpathSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { PtyManager, type NotificationEntry } from './pty-manager.js';
+import { PtyManager, DispatchOverflowError, type NotificationEntry } from './pty-manager.js';
 import { captureRegionPng, canCaptureScreen, wslPathToWindows, ScreenshotError } from './screenshot.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -711,9 +711,20 @@ app.post('/api/tasks/send', (req, res) => {
   // rather than echo-grep on the rendered buffer.
   const taskPrefix = taskId ? `[tboard task_id=${taskId}] ` : '';
   const paste = `${taskPrefix}${message}`;
-  ptyManager.pasteAndSubmit(resolved, paste, { retryNeedle: paste });
-
-  res.json({ ok: true, sessionId: resolved, message, taskId });
+  try {
+    const delivery = ptyManager.dispatchToAgent(resolved, paste, {
+      retryNeedle: paste,
+      kind: 'task',
+      id: taskId,
+    });
+    res.json({ ok: true, sessionId: resolved, message, taskId, delivery });
+  } catch (err) {
+    if (err instanceof DispatchOverflowError) {
+      res.status(429).json({ error: 'target is busy and its dispatch queue is full; retry later' });
+      return;
+    }
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ── IPC: Agent-to-agent communication (deprecated, kept for `tt ipc`) ─
@@ -746,9 +757,20 @@ app.post('/api/ipc/send', (req, res) => {
   const turnId = ptyManager.createPendingTurn(resolved, message, sourceSessionId || undefined);
   const marker = `[ipc:${turnId.slice(0, 8)}]`;
   const markedMessage = `${message} ${marker}`;
-  ptyManager.pasteAndSubmit(resolved, markedMessage, { retryNeedle: markedMessage });
-
-  res.json({ ok: true, sessionId: resolved, message, turnId, marker });
+  try {
+    const delivery = ptyManager.dispatchToAgent(resolved, markedMessage, {
+      retryNeedle: markedMessage,
+      kind: 'ipc',
+      id: turnId,
+    });
+    res.json({ ok: true, sessionId: resolved, message, turnId, marker, delivery });
+  } catch (err) {
+    if (err instanceof DispatchOverflowError) {
+      res.status(429).json({ error: 'target is busy and its dispatch queue is full; retry later' });
+      return;
+    }
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // Poll for IPC response — extracts rendered response by matching the sent message's echo

@@ -214,6 +214,25 @@ export interface NotificationEntry {
 const NOTIFICATION_MAX_ENTRIES = 50;
 const NOTIFICATION_MAX_MSG_BYTES = 4 * 1024; // 4KB per message
 
+// A task/IPC message waiting for the target agent to reach a safe prompt before
+// it is pasted in. Decouples dispatch from the recipient's busy state so a send
+// to a generating agent is queued instead of corrupting its input line.
+interface PendingDispatch {
+  id: string;            // taskId / turnId, or a random id
+  paste: string;         // full text handed to pasteAndSubmit
+  retryNeedle: string;
+  enqueuedAt: number;
+  kind: 'task' | 'ipc';
+}
+const DISPATCH_OUTBOX_LIMIT = 20; // per session; over this, dispatch is rejected (429)
+
+export class DispatchOverflowError extends Error {
+  constructor(sessionId: string) {
+    super(`dispatch outbox full for session ${sessionId}`);
+    this.name = 'DispatchOverflowError';
+  }
+}
+
 export interface TaskEntry {
   taskId: string;
   sourceSessionId: string;  // MAIN who delegated
@@ -318,6 +337,7 @@ export class PtyManager {
   private recentDisconnects = new Map<string, { sessionId: string; name?: string; disconnectedAt: number }[]>();
   private ipcHistory = new Map<string, IpcHistoryEntry[]>();
   private notificationQueues = new Map<string, NotificationEntry[]>();
+  private dispatchOutbox = new Map<string, PendingDispatch[]>(); // sessionId → FIFO of pending pastes
   private notificationSeq = 0; // global monotonic counter
   private notificationReadSeq = new Map<string, number>(); // sessionId → last read seq
   private taskRegistry = new Map<string, TaskEntry[]>(); // sourceSessionId (MAIN) → tasks
@@ -1373,6 +1393,13 @@ export class PtyManager {
     this.ipcHistory.delete(sessionId);
     this.notificationQueues.delete(sessionId);
     this.notificationReadSeq.delete(sessionId);
+    this.dispatchOutbox.delete(sessionId);
+    // Clear any pending flush/retry timers so a dead session leaves no timers
+    // firing against it (previously these leaked on kill / killAll).
+    const flushTimer = this.notificationFlushTimers.get(sessionId);
+    if (flushTimer) { clearTimeout(flushTimer); this.notificationFlushTimers.delete(sessionId); }
+    const retryTimer = this.notificationRetryTimers.get(sessionId);
+    if (retryTimer) { clearTimeout(retryTimer); this.notificationRetryTimers.delete(sessionId); }
 
     // The dying session's OWN taskRegistry slot (as a MAIN) holds tasks it
     // dispatched. Keep terminal entries so that a later MAIN in the same
@@ -1549,36 +1576,81 @@ export class PtyManager {
     return session.lastOutputAt > 0 && outputAge > 30_000;
   }
 
-  /** Flush queued notifications to PTY if session is idle. */
+  /**
+   * Deliver a task/IPC paste to an agent, respecting its busy state. If the
+   * target is at a safe prompt it is pasted immediately ('delivered'); otherwise
+   * it is queued in the outbox and flushed when the agent next goes idle
+   * ('queued'). Throws DispatchOverflowError when the outbox is full.
+   */
+  dispatchToAgent(
+    sessionId: string,
+    paste: string,
+    opts: { retryNeedle: string; kind: 'task' | 'ipc'; id?: string }
+  ): 'delivered' | 'queued' {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`dispatchToAgent: unknown session ${sessionId}`);
+
+    if (this.canAutoInject(sessionId)) {
+      this.pasteAndSubmit(sessionId, paste, { retryNeedle: opts.retryNeedle });
+      return 'delivered';
+    }
+
+    const outbox = this.dispatchOutbox.get(sessionId) ?? [];
+    if (outbox.length >= DISPATCH_OUTBOX_LIMIT) {
+      throw new DispatchOverflowError(sessionId);
+    }
+    outbox.push({
+      id: opts.id ?? randomBytes(8).toString('hex'),
+      paste,
+      retryNeedle: opts.retryNeedle,
+      enqueuedAt: Date.now(),
+      kind: opts.kind,
+    });
+    this.dispatchOutbox.set(sessionId, outbox);
+    // Fallback timer in case no further PTY output arrives to trigger a flush.
+    this.scheduleNotificationRetry(sessionId);
+    return 'queued';
+  }
+
+  /** Flush the outbox (task/IPC) first, then queued notifications, to PTY when
+   *  the session is idle. One item per pass so messages never stack up. */
   tryFlushNotifications(sessionId: string): void {
-    const queue = this.notificationQueues.get(sessionId);
-    if (!queue) return;
-
-    const queued = queue.filter(n => n.status === 'queued');
-    if (queued.length === 0) return;
-
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Phase 4a: PTY auto-inject is a compatibility-mode UX path, not part of
-    // the core task protocol. It can be disabled via `TBOARD_AUTO_INJECT=0`
-    // (or `false`) — the notification queue still fills and is readable via
-    // the structured API / MCP tools, but nothing is pasted into MAIN's PTY.
-    // Default remains ON during the Phase 4a transition window; Phase 4b
-    // will flip the default.
-    //
-    // Backlog semantics when toggled at runtime: notifications remain in the
-    // `queued` state while disabled. If the flag is later re-enabled, any
-    // still-queued entries become eligible for paste again on the next flush
-    // trigger. If a callsite wants "disable means forget", it should either
-    // mark those entries read or clear the queue explicitly; Phase 4a does
-    // not opine on that to keep the behavior a pure gate.
-    if (!isAutoInjectEnabled()) return;
+    const outbox = this.dispatchOutbox.get(sessionId);
+    const hasOutbox = !!(outbox && outbox.length > 0);
+
+    const queue = this.notificationQueues.get(sessionId);
+    const queued = queue ? queue.filter(n => n.status === 'queued') : [];
+    // Notification auto-inject is a compatibility path gated by TBOARD_AUTO_INJECT.
+    // Task/IPC dispatch (the outbox) is the core protocol and is never gated.
+    const hasNotif = queued.length > 0 && isAutoInjectEnabled();
+
+    if (!hasOutbox && !hasNotif) return;
 
     if (!this.canAutoInject(sessionId)) {
       this.scheduleNotificationRetry(sessionId);
       return;
     }
+
+    // Outbox takes priority; flush exactly one entry, then reschedule if more
+    // (outbox or notifications) remain so they go out one at a time.
+    if (hasOutbox) {
+      const item = outbox!.shift()!;
+      if (outbox!.length === 0) this.dispatchOutbox.delete(sessionId);
+      this.pasteAndSubmit(sessionId, item.paste, { retryNeedle: item.retryNeedle });
+      if (outbox!.length > 0 || queued.length > 0) {
+        this.scheduleNotificationRetry(sessionId);
+      }
+      return;
+    }
+
+    // Reaching here means hasNotif (which already requires isAutoInjectEnabled())
+    // and canAutoInject both held above — flush the notification summary.
+    // Phase 4a note: notification auto-inject is a compatibility-mode UX path
+    // gated by TBOARD_AUTO_INJECT; when disabled the queue still fills and is
+    // readable via the structured API / MCP tools, nothing is pasted.
 
     // Build rich notification summary — include actual message content so MAIN
     // can understand the result without running `tt notifications`
@@ -1612,9 +1684,12 @@ export class PtyManager {
    */
   private notificationFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   scheduleNotificationFlush(sessionId: string): void {
-    // Only bother if there are queued notifications
+    // Only bother if there is something pending to inject (outbox or notifications).
     const queue = this.notificationQueues.get(sessionId);
-    if (!queue || !queue.some(n => n.status === 'queued')) return;
+    const outbox = this.dispatchOutbox.get(sessionId);
+    const hasQueued = !!(queue && queue.some(n => n.status === 'queued'));
+    const hasOutbox = !!(outbox && outbox.length > 0);
+    if (!hasQueued && !hasOutbox) return;
 
     // Debounce: wait 3s after last output before attempting flush
     const existing = this.notificationFlushTimers.get(sessionId);
