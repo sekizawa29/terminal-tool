@@ -1,8 +1,12 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TerminalWindow } from '../types.js';
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 3.0;
+
+const CANVAS_KEY = 'terminal-board-canvas';
+const CANVAS_VERSION = 1;
+const DEFAULT_TRANSFORM: CanvasTransform = { offsetX: 0, offsetY: 0, scale: 1 };
 
 export interface CanvasTransform {
   offsetX: number;
@@ -10,12 +14,43 @@ export interface CanvasTransform {
   scale: number;
 }
 
+// Restore the persisted pan/zoom, clamping scale through the same bounds the
+// live controls use. Any malformed/absent value falls back to the origin at 100%.
+function loadTransform(): CanvasTransform {
+  try {
+    const raw = localStorage.getItem(CANVAS_KEY);
+    if (!raw) return DEFAULT_TRANSFORM;
+    const p = JSON.parse(raw);
+    if (p && typeof p === 'object' && p.version === CANVAS_VERSION
+      && typeof p.offsetX === 'number' && typeof p.offsetY === 'number' && typeof p.scale === 'number') {
+      return {
+        offsetX: p.offsetX,
+        offsetY: p.offsetY,
+        scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, p.scale)),
+      };
+    }
+  } catch {
+    // corrupted
+  }
+  return DEFAULT_TRANSFORM;
+}
+
 export function useCanvas() {
-  const [transform, setTransform] = useState<CanvasTransform>({
-    offsetX: 0,
-    offsetY: 0,
-    scale: 1,
-  });
+  const [transform, setTransform] = useState<CanvasTransform>(loadTransform);
+
+  // Persist pan/zoom 500ms after the last change so a burst of pan/zoom events
+  // collapses into a single write. (Phase 4.4 will move transform to a ref; this
+  // "save on change, debounced" shape ports directly to the subscribe model.)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(CANVAS_KEY, JSON.stringify({ version: CANVAS_VERSION, ...transform }));
+      } catch {
+        // quota exceeded
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [transform]);
 
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
