@@ -179,6 +179,11 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
     if (!isBrowser && !isMemo && !tw.dead) {
       apiFetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
+    // A memo is bound to its window — drop the server record on explicit close
+    // (unmount on reload must NOT delete it).
+    if (isMemo && tw.sessionId) {
+      apiFetch(`/api/memos/${encodeURIComponent(tw.sessionId)}`, { method: 'DELETE' }).catch(() => {});
+    }
     removeTerminal(tw.id);
     saveLayout();
   }, [tw.id, tw.sessionId, tw.dead, isBrowser, isMemo, removeTerminal, saveLayout]);

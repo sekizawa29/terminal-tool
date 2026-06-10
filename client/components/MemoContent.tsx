@@ -1,5 +1,6 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
+import { apiFetch } from '../api.js';
 
 interface MemoContentProps {
   windowId: string;
@@ -7,10 +8,12 @@ interface MemoContentProps {
 }
 
 export default function MemoContent({ windowId, isActive }: MemoContentProps) {
-  const text = useTerminalStore((s) => s.terminals.get(windowId)?.memoText ?? '');
-  const updateTerminal = useTerminalStore((s) => s.updateTerminal);
-  const saveLayout = useTerminalStore((s) => s.saveLayout);
+  // The memo's server key is the window's stable pseudo-sessionId.
+  const memoId = useTerminalStore((s) => s.terminals.get(windowId)?.sessionId ?? '');
+  const title = useTerminalStore((s) => s.terminals.get(windowId)?.title ?? 'Memo');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [text, setText] = useState('');
+  const [hydrated, setHydrated] = useState(false);
 
   // Auto-focus on creation
   useEffect(() => {
@@ -19,10 +22,56 @@ export default function MemoContent({ windowId, isActive }: MemoContentProps) {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Hydrate from the server (source of truth). One-time migration: if the server
+  // has no record but the restored layout carried local text, push it up.
+  useEffect(() => {
+    if (!memoId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch('/api/memos');
+        const list = res.ok ? await res.json() : [];
+        if (cancelled) return;
+        const found = Array.isArray(list) ? list.find((m: { id: string }) => m.id === memoId) : null;
+        if (found) {
+          setText(found.text ?? '');
+        } else {
+          const local = useTerminalStore.getState().terminals.get(windowId)?.memoText ?? '';
+          setText(local);
+          if (local) {
+            apiFetch(`/api/memos/${encodeURIComponent(memoId)}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: local, title }),
+            }).catch(() => {});
+          }
+        }
+      } catch {
+        if (!cancelled) setText(useTerminalStore.getState().terminals.get(windowId)?.memoText ?? '');
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [memoId, windowId, title]);
+
+  // Persist edits 500ms after the last keystroke (replaces the old per-keystroke
+  // saveLayout()).
+  useEffect(() => {
+    if (!hydrated || !memoId) return;
+    const timer = setTimeout(() => {
+      apiFetch(`/api/memos/${encodeURIComponent(memoId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, title }),
+      }).catch(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [text, hydrated, memoId, title]);
+
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    updateTerminal(windowId, { memoText: e.target.value });
-    saveLayout();
-  }, [windowId, updateTerminal, saveLayout]);
+    setText(e.target.value);
+  }, []);
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text);

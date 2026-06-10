@@ -255,7 +255,8 @@ export default function App() {
 
     const tw: TerminalWindow = {
       id: crypto.randomUUID(),
-      sessionId: '',
+      // Stable pseudo-id used as the memo's server-side key (survives reloads).
+      sessionId: `memo-${crypto.randomUUID()}`,
       type: 'memo',
       memoText: '',
       x: centerX - width / 2,
@@ -383,7 +384,8 @@ export default function App() {
         if (layout.type === 'memo') {
           const tw: TerminalWindow = {
             id: crypto.randomUUID(),
-            sessionId: '',
+            // Preserve the stable memo id (fallback for pre-6.6 layouts).
+            sessionId: layout.sessionId || `memo-${crypto.randomUUID()}`,
             type: 'memo',
             memoText: layout.memoText ?? '',
             x: layout.x,

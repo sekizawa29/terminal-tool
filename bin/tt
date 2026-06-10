@@ -138,6 +138,8 @@ async function main() {
       return taskCommand(args);
     case 'link':
       return linkReconnect(args);
+    case 'memo':
+      return memoCommand(args);
     case 'mcp-stdio':
       return mcpStdioServer();
     default:
@@ -1826,6 +1828,66 @@ async function mcpStdioServer() {
     };
   }));
 
+  server.registerTool('tboard_memo_list', {
+    title: 'List board memos',
+    description: 'Return all memos on the board as [{ id, title, text, updatedAt }]. Memos are human-written scratch notes shared via the tboard memo windows.',
+    inputSchema: {},
+  }, async () => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/memos`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const memos = Array.isArray(parsed.data) ? parsed.data : [];
+    return {
+      content: [{ type: 'text', text: JSON.stringify(memos, null, 2) }],
+      structuredContent: { memos },
+    };
+  }));
+
+  server.registerTool('tboard_memo_read', {
+    title: 'Read a memo',
+    description: 'Return one memo by its id (exact) or by a case-insensitive title prefix.',
+    inputSchema: {
+      key: z.string().min(1).describe('Memo id, or a title prefix'),
+    },
+  }, async ({ key }) => runTool(async () => {
+    const res = await ttFetch(`${BASE}/api/memos`);
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const memos = Array.isArray(parsed.data) ? parsed.data : [];
+    const memo = memos.find((m) => m.id === key)
+      || memos.find((m) => (m.title || '').toLowerCase().startsWith(key.toLowerCase()));
+    if (!memo) throw new Error(`Memo not found: ${key}`);
+    return {
+      content: [{ type: 'text', text: memo.text || '' }],
+      structuredContent: { memo },
+    };
+  }));
+
+  server.registerTool('tboard_memo_write', {
+    title: 'Write (upsert) a memo',
+    description: 'Create or replace the text of the memo with the given id. Use tboard_memo_list first to find an existing id; writing a new id creates a new memo record.',
+    inputSchema: {
+      id: z.string().min(1),
+      text: z.string(),
+      title: z.string().optional(),
+    },
+  }, async ({ id, text, title }) => runTool(async () => {
+    const body = { text };
+    if (title !== undefined) body.title = title;
+    const res = await ttFetch(`${BASE}/api/memos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Tboard-Token': TOKEN },
+      body: JSON.stringify(body),
+    });
+    const parsed = await asJson(res);
+    if (!parsed.ok) throw new Error(parsed.error);
+    if (parsed.data && parsed.data.error) throw new Error(parsed.data.error);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(parsed.data, null, 2) }],
+      structuredContent: { memo: parsed.data },
+    };
+  }));
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -1867,6 +1929,92 @@ async function linkReconnect(args) {
   console.log(`Linked ${result.sessionId.slice(0, 8)} as "${asName}".`);
 }
 
+// ── Memos ─────────────────────────────────────────────────────────────
+function readStdin() {
+  return new Promise((resolve) => {
+    let data = '';
+    if (process.stdin.isTTY) { resolve(''); return; }
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data));
+  });
+}
+
+async function fetchMemos() {
+  const res = await ttFetch(`${BASE}/api/memos`);
+  if (!res.ok) {
+    console.error(`Failed to fetch memos (HTTP ${res.status})`);
+    process.exit(1);
+  }
+  return res.json();
+}
+
+function resolveMemo(memos, key) {
+  // Exact id, then case-insensitive title prefix.
+  return (
+    memos.find((m) => m.id === key) ||
+    memos.find((m) => (m.title || '').toLowerCase().startsWith(key.toLowerCase())) ||
+    null
+  );
+}
+
+async function memoList() {
+  const memos = await fetchMemos();
+  if (memos.length === 0) {
+    console.log('(no memos)');
+    return;
+  }
+  for (const m of memos) {
+    const preview = (m.text || '').replace(/\s+/g, ' ').slice(0, 60);
+    console.log(`${m.id}  ${m.title || '(untitled)'}  — ${preview}`);
+  }
+}
+
+async function memoRead(key) {
+  if (!key) {
+    console.error('Usage: tt memo read <id|title-prefix>');
+    process.exit(1);
+  }
+  const memos = await fetchMemos();
+  const memo = resolveMemo(memos, key);
+  if (!memo) {
+    console.error(`Memo not found: ${key}`);
+    process.exit(1);
+  }
+  process.stdout.write(memo.text || '');
+  if (memo.text && !memo.text.endsWith('\n')) process.stdout.write('\n');
+}
+
+async function memoWrite(id, rest) {
+  if (!id) {
+    console.error('Usage: tt memo write <id> [text]   (text omitted → read stdin)');
+    process.exit(1);
+  }
+  let text = rest && rest.length > 0 ? rest.join(' ') : await readStdin();
+  const res = await ttFetch(`${BASE}/api/memos/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    console.error(`Failed to write memo (HTTP ${res.status})`);
+    process.exit(1);
+  }
+  console.log(`Wrote memo ${id} (${text.length} chars)`);
+}
+
+async function memoCommand(args) {
+  const sub = args[0];
+  switch (sub) {
+    case 'list': return memoList();
+    case 'read': return memoRead(args[1]);
+    case 'write': return memoWrite(args[1], args.slice(2));
+    default:
+      console.error('Usage: tt memo <list|read <id|title>|write <id> [text]>');
+      process.exit(1);
+  }
+}
+
 function printHelp() {
   console.log(`tt - Terminal Board CLI
 
@@ -1903,6 +2051,9 @@ Usage:
   tt task files <task_id>            List files in the task's output directory
   tt task ls                         List tasks where SELF is MAIN (alias of "tt tasks")
   tt link <id|name> --as <name>     Reconnect a new session as a disconnected peer
+  tt memo list                       List board memos (id, title, preview)
+  tt memo read <id|title>            Print a memo's text (title prefix match)
+  tt memo write <id> [text]          Upsert a memo (text omitted → read stdin)
   tt status [id|name]                Show terminal status as JSON
   tt self                            Show this terminal's session ID
   tt mcp-stdio                       Run an MCP stdio server exposing the task API

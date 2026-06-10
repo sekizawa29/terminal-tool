@@ -149,6 +149,46 @@ function saveDirsState(): void {
 
 dirsState = loadDirsState();
 
+// ── Memo persistence (same state dir as dirs.json) ────────────────────
+// Memos are agent-visible scratch notes, keyed by the memo window's pseudo id.
+const MEMOS_FILE = join(DIRS_STATE_DIR, 'memos.json');
+
+interface Memo {
+  id: string;
+  title: string;
+  text: string;
+  updatedAt: number;
+}
+
+function loadMemos(): Memo[] {
+  try {
+    const parsed = JSON.parse(readFileSync(MEMOS_FILE, 'utf-8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((m: unknown): m is Memo =>
+        !!m && typeof m === 'object' && typeof (m as Memo).id === 'string')
+      .map((m: Memo) => ({
+        id: m.id,
+        title: typeof m.title === 'string' ? m.title : '',
+        text: typeof m.text === 'string' ? m.text : '',
+        updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : 0,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+let memos: Memo[] = loadMemos();
+
+function saveMemos(): void {
+  try {
+    mkdirSync(DIRS_STATE_DIR, { recursive: true });
+    writeFileSync(MEMOS_FILE, JSON.stringify(memos, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn(`[tboard] Failed to persist memos: ${err}`);
+  }
+}
+
 // Single server token, generated once at startup. Browser clients fetch it from
 // GET /api/token and send it back as the x-tboard-token header on every /api call
 // (and as ?token= for raw/download URLs that cannot set headers).
@@ -254,6 +294,45 @@ app.delete('/api/dirs/pinned', (req, res) => {
     saveDirsState();
   }
   res.json(dirsState);
+});
+
+// ── Memos ─────────────────────────────────────────────────────────────
+app.get('/api/memos', (_req, res) => {
+  res.json(memos);
+});
+
+app.put('/api/memos/:id', (req, res) => {
+  const id = req.params.id;
+  if (!id) {
+    res.status(400).json({ error: 'id required' });
+    return;
+  }
+  const { text, title } = req.body || {};
+  if (typeof text !== 'string') {
+    res.status(400).json({ error: 'text must be a string' });
+    return;
+  }
+  const updatedAt = Date.now();
+  const existing = memos.find((m) => m.id === id);
+  if (existing) {
+    existing.text = text;
+    if (typeof title === 'string') existing.title = title;
+    existing.updatedAt = updatedAt;
+  } else {
+    memos.push({ id, title: typeof title === 'string' ? title : '', text, updatedAt });
+  }
+  saveMemos();
+  res.json(memos.find((m) => m.id === id));
+});
+
+app.delete('/api/memos/:id', (req, res) => {
+  const id = req.params.id;
+  const next = memos.filter((m) => m.id !== id);
+  if (next.length !== memos.length) {
+    memos = next;
+    saveMemos();
+  }
+  res.json({ ok: true });
 });
 
 // Create terminal
