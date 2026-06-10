@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { resolve, dirname, join, extname, basename, sep } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, renameSync, unlinkSync, rmSync, realpathSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { PtyManager, DispatchOverflowError, type NotificationEntry } from './pty-manager.js';
 import { captureRegionPng, canCaptureScreen, wslPathToWindows, ScreenshotError } from './screenshot.js';
@@ -1508,6 +1508,70 @@ app.post('/api/files/upload', (req, res) => {
     const buf = Buffer.from(data, 'base64');
     writeFileSync(destinationPath, buf);
     res.json({ ok: true, ...getFileInfo(destinationPath) });
+  } catch (err) {
+    sendFileError(res, err);
+  }
+});
+
+// Create a new directory.
+app.post('/api/files/mkdir', (req, res) => {
+  const { path: dirPath } = req.body || {};
+  if (typeof dirPath !== 'string') {
+    res.status(400).json({ error: 'path must be a string' });
+    return;
+  }
+  try {
+    const resolved = assertAllowedPath(dirPath);
+    if (existsSync(resolved)) {
+      res.status(409).json({ error: 'Target already exists' });
+      return;
+    }
+    mkdirSync(resolved);
+    res.json({ ok: true, path: resolved, name: basename(resolved) });
+  } catch (err) {
+    sendFileError(res, err);
+  }
+});
+
+// Create a new empty file (fails if it already exists).
+app.post('/api/files/create', (req, res) => {
+  const { path: filePath } = req.body || {};
+  if (typeof filePath !== 'string') {
+    res.status(400).json({ error: 'path must be a string' });
+    return;
+  }
+  try {
+    const resolved = assertAllowedPath(filePath);
+    if (existsSync(resolved)) {
+      res.status(409).json({ error: 'Target already exists' });
+      return;
+    }
+    writeFileSync(resolved, '', { flag: 'wx' });
+    res.json({ ok: true, ...getFileInfo(resolved) });
+  } catch (err) {
+    sendFileError(res, err);
+  }
+});
+
+// Delete a file or (with recursive:true) a directory.
+app.post('/api/files/delete', (req, res) => {
+  const { path: targetPath, recursive } = req.body || {};
+  if (typeof targetPath !== 'string') {
+    res.status(400).json({ error: 'path must be a string' });
+    return;
+  }
+  try {
+    const resolved = assertAllowedPath(targetPath);
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    if (statSync(resolved).isDirectory() && recursive !== true) {
+      res.status(400).json({ error: 'Directory delete requires recursive: true' });
+      return;
+    }
+    rmSync(resolved, { recursive: recursive === true, force: false });
+    res.json({ ok: true, path: resolved });
   } catch (err) {
     sendFileError(res, err);
   }
