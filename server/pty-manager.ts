@@ -183,8 +183,11 @@ export function elideMiddle(text: string, maxBytes: number): ElideResult {
 
   // Pathological single-line case: slice the one line on a UTF-8-safe boundary.
   if (lines.length === 1) {
-    const headBudget = Math.floor(maxBytes * 0.4);
-    const tailBudget = maxBytes - headBudget;
+    // Reserve budget for the marker line so the result stays within maxBytes.
+    const markerReserve = 96;
+    const budget = Math.max(0, maxBytes - markerReserve);
+    const headBudget = Math.floor(budget * 0.4);
+    const tailBudget = budget - headBudget;
     const buf = Buffer.from(text, 'utf-8');
     const head = utf8SliceSafe(buf, 0, headBudget);
     const tail = utf8SliceSafe(buf, buf.length - tailBudget, buf.length);

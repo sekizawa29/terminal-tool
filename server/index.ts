@@ -46,6 +46,7 @@ interface ReadStats { calls: number; bytesReturned: number; bytesElided: number 
 const readStatsSince = new Date().toISOString();
 const readStatsTotals = new Map<ReadApi, ReadStats>();
 const readStatsSessions = new Map<string, Map<ReadApi, ReadStats>>();
+const READ_STATS_MAX_SESSIONS = 500;
 
 function bumpStats(map: Map<ReadApi, ReadStats>, api: ReadApi, bytesReturned: number, bytesElided: number): void {
   let s = map.get(api);
@@ -65,7 +66,15 @@ function recordRead(api: ReadApi, sessionId: string | null, el: ElideResult): vo
     bumpStats(readStatsTotals, api, bytesReturned, el.omittedBytes);
     if (sessionId) {
       let sm = readStatsSessions.get(sessionId);
-      if (!sm) { sm = new Map(); readStatsSessions.set(sessionId, sm); }
+      if (!sm) {
+        // Bound memory: evict the oldest-inserted session entry (Map preserves insertion order).
+        if (readStatsSessions.size >= READ_STATS_MAX_SESSIONS) {
+          const oldest = readStatsSessions.keys().next().value;
+          if (oldest !== undefined) readStatsSessions.delete(oldest);
+        }
+        sm = new Map();
+        readStatsSessions.set(sessionId, sm);
+      }
       bumpStats(sm, api, bytesReturned, el.omittedBytes);
     }
   } catch { /* metrics are best-effort */ }

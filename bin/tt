@@ -309,7 +309,11 @@ async function readOutput(target, ...extraArgs) {
     if (arg === '--capture') { capture = true; continue; }
     const mbInline = String(arg).match(/^--max-bytes=(\d+)$/);
     if (mbInline) { maxBytesOpt = parseInt(mbInline[1]); continue; }
-    if (arg === '--max-bytes') { maxBytesOpt = parseInt(extraArgs[++i]); continue; }
+    if (arg === '--max-bytes') {
+      const v = parseInt(extraArgs[++i]);
+      if (isNaN(v) || v < 0) { console.error('Usage: --max-bytes <n> requires a non-negative number'); process.exit(1); }
+      maxBytesOpt = v; continue;
+    }
     const parsed = parseInt(arg);
     if (!isNaN(parsed)) { lines = parsed; continue; }
   }
@@ -1527,7 +1531,11 @@ async function taskReport(taskId, ...rest) {
     if (a === '--all') { maxBytes = 0; continue; }
     const inline = String(a).match(/^--max-bytes=(\d+)$/);
     if (inline) { maxBytes = parseInt(inline[1]); continue; }
-    if (a === '--max-bytes') { maxBytes = parseInt(rest[++i]); continue; }
+    if (a === '--max-bytes') {
+      const v = parseInt(rest[++i]);
+      if (isNaN(v) || v < 0) { console.error('Usage: --max-bytes <n> requires a non-negative number'); process.exit(1); }
+      maxBytes = v; continue;
+    }
   }
   const q = maxBytes === null ? '' : `?maxBytes=${maxBytes}`;
   const res = await ttFetch(`${BASE}/api/tasks/by-id/${encodeURIComponent(taskId)}/report${q}`);
