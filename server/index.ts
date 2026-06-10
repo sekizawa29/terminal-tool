@@ -1354,6 +1354,64 @@ app.get('/api/files/stat', (req, res) => {
   }
 });
 
+// Probe whether a remote URL permits being framed (X-Frame-Options /
+// CSP frame-ancestors). Used by the browser window to warn before embedding a
+// page that will render blank. SSRF guard: http/https only.
+app.get('/api/probe-frame', async (req, res) => {
+  const url = req.query.url as string;
+  if (!url) {
+    res.status(400).json({ error: 'url query param required' });
+    return;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    res.status(400).json({ error: 'invalid url' });
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    res.status(400).json({ error: 'only http/https allowed' });
+    return;
+  }
+
+  const frameableFromHeaders = (headers: Headers): boolean => {
+    const xfo = (headers.get('x-frame-options') || '').toLowerCase();
+    if (xfo.includes('deny') || xfo.includes('sameorigin')) return false;
+    const csp = headers.get('content-security-policy') || '';
+    const m = csp.match(/frame-ancestors([^;]*)/i);
+    if (m) {
+      const directive = m[1].toLowerCase();
+      if (directive.includes("'none'")) return false;
+      // Anything other than a wildcard is an allowlist we are unlikely to be on.
+      if (!directive.includes('*')) return false;
+    }
+    return true;
+  };
+
+  const probe = async (method: 'HEAD' | 'GET') => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      return await fetch(parsed.href, { method, redirect: 'follow', signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    let response: Response;
+    try {
+      response = await probe('HEAD');
+    } catch {
+      response = await probe('GET');
+    }
+    res.json({ frameable: frameableFromHeaders(response.headers), status: response.status });
+  } catch {
+    res.json({ frameable: false, status: 0 });
+  }
+});
+
 // Move a file or directory into another directory
 app.post('/api/files/move', (req, res) => {
   const { sourcePath, targetDir } = req.body || {};

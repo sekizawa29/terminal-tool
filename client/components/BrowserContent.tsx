@@ -1,9 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
 
-function isLocalUrl(url: string): boolean {
+// True when the URL points at this app's own origin. Framing ourselves would
+// give the inner page full same-origin access (localStorage, the file API), so
+// we refuse to embed it.
+function isSelfOrigin(url: string): boolean {
   try {
-    const u = new URL(url);
-    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '0.0.0.0';
+    return new URL(url, window.location.href).origin === window.location.origin;
   } catch {
     return false;
   }
@@ -182,19 +184,38 @@ export default function BrowserContent({ url, isActive, onUrlChange }: BrowserCo
 
       {/* iframe wrapper — overlay blocks pointer events when not focused */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <iframe
-          ref={iframeRef}
-          src={currentUrl}
-          onLoad={() => setLoading(false)}
-          {...(isLocalUrl(currentUrl) ? {} : { sandbox: 'allow-same-origin allow-scripts allow-popups allow-forms allow-modals' })}
-          style={{
-            width: '100%',
-            height: '100%',
-            border: 'none',
-            background: currentUrl === 'about:blank' ? '#1a1b26' : '#fff',
-          }}
-          title="Browser"
-        />
+        {isSelfOrigin(currentUrl) ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '100%',
+              height: '100%',
+              padding: 24,
+              textAlign: 'center',
+              color: 'var(--text-tertiary)',
+              fontSize: 12,
+              lineHeight: 1.6,
+            }}
+          >
+            このアプリ自身は埋め込めません
+          </div>
+        ) : (
+          <iframe
+            ref={iframeRef}
+            src={currentUrl}
+            onLoad={() => setLoading(false)}
+            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals"
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              background: currentUrl === 'about:blank' ? '#1a1b26' : '#fff',
+            }}
+            title="Browser"
+          />
+        )}
         {/* Transparent overlay — prevents iframe from stealing mouse events when not active */}
         {!isActive && (
           <div
