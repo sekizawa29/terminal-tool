@@ -1464,6 +1464,19 @@ ptyManager.initCaptures();
 ptyManager.sweepOldOutputDirs();
 ptyManager.startStaleTurnSweep();
 
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `\nERROR: port ${PORT} is already in use, so the terminal backend cannot start.\n` +
+      `The UI may still load, but opening terminals will fail.\n` +
+      `Free the port (e.g. \`lsof -nP -iTCP:${PORT} -sTCP:LISTEN\` then kill the PID) and retry.\n`
+    );
+  } else {
+    console.error('Server failed to start:', err);
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Terminal Board server listening on http://127.0.0.1:${PORT}`);
 });

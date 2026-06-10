@@ -384,6 +384,12 @@ export class PtyManager {
       TBOARD_SESSION: sessionId,
       TBOARD_TOKEN: sessionToken,
     };
+    // start.sh exports PORT / VITE_PORT for tboard's own frontend+backend. If we
+    // leak them into spawned shells, any dev server launched inside a tboard
+    // terminal (e.g. `next dev`, which honors $PORT) binds tboard's backend port
+    // and locks tboard out of opening terminals on the next restart. Strip them.
+    delete env.PORT;
+    delete env.VITE_PORT;
     if (this.binDir) {
       env.PATH = `${this.binDir}:${env.PATH || ''}`;
       env.TBOARD_BIN = this.binDir;
