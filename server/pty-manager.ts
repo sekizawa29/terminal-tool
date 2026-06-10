@@ -49,6 +49,65 @@ function normalizeInlineWhitespace(str: string): string {
  * Retained because `tt peer read` / `/api/terminals/:id/rendered` are still
  * useful for debug peeks and for agents not yet adapted to the task flow.
  */
+/**
+ * Token-efficiency helper (Phase 8.3). Collapse runs of >=4 consecutive
+ * "similar" lines (newline-streamed progress: `[12/500] compiling …`, download
+ * progress, repetitive test lines) into first + last + a marker. Pure; applied
+ * only on the clean read path, never on raw/`--buffer` reads.
+ *
+ * Conservative by design ("when in doubt, don't collapse"):
+ *  - Similarity = the line with digits / percentages / elapsed-times normalized
+ *    to `#` is byte-identical to its neighbours. (We intentionally do NOT use the
+ *    looser "first 32 chars match" rule — it risks crushing aligned tables/lists.)
+ *  - Lines beginning with `+` / `-` / `|` (diff hunks, table borders) are never
+ *    collapse-eligible, so diffs and `tt ls`-style tables survive intact.
+ *  - Blank lines break runs (blank-line compression happens separately, after).
+ */
+function normalizeForCollapse(line: string): string {
+  return line
+    // elapsed-time-ish tokens first (e.g. 12.3s, 1m30s) before bare-number rule
+    .replace(/\b\d+(?:\.\d+)?\s*(?:ms|s|m|h)\b/g, '#')
+    .replace(/\d+(?:\.\d+)?%/g, '#')
+    .replace(/\d+/g, '#');
+}
+
+export function collapseSimilarLines(lines: string[]): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    // Never collapse blanks, diff hunks, or table/border lines.
+    const first = trimmed.charAt(0);
+    if (!trimmed || first === '+' || first === '-' || first === '|') {
+      out.push(line);
+      i++;
+      continue;
+    }
+    const key = normalizeForCollapse(line);
+    // Extend the run while the normalized form matches and lines stay eligible.
+    let j = i + 1;
+    while (j < lines.length) {
+      const t = lines[j].trim();
+      const f = t.charAt(0);
+      if (!t || f === '+' || f === '-' || f === '|') break;
+      if (normalizeForCollapse(lines[j]) !== key) break;
+      j++;
+    }
+    const runLen = j - i;
+    if (runLen >= 4) {
+      const collapsed = runLen - 2;
+      out.push(lines[i]);
+      out.push(`… [tboard: ${collapsed} similar lines collapsed] …`);
+      out.push(lines[j - 1]);
+    } else {
+      for (let k = i; k < j; k++) out.push(lines[k]);
+    }
+    i = j;
+  }
+  return out;
+}
+
 function stripAgentNoise(text: string, profile: AgentProfile): string {
   const lines = text.split('\n');
   const cleaned: string[] = [];
@@ -77,7 +136,11 @@ function stripAgentNoise(text: string, profile: AgentProfile): string {
     cleaned.push(line);
   }
 
-  let result = cleaned.join('\n');
+  // 8.3: collapse runs of similar progress lines BEFORE blank-line compression,
+  // so the two passes don't interfere. Clean path only (this is stripAgentNoise).
+  const collapsed = collapseSimilarLines(cleaned);
+
+  let result = collapsed.join('\n');
   result = result.replace(/\n{3,}/g, '\n\n');
   return result.trim();
 }
