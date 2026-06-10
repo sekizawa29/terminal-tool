@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, withToken } from '../api.js';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 
 interface EditorContentProps {
   filePath: string;
@@ -199,7 +200,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
   }, []);
 
   const renderedHtml = isMarkdown && content && viewMode === 'rendered'
-    ? marked(content) as string
+    ? DOMPurify.sanitize(marked(content) as string)
     : null;
 
   return (
