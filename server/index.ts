@@ -1477,6 +1477,6 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`Terminal Board server listening on http://127.0.0.1:${PORT}`);
 });
