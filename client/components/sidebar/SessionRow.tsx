@@ -2,6 +2,12 @@ import { useState } from 'react';
 import { ClaudeIcon, CodexIcon, CopyIcon } from '../icons.js';
 import { RowAction } from './RowAction.js';
 
+const XIcon = () => (
+  <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+    <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
+
 const WindowsBadge = () => (
   <span
     style={{
@@ -27,14 +33,17 @@ interface SessionRowProps {
   pulsing: boolean;
   windows: boolean;
   title: string;
+  subtitle?: string;
   onClick: () => void;
   onClaude: () => void;
   onCodex: () => void;
   onCopy: () => void;
+  onClose: () => void;
 }
 
-// A single live session in the sessions list: status dot, title, and row
-// actions to spawn Claude/Codex or duplicate.
+// A single live session in the sessions list: status dot, title, an optional
+// cwd/process subtitle, and row actions to spawn Claude/Codex, duplicate, or
+// close.
 export function SessionRow({
   active,
   dotColor,
@@ -42,10 +51,12 @@ export function SessionRow({
   pulsing,
   windows,
   title,
+  subtitle,
   onClick,
   onClaude,
   onCodex,
   onCopy,
+  onClose,
 }: SessionRowProps) {
   const [hover, setHover] = useState(false);
   const bg = active
@@ -87,16 +98,39 @@ export function SessionRow({
         style={{
           flex: 1,
           minWidth: 0,
-          fontSize: 12,
-          fontWeight: 500,
-          color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-          letterSpacing: '-0.005em',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1,
           overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
         }}
       >
-        {title}
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 500,
+            color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+            letterSpacing: '-0.005em',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {title}
+        </span>
+        {subtitle && (
+          <span
+            style={{
+              fontSize: 10,
+              color: 'var(--text-ghost)',
+              fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {subtitle}
+          </span>
+        )}
       </span>
       <div
         style={{
@@ -111,6 +145,7 @@ export function SessionRow({
         <RowAction icon={<ClaudeIcon />} hint="Open Claude here" onClick={onClaude} />
         <RowAction icon={<CodexIcon />} hint="Open Codex here" onClick={onCodex} />
         <RowAction icon={<CopyIcon />} hint="Duplicate" onClick={onCopy} />
+        <RowAction icon={<XIcon />} hint="閉じる" onClick={onClose} activeColor="var(--accent-red)" />
       </div>
     </div>
   );

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { getDisplayName } from '../hooks/useSessionPolling.js';
+import { apiFetch } from '../api.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
 import { pinDir, unpinDir } from '../api/dirsApi.js';
+
+const SIDEBAR_PINNED_KEY = 'terminal-board-sidebar-pinned';
 import {
   PowerShellIcon,
   TerminalIcon,
@@ -158,15 +161,26 @@ export default function Sidebar({
   const statuses = useTerminalStore((s) => s.sessionStatuses);
   const bringToFront = useTerminalStore((s) => s.bringToFront);
   const setActive = useTerminalStore((s) => s.setActive);
+  const removeTerminal = useTerminalStore((s) => s.removeTerminal);
   const dirsState = useTerminalStore((s) => s.dirsState);
   const setDirsState = useTerminalStore((s) => s.setDirsState);
   const [expanded, setExpanded] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [starMenuOpen, setStarMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_PINNED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const starWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Panel is open while hovered or pinned-open.
+  const isOpen = hovered || pinned;
 
   useEffect(() => {
     return () => {
@@ -198,10 +212,37 @@ export default function Sidebar({
     if (collapseTimer.current) clearTimeout(collapseTimer.current);
     collapseTimer.current = setTimeout(() => {
       if (starMenuOpen) return;
+      if (pinned) return; // stay open while pinned
       setHovered(false);
       setAddMenuOpen(false);
     }, 80);
   };
+
+  const togglePinned = () => {
+    setPinned((p) => {
+      const next = !p;
+      try {
+        localStorage.setItem(SIDEBAR_PINNED_KEY, next ? '1' : '0');
+      } catch { /* storage unavailable */ }
+      if (next) setHovered(true);
+      return next;
+    });
+  };
+
+  const handleCloseSession = useCallback((id: string) => {
+    const tw = useTerminalStore.getState().terminals.get(id);
+    if (!tw) return;
+    const dirty = useTerminalStore.getState().dirtyWindows.has(id);
+    const message = dirty
+      ? '未保存の変更があります。閉じますか?'
+      : 'このセッションを終了しますか?';
+    if (!window.confirm(message)) return;
+    const isNonTerminal = tw.type === 'browser' || tw.type === 'memo';
+    if (!isNonTerminal) {
+      apiFetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    removeTerminal(id);
+  }, [removeTerminal]);
 
   const handleTogglePin = useCallback(async (cwd: string) => {
     const isPinned = useTerminalStore.getState().dirsState.pinned.includes(cwd);
@@ -244,7 +285,7 @@ export default function Sidebar({
 
   const collapsedWidth = 42;
   const expandedWidth = 348;
-  const contentTransition = hovered
+  const contentTransition = isOpen
     ? `opacity ${Math.round(motionMs * 0.55)}ms ${ease} ${Math.round(motionMs * 0.4)}ms, transform ${Math.round(motionMs * 0.55)}ms ${ease} ${Math.round(motionMs * 0.4)}ms`
     : `opacity ${Math.round(motionMs * 0.35)}ms ${ease} 0ms, transform ${Math.round(motionMs * 0.45)}ms ${ease} 0ms`;
 
@@ -267,9 +308,9 @@ export default function Sidebar({
           border: '1px solid rgba(122, 162, 247, 0.18)',
           borderRadius: 12,
           boxShadow: panelShadow,
-          width: hovered ? expandedWidth : collapsedWidth,
-          overflow: hovered ? 'visible' : 'hidden',
-          transition: `width ${motionMs}ms ${ease}, overflow 0s linear ${hovered ? motionMs : 0}ms`,
+          width: isOpen ? expandedWidth : collapsedWidth,
+          overflow: isOpen ? 'visible' : 'hidden',
+          transition: `width ${motionMs}ms ${ease}, overflow 0s linear ${isOpen ? motionMs : 0}ms`,
           willChange: 'width',
         }}
       >
@@ -286,9 +327,9 @@ export default function Sidebar({
           {/* Always-visible logo icon */}
           <button
             type="button"
-            onClick={handleWrapperEnter}
-            aria-label="tboardメニューを開く"
-            title="tboard"
+            onClick={togglePinned}
+            aria-label={pinned ? 'サイドバーのピン留めを解除' : 'サイドバーをピン留め'}
+            title={pinned ? 'ピン留めを解除' : 'ピン留め'}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -298,8 +339,9 @@ export default function Sidebar({
               background: 'transparent',
               border: 'none',
               padding: 0,
-              cursor: hovered ? 'default' : 'pointer',
+              cursor: 'pointer',
               flexShrink: 0,
+              opacity: pinned ? 1 : 0.85,
             }}
           >
             <LogoMark />
@@ -312,10 +354,10 @@ export default function Sidebar({
               alignItems: 'center',
               gap: 2,
               marginLeft: 7,
-              opacity: hovered ? 1 : 0,
-              transform: hovered ? 'translateX(0)' : 'translateX(-6px)',
+              opacity: isOpen ? 1 : 0,
+              transform: isOpen ? 'translateX(0)' : 'translateX(-6px)',
               transition: contentTransition,
-              pointerEvents: hovered ? 'auto' : 'none',
+              pointerEvents: isOpen ? 'auto' : 'none',
               whiteSpace: 'nowrap',
             }}
           >
@@ -547,7 +589,7 @@ export default function Sidebar({
         </div>
 
         {/* Session list */}
-        {hovered && expanded && (
+        {isOpen && expanded && (
           <div
             style={{
               position: 'relative',
@@ -591,6 +633,10 @@ export default function Sidebar({
 
               const isPulsing = !isNonTerminal && (processing || (agent && running));
 
+              const subtitle = status
+                ? [status.cwdShort, status.foregroundProcess].filter(Boolean).join(' · ')
+                : undefined;
+
               return (
                 <SessionRow
                   key={tw.id}
@@ -600,10 +646,12 @@ export default function Sidebar({
                   pulsing={isPulsing}
                   windows={isWindows}
                   title={displayName}
+                  subtitle={subtitle}
                   onClick={() => handleClick(tw.id)}
                   onClaude={() => onClaudeTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
                   onCodex={() => onCodexTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
                   onCopy={() => onDuplicateTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
+                  onClose={() => handleCloseSession(tw.id)}
                 />
               );
             })}
