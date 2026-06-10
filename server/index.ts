@@ -437,9 +437,19 @@ const linkPairKey = (a: string, b: string) => [a, b].sort().join('|');
 
 // Register a link (bidirectional)
 app.post('/api/links', (req, res) => {
-  const { sourceId, targetId } = req.body || {};
-  if (!sourceId || !targetId) {
+  const { sourceId: rawSourceId, targetId: rawTargetId } = req.body || {};
+  if (!rawSourceId || !rawTargetId) {
     res.status(400).json({ error: 'sourceId and targetId are required' });
+    return;
+  }
+  // Resolve to canonical session IDs (accepts full ID, short prefix, or name) so
+  // this endpoint uses the same identity rules as every other route — otherwise
+  // linkPairKey / arePeers / addLink could key off a name while peers were keyed
+  // off the full ID.
+  const sourceId = resolveSession(rawSourceId);
+  const targetId = resolveSession(rawTargetId);
+  if (!sourceId || !targetId) {
+    res.status(404).json({ error: 'session not found' });
     return;
   }
   // Detect a reconnection: either the server still has these two registered as
