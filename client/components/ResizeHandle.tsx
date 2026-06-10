@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface ResizeHandleProps {
   onResize: (dx: number, dy: number) => void;
@@ -10,8 +10,12 @@ interface ResizeHandleProps {
 export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, getScale }: ResizeHandleProps) {
   const dragging = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
+  const cleanupRef = useRef<(() => void) | null>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Detach in-flight resize listeners if this handle unmounts mid-resize.
+  useEffect(() => () => { cleanupRef.current?.(); }, []);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -36,9 +40,14 @@ export default function ResizeHandle({ onResize, onResizeStart, onResizeEnd, get
         setIsDragging(false);
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+        cleanupRef.current = null;
         onResizeEnd();
       };
 
+      cleanupRef.current = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      };
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },

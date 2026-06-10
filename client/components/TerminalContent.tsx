@@ -331,15 +331,20 @@ export default function TerminalContent({
       }
     });
 
-    // ResizeObserver for container
+    // ResizeObserver for container — trailing-debounced so a manual drag-resize
+    // (a burst of size changes) refits once at the end instead of sending a
+    // SIGWINCH/redraw storm to the TUI on every mousemove.
+    let fitTimer: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
-      doFit();
+      if (fitTimer) clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => { fitTimer = null; doFit(); }, 100);
     });
     resizeObserver.observe(container);
 
     return () => {
       unmounted = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (fitTimer) clearTimeout(fitTimer);
       container.removeEventListener('contextmenu', onContextMenu);
       container.removeEventListener('paste', onPaste);
       resizeObserver.disconnect();

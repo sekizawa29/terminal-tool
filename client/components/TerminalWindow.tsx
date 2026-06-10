@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import TerminalContent from './TerminalContent.js';
 import BrowserContent from './BrowserContent.js';
 import ExplorerContent from './ExplorerContent.js';
@@ -63,6 +63,9 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
 
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  // Detach any in-flight drag listeners if this window unmounts mid-drag.
+  useEffect(() => () => { dragCleanupRef.current?.(); }, []);
   const [isHovered, setIsHovered] = useState(false);
   const [closeHovered, setCloseHovered] = useState(false);
   const [connectorHovered, setConnectorHovered] = useState(false);
@@ -116,9 +119,16 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
         dragging.current = false;
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+        dragCleanupRef.current = null;
         saveLayout();
       };
 
+      // Remember how to detach these, so unmounting mid-drag (e.g. the pty exits
+      // while dragging) doesn't leave page-lifetime listeners behind.
+      dragCleanupRef.current = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      };
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     },
