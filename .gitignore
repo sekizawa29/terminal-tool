@@ -13,4 +13,9 @@ dist/
 # Ad-hoc screenshots dropped at repo root
 /Monosnap*.png
 /スクリーンショット*.png
+/screenshot-*.png
 /--selector
+
+# macOS noise
+.DS_Store
+Icon?
