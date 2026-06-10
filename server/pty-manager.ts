@@ -428,7 +428,13 @@ export class PtyManager {
       // Always append to rolling buffer
       session.buffer += data;
       if (session.buffer.length > SCROLLBACK_BUFFER_LIMIT) {
-        session.buffer = session.buffer.slice(-SCROLLBACK_BUFFER_LIMIT);
+        // Trim to the limit, then advance to the next line start so the kept
+        // prefix never begins mid-escape-sequence or mid-surrogate-pair (which
+        // would garble the reconnect replay). Falls back to the raw slice if the
+        // window has no newline.
+        const sliced = session.buffer.slice(-SCROLLBACK_BUFFER_LIMIT);
+        const nl = sliced.indexOf('\n');
+        session.buffer = nl >= 0 ? sliced.slice(nl + 1) : sliced;
       }
 
       // Feed into headless terminal for proper rendering
@@ -1767,7 +1773,9 @@ export class PtyManager {
   markNotificationsRead(sessionId: string): void {
     const all = this.notificationQueues.get(sessionId) || [];
     if (all.length > 0) {
-      const maxSeq = Math.max(...all.map(n => n.seq));
+      // reduce instead of Math.max(...spread) so this never risks a call-stack
+      // overflow if the queue cap is ever raised.
+      const maxSeq = all.reduce((m, n) => (n.seq > m ? n.seq : m), 0);
       this.notificationReadSeq.set(sessionId, maxSeq);
     }
   }
