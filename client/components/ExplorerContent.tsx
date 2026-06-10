@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch, withToken, readApiPayload, getApiError } from '../api.js';
 import type { FileEntry } from '../types.js';
-
-interface TreeNode {
-  entry: FileEntry;
-  children: TreeNode[] | null;
-  expanded: boolean;
-  depth: number;
-}
+import {
+  type TreeNode,
+  getParentPath,
+  createTreeNodes,
+  collectExpandedPaths,
+  flattenTree,
+  updateChildren,
+} from '../utils/treeUtils.js';
 
 interface ExplorerContentProps {
   rootPath: string;
@@ -63,13 +64,6 @@ const FILE_ICONS: Record<string, { icon: string; color: string }> = {
 
 function getFileIcon(ext: string): { icon: string; color: string } {
   return FILE_ICONS[ext] || { icon: '·', color: 'var(--text-ghost)' };
-}
-
-function getParentPath(path: string): string {
-  const normalized = path.replace(/\/+$/, '');
-  const idx = normalized.lastIndexOf('/');
-  if (idx <= 0) return '/';
-  return normalized.slice(0, idx);
 }
 
 function getBackgroundDropTarget(currentPath: string, selectedPath: string | null, nodes: TreeNode[]): string {
@@ -176,30 +170,6 @@ async function fetchDirectory(path: string, showHidden: boolean): Promise<FetchR
   return { files: data.files, resolvedPath: data.path };
 }
 
-function createTreeNodes(files: FileEntry[], depth: number): TreeNode[] {
-  return files.map((file) => ({
-    entry: file,
-    children: file.isDirectory ? null : [],
-    expanded: false,
-    depth,
-  }));
-}
-
-function collectExpandedPaths(nodes: TreeNode[]): string[] {
-  const expanded: string[] = [];
-  const stack = [...nodes];
-  while (stack.length > 0) {
-    const node = stack.shift()!;
-    if (node.expanded && node.entry.isDirectory) {
-      expanded.push(node.entry.path);
-    }
-    if (node.children && node.children.length > 0) {
-      stack.unshift(...node.children);
-    }
-  }
-  return expanded;
-}
-
 async function hydrateExpandedNodes(
   nodes: TreeNode[],
   expandedPaths: Set<string>,
@@ -273,25 +243,6 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
     loadRoot(rootPath);
   }, [rootPath, loadRoot]);
 
-  const updateChildren = useCallback((nodes: TreeNode[], parentPath: string, files: FileEntry[]): TreeNode[] =>
-    nodes.map((node) => {
-      if (node.entry.path === parentPath) {
-        return {
-          ...node,
-          children: files.map((f) => ({
-            entry: f,
-            children: f.isDirectory ? null : [],
-            expanded: false,
-            depth: node.depth + 1,
-          })),
-        };
-      }
-      if (node.children && node.children.length > 0) {
-        return { ...node, children: updateChildren(node.children, parentPath, files) };
-      }
-      return node;
-    }), []);
-
   const toggleExpand = useCallback(async (nodePath: string) => {
     const updateNodes = (nodes: TreeNode[]): TreeNode[] =>
       nodes.map((node) => {
@@ -316,7 +267,7 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
       });
 
     setTree((prev) => updateNodes(prev));
-  }, [showHidden, updateChildren]);
+  }, [showHidden]);
 
   const handleClick = useCallback((node: TreeNode) => {
     setActionError(null);
@@ -341,17 +292,6 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
     loadRoot(parent, parent);
     onNavigate?.(parent);
   }, [currentPath, loadRoot, onNavigate]);
-
-  const flattenTree = useCallback((nodes: TreeNode[]): TreeNode[] => {
-    const result: TreeNode[] = [];
-    for (const node of nodes) {
-      result.push(node);
-      if (node.expanded && node.children && node.children.length > 0) {
-        result.push(...flattenTree(node.children));
-      }
-    }
-    return result;
-  }, []);
 
   const canDropInto = useCallback((targetDir: string, dataTransfer: DataTransfer): boolean => {
     if (hasExternalFiles(dataTransfer)) {
