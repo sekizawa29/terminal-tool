@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import TerminalWindow from './TerminalWindow.js';
 import LinkLines from './LinkLines.js';
 import ZoomIndicator from './ZoomIndicator.js';
@@ -32,7 +33,11 @@ export default function Canvas({
   setSpaceDown,
   onOpenFile,
 }: CanvasProps) {
-  const terminals = useTerminalStore((s) => s.terminals);
+  // Subscribe only to the SET of window ids (shallow-compared) so a position
+  // update during a drag — which replaces the terminals Map but not its keys —
+  // does not re-render Canvas (and thus every window). Each TerminalWindow
+  // subscribes to its own data by id.
+  const terminalIds = useTerminalStore(useShallow((s) => Array.from(s.terminals.keys())));
   const token = useTerminalStore((s) => s.token);
   const linkDragActive = useTerminalStore((s) => s.linkDrag.active);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -194,10 +199,10 @@ export default function Canvas({
       >
         <LinkLines />
         {token &&
-          Array.from(terminals.values()).map((tw) => (
+          terminalIds.map((id) => (
             <TerminalWindow
-              key={tw.id}
-              tw={tw}
+              key={id}
+              id={id}
               token={token}
               scale={transform.scale}
               onZoom={zoom}

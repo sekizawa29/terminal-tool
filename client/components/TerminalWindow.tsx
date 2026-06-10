@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useRef, useState } from 'react';
 import TerminalContent from './TerminalContent.js';
 import BrowserContent from './BrowserContent.js';
 import ExplorerContent from './ExplorerContent.js';
@@ -25,7 +25,25 @@ interface TerminalWindowProps {
 const MIN_WIDTH = 300;
 const MIN_HEIGHT = 200;
 
-export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }: TerminalWindowProps) {
+// Container: subscribes to just this window's data by id and renders the
+// memoized body. When a sibling moves, Canvas does not re-render and this
+// container's selector returns the same object, so only the moved window
+// re-renders. tw can briefly be missing during deletion → render nothing.
+export default function TerminalWindow({ id, token, scale, onZoom, onOpenFile }: {
+  id: string;
+  token: string;
+  scale: number;
+  onZoom: (deltaY: number, clientX: number, clientY: number) => void;
+  onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
+}) {
+  const tw = useTerminalStore((s) => s.terminals.get(id));
+  if (!tw) return null;
+  return (
+    <TerminalWindowBody tw={tw} token={token} scale={scale} onZoom={onZoom} onOpenFile={onOpenFile} />
+  );
+}
+
+const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, scale, onZoom, onOpenFile }: TerminalWindowProps) {
   // Subscribe with fine-grained selectors so a sibling window's update (or any
   // unrelated store change) does not re-render this window. Actions are stable
   // references, and isActive is reduced to a boolean.
@@ -581,4 +599,4 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
       )}
     </div>
   );
-}
+});
