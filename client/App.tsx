@@ -270,6 +270,28 @@ export default function App() {
     useTerminalStore.getState().saveLayout();
   }, [canvas, addTerminal]);
 
+  const addBrowserPanel = useCallback(() => {
+    const { offsetX, offsetY, scale } = canvas.getTransform();
+    const centerX = (window.innerWidth / 2 - offsetX) / scale;
+    const centerY = (window.innerHeight / 2 - offsetY) / scale;
+    const width = 760;
+    const height = 520;
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId: '',
+      type: 'browser',
+      url: 'http://localhost:3000',
+      x: centerX - width / 2,
+      y: centerY - height / 2,
+      width,
+      height,
+      zIndex: 0,
+      title: 'Browser',
+    };
+    addTerminal(tw);
+    useTerminalStore.getState().saveLayout();
+  }, [canvas, addTerminal]);
+
   const openFileEditor = useCallback((filePath: string, fileName: string, nearX?: number, nearY?: number) => {
     // Check if this file is already open
     const existing = Array.from(useTerminalStore.getState().terminals.values()).find(
@@ -584,6 +606,7 @@ export default function App() {
         onToggleExplorer={toggleExplorer}
         explorerOpen={explorerOpen}
         onAddMemo={addMemoPanel}
+        onAddBrowser={addBrowserPanel}
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
         onCodexTerminal={codexTerminal}

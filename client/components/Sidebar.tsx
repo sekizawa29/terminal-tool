@@ -38,6 +38,7 @@ interface SidebarProps {
   onToggleExplorer: () => void;
   explorerOpen: boolean;
   onAddMemo: () => void;
+  onAddBrowser: () => void;
   onDuplicateTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onClaudeTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onCodexTerminal: (cwd: string, nearX: number, nearY: number) => void;
@@ -146,6 +147,7 @@ export default function Sidebar({
   onToggleExplorer,
   explorerOpen,
   onAddMemo,
+  onAddBrowser,
   onDuplicateTerminal,
   onClaudeTerminal,
   onCodexTerminal,
@@ -527,6 +529,20 @@ export default function Sidebar({
                       const cx = (window.innerWidth / 2 - offsetX) / scale;
                       const cy = (window.innerHeight / 2 - offsetY) / scale;
                       onPowershellTerminal(cx - 350, cy - 225);
+                    }}
+                  />
+                  <DropdownItem
+                    icon={
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3" />
+                        <path d="M2 8h12M8 2c1.8 1.6 1.8 10.4 0 12M8 2c-1.8 1.6-1.8 10.4 0 12" stroke="currentColor" strokeWidth="1.1" />
+                      </svg>
+                    }
+                    label="Browser"
+                    hint="WEB"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      onAddBrowser();
                     }}
                   />
                 </div>

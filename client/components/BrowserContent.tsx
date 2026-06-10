@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch } from '../api.js';
 
 // True when the URL points at this app's own origin. Framing ourselves would
 // give the inner page full same-origin access (localStorage, the file API), so
@@ -6,6 +7,16 @@ import { useCallback, useRef, useState } from 'react';
 function isSelfOrigin(url: string): boolean {
   try {
     return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+// localhost dev servers don't send X-Frame-Options; skip the probe for them.
+function isLocalUrl(url: string): boolean {
+  try {
+    const h = new URL(url, window.location.href).hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1';
   } catch {
     return false;
   }
@@ -23,6 +34,7 @@ export default function BrowserContent({ url, isActive, onUrlChange }: BrowserCo
   const [loading, setLoading] = useState(url !== 'about:blank' && !isSelfOrigin(url));
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const historyRef = useRef<string[]>([url]);
   const historyIndexRef = useRef(0);
@@ -80,6 +92,30 @@ export default function BrowserContent({ url, isActive, onUrlChange }: BrowserCo
       setLoading(true);
       iframeRef.current.src = currentUrl;
     }
+  }, [currentUrl]);
+
+  // Detect frame-busting sites (X-Frame-Options / CSP frame-ancestors) before
+  // rendering a blank iframe. localhost / self-origin / about:blank are skipped;
+  // a failed probe falls through to trying the iframe anyway.
+  useEffect(() => {
+    setBlocked(false);
+    if (currentUrl === 'about:blank' || isSelfOrigin(currentUrl) || isLocalUrl(currentUrl)) return;
+    if (!/^https?:\/\//i.test(currentUrl)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(`/api/probe-frame?url=${encodeURIComponent(currentUrl)}`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled && data && data.frameable === false) {
+          setBlocked(true);
+          setLoading(false);
+        }
+      } catch {
+        // probe failed — fall through to the iframe
+      }
+    })();
+    return () => { cancelled = true; };
   }, [currentUrl]);
 
   const navBtn: React.CSSProperties = {
@@ -202,6 +238,40 @@ export default function BrowserContent({ url, isActive, onUrlChange }: BrowserCo
             }}
           >
             このアプリ自身は埋め込めません
+          </div>
+        ) : blocked ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 14,
+              width: '100%',
+              height: '100%',
+              padding: 24,
+              textAlign: 'center',
+              color: 'var(--text-tertiary)',
+              fontSize: 12,
+              lineHeight: 1.6,
+            }}
+          >
+            <div>このサイトは埋め込みを拒否しています</div>
+            <button
+              onClick={() => window.open(currentUrl, '_blank')}
+              style={{
+                padding: '7px 16px',
+                borderRadius: 6,
+                border: 'none',
+                cursor: 'pointer',
+                background: 'rgba(122, 162, 247, 0.2)',
+                color: 'var(--accent-blue)',
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              外部ブラウザで開く
+            </button>
           </div>
         ) : (
           <iframe
