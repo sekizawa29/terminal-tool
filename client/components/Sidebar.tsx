@@ -4,8 +4,6 @@ import { getDisplayName } from '../hooks/useSessionPolling.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
 import { pinDir, unpinDir } from '../api/dirsApi.js';
 import {
-  ClaudeIcon,
-  CodexIcon,
   PowerShellIcon,
   TerminalIcon,
   SessionsIcon,
@@ -16,10 +14,12 @@ import {
   ExplorerIcon,
   MemoIcon,
   StarIcon,
-  PinIcon,
-  CopyIcon,
   LogoMark,
 } from './icons.js';
+import { SectionLabel } from './sidebar/SectionLabel.js';
+import { DropdownItem } from './sidebar/DropdownItem.js';
+import { RecentDirItem } from './sidebar/RecentDirItem.js';
+import { SessionRow } from './sidebar/SessionRow.js';
 
 interface SidebarProps {
   controller: CanvasController;
@@ -52,11 +52,6 @@ const TONE_FG: Record<Tone, string> = {
   explorer: 'var(--accent-yellow)',
   browser: 'var(--accent-cyan)',
 };
-
-function shortDirLabel(cwd: string): string {
-  const parts = cwd.split('/').filter(Boolean);
-  return parts[parts.length - 1] || cwd;
-}
 
 const Logo = () => (
   <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '0 2px 0 0', flexShrink: 0 }}>
@@ -133,24 +128,6 @@ function ToolbarButton({ icon, hint, onClick, active = false, tone = 'default' }
     </button>
   );
 }
-
-const WindowsBadge = () => (
-  <span
-    style={{
-      fontSize: 9,
-      fontWeight: 700,
-      color: '#4ea3ff',
-      background: 'rgba(78, 163, 255, 0.14)',
-      padding: '1px 4px',
-      borderRadius: 3,
-      letterSpacing: '0.04em',
-      lineHeight: '13px',
-      flexShrink: 0,
-    }}
-  >
-    WIN
-  </span>
-);
 
 const AGENT_PROCESSES = new Set([
   'claude', 'codex', 'aider', 'cursor', 'copilot',
@@ -634,308 +611,5 @@ export default function Sidebar({
         )}
       </div>
     </div>
-  );
-}
-
-interface RecentDirItemProps {
-  cwd: string;
-  pinned: boolean;
-  onOpenTerminal: () => void;
-  onOpenClaude: () => void;
-  onOpenCodex: () => void;
-  onTogglePin: () => void;
-}
-
-function SectionLabel({ text }: { text: string }) {
-  return (
-    <div
-      style={{
-        padding: '6px 10px 4px',
-        fontSize: 9,
-        fontWeight: 600,
-        letterSpacing: '0.08em',
-        textTransform: 'uppercase',
-        color: 'var(--text-ghost)',
-      }}
-    >
-      {text}
-    </div>
-  );
-}
-
-function RecentDirItem({ cwd, pinned, onOpenTerminal, onOpenClaude, onOpenCodex, onTogglePin }: RecentDirItemProps) {
-  const [hover, setHover] = useState(false);
-  const name = shortDirLabel(cwd);
-  return (
-    <div
-      onClick={onOpenTerminal}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={cwd}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 9,
-        padding: '7px 9px',
-        borderRadius: 7,
-        cursor: 'pointer',
-        background: hover ? 'rgba(255, 255, 255, 0.035)' : 'transparent',
-        transition: 'background 120ms',
-      }}
-    >
-      <span
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          flexShrink: 0,
-          color: pinned ? 'var(--accent-yellow)' : 'var(--text-ghost)',
-        }}
-      >
-        <StarIcon filled={pinned} />
-      </span>
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 1,
-          overflow: 'hidden',
-        }}
-      >
-        <span
-          style={{
-            color: 'var(--text-primary)',
-            fontWeight: 500,
-            fontSize: 12,
-            letterSpacing: '-0.005em',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {name}
-        </span>
-        <span
-          style={{
-            color: 'var(--text-ghost)',
-            fontSize: 10,
-            fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {cwd}
-        </span>
-      </span>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          opacity: hover ? 1 : 0.35,
-          transition: 'opacity 120ms',
-          flexShrink: 0,
-        }}
-      >
-        <RowAction
-          icon={<PinIcon filled={pinned} />}
-          hint={pinned ? 'ピン留めを解除' : 'ピン留めする'}
-          onClick={onTogglePin}
-          activeColor={pinned ? 'var(--accent-yellow)' : undefined}
-        />
-        <RowAction icon={<ClaudeIcon />} hint="このディレクトリで Claude を開く" onClick={onOpenClaude} />
-        <RowAction icon={<CodexIcon />} hint="このディレクトリで Codex を開く" onClick={onOpenCodex} />
-        <RowAction icon={<TerminalIcon />} hint="このディレクトリで Terminal を開く" onClick={onOpenTerminal} />
-      </div>
-    </div>
-  );
-}
-
-interface DropdownItemProps {
-  icon: React.ReactNode;
-  label: string;
-  hint: string;
-  onClick: () => void;
-}
-
-function DropdownItem({ icon, label, hint, onClick }: DropdownItemProps) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        width: '100%',
-        padding: '7px 10px',
-        background: hover ? 'rgba(255, 255, 255, 0.05)' : 'transparent',
-        border: 'none',
-        borderRadius: 6,
-        color: 'var(--text-secondary)',
-        cursor: 'pointer',
-        textAlign: 'left',
-        fontSize: 12,
-        transition: 'background 100ms',
-      }}
-    >
-      <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0, color: 'var(--text-tertiary)' }}>
-        {icon}
-      </span>
-      <span style={{ flex: 1 }}>{label}</span>
-      <span
-        style={{
-          fontSize: 10,
-          color: 'var(--text-ghost)',
-          fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
-          letterSpacing: '0.04em',
-        }}
-      >
-        {hint}
-      </span>
-    </button>
-  );
-}
-
-interface SessionRowProps {
-  active: boolean;
-  dotColor: string;
-  dotGlow?: string;
-  pulsing: boolean;
-  windows: boolean;
-  title: string;
-  onClick: () => void;
-  onClaude: () => void;
-  onCodex: () => void;
-  onCopy: () => void;
-}
-
-function SessionRow({
-  active,
-  dotColor,
-  dotGlow,
-  pulsing,
-  windows,
-  title,
-  onClick,
-  onClaude,
-  onCodex,
-  onCopy,
-}: SessionRowProps) {
-  const [hover, setHover] = useState(false);
-  const bg = active
-    ? 'var(--accent-soft)'
-    : hover
-      ? 'rgba(255, 255, 255, 0.035)'
-      : 'transparent';
-  const actionsOpacity = hover || active ? 1 : 0.35;
-
-  return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 9,
-        padding: '7px 9px',
-        borderRadius: 7,
-        cursor: 'pointer',
-        background: bg,
-        transition: 'background 120ms',
-      }}
-    >
-      <div
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: dotColor,
-          boxShadow: dotGlow,
-          flexShrink: 0,
-          animation: pulsing ? 'statusPulse 2s ease-in-out infinite' : undefined,
-        }}
-      />
-      {windows && <WindowsBadge />}
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 12,
-          fontWeight: 500,
-          color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-          letterSpacing: '-0.005em',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {title}
-      </span>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          opacity: actionsOpacity,
-          transition: 'opacity 120ms',
-          flexShrink: 0,
-        }}
-      >
-        <RowAction icon={<ClaudeIcon />} hint="Open Claude here" onClick={onClaude} />
-        <RowAction icon={<CodexIcon />} hint="Open Codex here" onClick={onCodex} />
-        <RowAction icon={<CopyIcon />} hint="Duplicate" onClick={onCopy} />
-      </div>
-    </div>
-  );
-}
-
-interface RowActionProps {
-  icon: React.ReactNode;
-  hint: string;
-  onClick: () => void;
-  activeColor?: string;
-}
-
-function RowAction({ icon, hint, onClick, activeColor }: RowActionProps) {
-  const [hover, setHover] = useState(false);
-  const color = activeColor
-    ? activeColor
-    : hover
-      ? 'var(--text-secondary)'
-      : 'var(--text-tertiary)';
-  return (
-    <button
-      type="button"
-      title={hint}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 22,
-        height: 22,
-        borderRadius: 5,
-        background: hover ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
-        color,
-        border: 'none',
-        cursor: 'pointer',
-        flexShrink: 0,
-        transition: 'all 100ms',
-      }}
-    >
-      {icon}
-    </button>
   );
 }
