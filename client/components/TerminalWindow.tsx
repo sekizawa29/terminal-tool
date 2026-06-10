@@ -45,6 +45,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
   const [captureState, setCaptureState] = useState<'idle' | 'capturing' | 'error'>('idle');
   const [captureHovered, setCaptureHovered] = useState(false);
   const [captureError, setCaptureError] = useState<string>('');
+  const [connState, setConnState] = useState<'connected' | 'reconnecting' | 'closed'>('connected');
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isBrowser = tw.type === 'browser';
@@ -329,6 +330,27 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
               overflow: 'hidden',
             }}
           >
+            {!isBrowser && !isExplorer && !isEditor && !isMemo && (
+              <span
+                title={
+                  connState === 'connected' ? '接続中'
+                    : connState === 'reconnecting' ? '再接続中…' : '切断'
+                }
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background:
+                    connState === 'connected' ? '#3fb950'
+                      : connState === 'reconnecting' ? '#d29922' : '#f85149',
+                  animation: connState === 'reconnecting' ? 'statusPulse 1s ease-in-out infinite' : undefined,
+                }}
+              />
+            )}
+            {!isBrowser && !isExplorer && !isEditor && !isMemo && connState === 'reconnecting' && (
+              <span style={{ fontSize: 11, color: '#d29922', flexShrink: 0 }}>再接続中…</span>
+            )}
             {isWindows && (
               <span style={{
                 fontSize: 8.5,
@@ -477,6 +499,7 @@ export default function TerminalWindow({ tw, token, scale, onZoom, onOpenFile }:
               scale={scale}
               onZoom={onZoom}
               onExit={onClose}
+              onConnectionChange={setConnState}
             />
           )}
           <ResizeHandle onResize={onResize} onResizeEnd={onResizeEnd} scale={scale} />

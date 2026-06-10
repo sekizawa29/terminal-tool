@@ -4,6 +4,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
+type ConnectionState = 'connected' | 'reconnecting' | 'closed';
+
 interface TerminalContentProps {
   sessionId: string;
   token: string;
@@ -11,7 +13,11 @@ interface TerminalContentProps {
   scale: number;
   onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
   onExit?: () => void;
+  onConnectionChange?: (state: ConnectionState) => void;
 }
+
+// Reconnect backoff schedule (ms), capped at 15s. Index = attempt number.
+const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
 
 export default function TerminalContent({
   sessionId,
@@ -20,6 +26,7 @@ export default function TerminalContent({
   scale,
   onZoom,
   onExit,
+  onConnectionChange,
 }: TerminalContentProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -30,6 +37,10 @@ export default function TerminalContent({
   tokenRef.current = token;
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+  const onConnChangeRef = useRef(onConnectionChange);
+  onConnChangeRef.current = onConnectionChange;
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
 
   const sendPaste = useCallback((text: string) => {
     const ws = wsRef.current;
@@ -223,48 +234,87 @@ export default function TerminalContent({
       return true;
     });
 
-    // WebSocket connection
+    // ── WebSocket connection with auto-reconnect ──────────────────────
+    // The server keeps the pty alive across socket drops (sleep, backend
+    // restart) and replays scrollback on re-attach, so we transparently
+    // reconnect with exponential backoff instead of leaving a dead terminal.
+    let unmounted = false;
+    let exited = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(
-      `${protocol}//${location.host}/ws?sessionId=${sessionId}&token=${tokenRef.current}`
-    );
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      // Send initial size
-      ws.send('\x00' + JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    };
+    const notify = (state: ConnectionState) => onConnChangeRef.current?.(state);
 
-    ws.onmessage = (event) => {
-      const data = event.data as string;
-      // Control message
-      if (data.charCodeAt(0) === 0) {
-        try {
-          const msg = JSON.parse(data.slice(1));
-          if (msg.type === 'exit') {
-            onExit?.();
+    const connect = () => {
+      const ws = new WebSocket(
+        `${protocol}//${location.host}/ws?sessionId=${sessionId}&token=${tokenRef.current}`
+      );
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        reconnectAttempt = 0;
+        notify('connected');
+        // Send current size so the pty matches the (possibly resized) viewport.
+        ws.send('\x00' + JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+
+      ws.onmessage = (event) => {
+        const data = event.data as string;
+        // Control message
+        if (data.charCodeAt(0) === 0) {
+          try {
+            const msg = JSON.parse(data.slice(1));
+            if (msg.type === 'exit') {
+              exited = true;
+              onExitRef.current?.();
+            }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
+          return;
         }
-        return;
-      }
-      term.write(data);
+        term.write(data);
+      };
+
+      ws.onclose = (event) => {
+        // Terminal states we never recover from: intentional unmount, a clean
+        // shell exit, or a server rejection (bad token / origin / gone session).
+        const fatal = unmounted || exited
+          || event.code === 4001 || event.code === 4003 || event.code === 4004;
+        if (fatal) {
+          if (!unmounted && !exited) {
+            term.write('\r\n\x1b[90m[Connection closed]\x1b[0m\r\n');
+            notify('closed');
+          }
+          return;
+        }
+        // Otherwise retry with backoff. The server replays scrollback on
+        // re-attach, so reset the screen first to avoid double-drawing.
+        notify('reconnecting');
+        const delay = RECONNECT_DELAYS[Math.min(reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+        reconnectAttempt++;
+        reconnectTimer = setTimeout(() => {
+          if (unmounted) return;
+          term.reset();
+          connect();
+        }, delay);
+      };
     };
 
-    ws.onclose = () => {
-      term.write('\r\n\x1b[90m[Connection closed]\x1b[0m\r\n');
-    };
+    connect();
 
-    // Terminal input → WebSocket
+    // Terminal input → WebSocket (read wsRef so it survives reconnects)
     const onDataDisposable = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
     const onBinaryDisposable = term.onBinary((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         const buf = new Uint8Array(data.length);
         for (let i = 0; i < data.length; i++) {
           buf[i] = data.charCodeAt(i) & 0xff;
@@ -280,12 +330,14 @@ export default function TerminalContent({
     resizeObserver.observe(container);
 
     return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       container.removeEventListener('contextmenu', onContextMenu);
       container.removeEventListener('paste', onPaste);
       resizeObserver.disconnect();
       onDataDisposable.dispose();
       onBinaryDisposable.dispose();
-      ws.close();
+      wsRef.current?.close();
       term.dispose();
       termRef.current = null;
       fitAddonRef.current = null;
