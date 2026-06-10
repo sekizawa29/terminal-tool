@@ -37,6 +37,7 @@ function getFileInfo(filePath: string) {
     name: basename(filePath),
     size: st.size,
     modified: st.mtime.toISOString(),
+    mtimeMs: st.mtimeMs,
     extension: extname(filePath).slice(1).toLowerCase(),
   };
 }
@@ -1305,7 +1306,7 @@ app.get('/api/output/:sessionId/:filename', (req, res) => {
 
 // Overwrite an existing text file
 app.post('/api/files/write', (req, res) => {
-  const { path: filePath, content } = req.body || {};
+  const { path: filePath, content, expectedMtimeMs, force } = req.body || {};
   if (typeof filePath !== 'string' || typeof content !== 'string') {
     res.status(400).json({ error: 'path and content must be strings' });
     return;
@@ -1318,8 +1319,36 @@ app.post('/api/files/write', (req, res) => {
       return;
     }
 
+    // Optimistic concurrency: if the caller tells us the mtime it last saw and
+    // the file changed on disk since (e.g. an agent edited it), reject unless
+    // the caller explicitly forces the overwrite.
+    if (!force && typeof expectedMtimeMs === 'number' && st.mtimeMs !== expectedMtimeMs) {
+      res.status(409).json({ error: 'conflict', currentMtimeMs: st.mtimeMs });
+      return;
+    }
+
     writeFileSync(resolved, content, 'utf-8');
     res.json({ ok: true, ...getFileInfo(resolved) });
+  } catch (err) {
+    sendFileError(res, err);
+  }
+});
+
+// Lightweight stat endpoint for the editor's external-change polling.
+app.get('/api/files/stat', (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) {
+    res.status(400).json({ error: 'path query param required' });
+    return;
+  }
+  try {
+    const resolved = assertAllowedPath(filePath);
+    if (!existsSync(resolved)) {
+      res.json({ exists: false, mtimeMs: 0, size: 0 });
+      return;
+    }
+    const st = statSync(resolved);
+    res.json({ exists: true, mtimeMs: st.mtimeMs, size: st.size });
   } catch (err) {
     sendFileError(res, err);
   }
@@ -1510,6 +1539,7 @@ app.get('/api/files/read', (req, res) => {
       content,
       extension: ext,
       size: st.size,
+      mtimeMs: st.mtimeMs,
     });
   } catch (err) {
     sendFileError(res, err);

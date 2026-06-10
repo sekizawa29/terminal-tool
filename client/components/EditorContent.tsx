@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, withToken } from '../api.js';
+import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
 interface EditorContentProps {
+  windowId: string;
   filePath: string;
   isActive: boolean;
 }
@@ -73,7 +75,7 @@ function getApiError(payload: unknown, fallback: string): string {
   return fallback;
 }
 
-export default function EditorContent({ filePath, isActive }: EditorContentProps) {
+export default function EditorContent({ windowId, filePath, isActive }: EditorContentProps) {
   const [content, setContent] = useState<string | null>(null);
   const [savedContent, setSavedContent] = useState<string | null>(null);
   const [extension, setExtension] = useState('');
@@ -83,10 +85,15 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'rendered' | 'source'>('rendered');
+  const [conflict, setConflict] = useState(false);
+  const [externalNotice, setExternalNotice] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<string | null>(null);
   const savedContentRef = useRef<string | null>(null);
+  const mtimeRef = useRef<number | null>(null);
+
+  const setWindowDirty = useTerminalStore((s) => s.setWindowDirty);
 
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   const isImageFile = IMAGE_EXTENSIONS.has(ext);
@@ -109,6 +116,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
 
     setLoading(true);
     setError(null);
+    setConflict(false);
     try {
       if (isImageFile) {
         setContent('');
@@ -116,6 +124,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         setExtension(ext);
         setFileName(filePath.split('/').pop() || '');
         setFileSize(0);
+        mtimeRef.current = null;
       } else {
         const res = await apiFetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
         const data = await readApiPayload(res);
@@ -130,6 +139,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
         setExtension(data.extension);
         setFileName(data.name);
         setFileSize(data.size);
+        mtimeRef.current = typeof data.mtimeMs === 'number' ? data.mtimeMs : null;
       }
     } catch (err) {
       setError(String(err));
@@ -149,7 +159,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
   const dirty = content !== null && savedContent !== null && content !== savedContent;
   const lineCount = useMemo(() => (content ? content.split('\n').length : 0), [content]);
 
-  const saveFile = useCallback(async () => {
+  const saveFile = useCallback(async (force = false) => {
     if (!editable || content === null) return;
     setSaving(true);
     setError(null);
@@ -157,9 +167,23 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
       const res = await apiFetch('/api/files/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: filePath, content }),
+        body: JSON.stringify({
+          path: filePath,
+          content,
+          expectedMtimeMs: mtimeRef.current ?? undefined,
+          force,
+        }),
       });
       const data = await readApiPayload(res);
+      if (res.status === 409) {
+        // The file changed on disk since we loaded it; surface the conflict
+        // banner instead of silently clobbering the other writer's changes.
+        if (data && typeof data === 'object' && typeof data.currentMtimeMs === 'number') {
+          mtimeRef.current = data.currentMtimeMs;
+        }
+        setConflict(true);
+        return;
+      }
       if (!res.ok) {
         throw new Error(getApiError(data, `Failed to save file (HTTP ${res.status})`));
       }
@@ -168,6 +192,8 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
       }
       setSavedContent(content);
       setFileSize(data.size ?? fileSize);
+      if (typeof data.mtimeMs === 'number') mtimeRef.current = data.mtimeMs;
+      setConflict(false);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -192,6 +218,55 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
       textareaRef.current?.focus();
     }
   }, [editable, isActive, filePath]);
+
+  // Mirror dirty state into the store so the window close guard can warn.
+  useEffect(() => {
+    setWindowDirty(windowId, dirty);
+  }, [windowId, dirty, setWindowDirty]);
+
+  useEffect(() => {
+    return () => setWindowDirty(windowId, false);
+  }, [windowId, setWindowDirty]);
+
+  // Poll the file's mtime while this window is active so agent edits to the
+  // same file are detected. Clean (unedited) buffers auto-reload; dirty buffers
+  // raise the conflict banner instead of clobbering the user's edits.
+  useEffect(() => {
+    if (!isActive || isImageFile) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (mtimeRef.current === null) return;
+      try {
+        const res = await apiFetch(`/api/files/stat?path=${encodeURIComponent(filePath)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !data || !data.exists || typeof data.mtimeMs !== 'number') return;
+        if (data.mtimeMs === mtimeRef.current) return;
+        const isDirty =
+          savedContentRef.current !== null &&
+          contentRef.current !== null &&
+          contentRef.current !== savedContentRef.current;
+        if (isDirty) {
+          setConflict(true);
+        } else {
+          await loadFile(true);
+          if (!cancelled) {
+            setExternalNotice('外部変更を反映しました');
+            setTimeout(() => {
+              if (!cancelled) setExternalNotice(null);
+            }, 3000);
+          }
+        }
+      } catch {
+        // transient; next tick retries
+      }
+    };
+    const interval = setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [isActive, isImageFile, filePath, loadFile]);
 
   const handleScroll = useCallback(() => {
     if (textareaRef.current && lineNumbersRef.current) {
@@ -284,7 +359,7 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
           </div>
         )}
         <button
-          onClick={saveFile}
+          onClick={() => saveFile()}
           disabled={!editable || !dirty || saving}
           title="Save (Ctrl/Cmd+S)"
           style={{
@@ -350,6 +425,53 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
             }}
           >
             Loading...
+          </div>
+        )}
+        {conflict && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '8px 16px',
+              fontSize: 12,
+              color: 'var(--accent-yellow)',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+              background: 'rgba(224, 175, 104, 0.12)',
+            }}
+          >
+            <span style={{ flex: 1 }}>ディスク上でファイルが変更されています</span>
+            <button
+              onClick={() => loadFile(true)}
+              style={{
+                fontSize: 11,
+                padding: '3px 10px',
+                borderRadius: 4,
+                border: 'none',
+                cursor: 'pointer',
+                background: 'rgba(255,255,255,0.08)',
+                color: 'var(--text-secondary)',
+                fontWeight: 500,
+              }}
+            >
+              再読み込み
+            </button>
+            <button
+              onClick={() => saveFile(true)}
+              disabled={saving}
+              style={{
+                fontSize: 11,
+                padding: '3px 10px',
+                borderRadius: 4,
+                border: 'none',
+                cursor: saving ? 'default' : 'pointer',
+                background: 'rgba(247, 118, 142, 0.2)',
+                color: 'var(--accent-red)',
+                fontWeight: 600,
+              }}
+            >
+              上書き保存
+            </button>
           </div>
         )}
         {error && (
@@ -485,6 +607,9 @@ export default function EditorContent({ filePath, isActive }: EditorContentProps
             : `${(fileSize / (1024 * 1024)).toFixed(1)}MB`}
         </span>
         <span>{editable ? 'Editable' : 'Read only'}</span>
+        {externalNotice && (
+          <span style={{ color: 'var(--accent-blue)' }}>{externalNotice}</span>
+        )}
         <span style={{ flex: 1 }} />
         <span style={{ direction: 'rtl', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <bdi>{filePath}</bdi>

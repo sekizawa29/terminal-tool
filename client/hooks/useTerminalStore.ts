@@ -71,8 +71,10 @@ interface TerminalState {
   links: TerminalLink[];
   linkDrag: LinkDrag;
   sessionStatuses: Map<string, SessionStatus>;
+  dirtyWindows: Set<string>;
 
   setToken: (token: string) => void;
+  setWindowDirty: (id: string, dirty: boolean) => void;
   setSessionStatuses: (statuses: Map<string, SessionStatus>) => void;
   addTerminal: (tw: TerminalWindow) => void;
   removeTerminal: (id: string) => void;
@@ -100,8 +102,17 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   links: [],
   linkDrag: { active: false, sourceId: null, mouseX: 0, mouseY: 0 },
   sessionStatuses: new Map(),
+  dirtyWindows: new Set(),
 
   setToken: (token) => set({ token }),
+  setWindowDirty: (id, dirty) =>
+    set((state) => {
+      if (dirty === state.dirtyWindows.has(id)) return state;
+      const dirtyWindows = new Set(state.dirtyWindows);
+      if (dirty) dirtyWindows.add(id);
+      else dirtyWindows.delete(id);
+      return { dirtyWindows };
+    }),
   setSessionStatuses: (statuses) => set({ sessionStatuses: statuses }),
 
   addTerminal: (tw) =>
@@ -133,7 +144,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       terminals.delete(id);
       const links = s.links.filter((l) => l.sourceId !== id && l.targetId !== id);
       const activeTerminalId = s.activeTerminalId === id ? null : s.activeTerminalId;
-      return { terminals, activeTerminalId, links };
+      let dirtyWindows = s.dirtyWindows;
+      if (dirtyWindows.has(id)) {
+        dirtyWindows = new Set(dirtyWindows);
+        dirtyWindows.delete(id);
+      }
+      return { terminals, activeTerminalId, links, dirtyWindows };
     });
     get().saveLinks();
   },

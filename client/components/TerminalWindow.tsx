@@ -163,6 +163,9 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
   }, [tw.id, bringToFront, setActive]);
 
   const onClose = useCallback(() => {
+    if (useTerminalStore.getState().dirtyWindows.has(tw.id)) {
+      if (!window.confirm('未保存の変更があります。閉じますか?')) return;
+    }
     if (!isBrowser && !isMemo) {
       apiFetch(`/api/terminals/${tw.sessionId}`, { method: 'DELETE' }).catch(() => {});
     }
@@ -537,6 +540,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
             />
           ) : isEditor ? (
             <EditorContent
+              windowId={tw.id}
               filePath={tw.filePath || ''}
               isActive={isActive}
             />
