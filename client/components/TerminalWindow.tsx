@@ -70,6 +70,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
   const [captureHovered, setCaptureHovered] = useState(false);
   const [captureError, setCaptureError] = useState<string>('');
   const [connState, setConnState] = useState<'connected' | 'reconnecting' | 'closed'>('connected');
+  const [searchOpen, setSearchOpen] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   const isBrowser = tw.type === 'browser';
@@ -465,8 +466,35 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
             )}
           </div>
 
-          {/* Right: capture button for terminal panels, spacer otherwise */}
+          {/* Right: search + capture buttons for terminal panels, spacer otherwise */}
           {!isBrowser && !isExplorer && !isEditor && !isMemo ? (
+            <>
+            <button
+              onClick={(e) => { e.stopPropagation(); setSearchOpen((v) => !v); }}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="検索 (Cmd/Ctrl+F)"
+              aria-label="このターミナルを検索"
+              style={{
+                width: 18,
+                height: 18,
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: searchOpen ? 'var(--accent-blue)' : 'var(--text-tertiary)',
+                opacity: isActive || isHovered ? 1 : 0.6,
+                transition: 'color var(--duration-fast), opacity var(--duration-fast)',
+                marginRight: 2,
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.2" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M10.2 10.2L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
             <button
               onClick={onCaptureClick}
               onMouseDown={(e) => e.stopPropagation()}
@@ -509,6 +537,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
                 <circle cx="12" cy="13" r="3.2" stroke="currentColor" strokeWidth="1.6" fill="none" />
               </svg>
             </button>
+            </>
           ) : (
             <div style={{ width: 12 }} />
           )}
@@ -554,6 +583,8 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
               onZoom={onZoom}
               onExit={onClose}
               onConnectionChange={setConnState}
+              searchOpen={searchOpen}
+              onSearchOpenChange={setSearchOpen}
             />
           )}
           <ResizeHandle onResize={onResize} onResizeStart={onResizeStart} onResizeEnd={onResizeEnd} getScale={getScale} />

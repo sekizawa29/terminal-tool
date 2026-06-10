@@ -2,7 +2,18 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { apiFetch } from '../api.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
+
+// Highlight colors for in-window search (requires allowProposedApi).
+const SEARCH_DECORATIONS = {
+  matchBackground: '#3d59a1',
+  matchBorder: '#7aa2f7',
+  matchOverviewRuler: '#7aa2f7',
+  activeMatchBackground: '#e0af68',
+  activeMatchBorder: '#e0af68',
+  activeMatchColorOverviewRuler: '#e0af68',
+};
 
 type ConnectionState = 'connected' | 'reconnecting' | 'closed';
 
@@ -14,6 +25,8 @@ interface TerminalContentProps {
   onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
   onExit?: () => void;
   onConnectionChange?: (state: ConnectionState) => void;
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
 }
 
 // Reconnect backoff schedule (ms), capped at 15s. Index = attempt number.
@@ -30,10 +43,17 @@ export default function TerminalContent({
   onZoom,
   onExit,
   onConnectionChange,
+  searchOpen = false,
+  onSearchOpenChange,
 }: TerminalContentProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const onSearchOpenChangeRef = useRef(onSearchOpenChange);
+  onSearchOpenChangeRef.current = onSearchOpenChange;
   const wsRef = useRef<WebSocket | null>(null);
   const prevSizeRef = useRef({ cols: 0, rows: 0 });
   const tokenRef = useRef(token);
@@ -112,8 +132,11 @@ export default function TerminalContent({
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
     termRef.current = term;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
 
     term.open(container);
 
@@ -218,6 +241,12 @@ export default function TerminalContent({
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true;
+      // Cmd/Ctrl+F → open the in-window search (allowed: not a navigation shortcut)
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        onSearchOpenChangeRef.current?.(true);
+        return false;
+      }
       // Ctrl+V / Cmd+V → paste
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         return false;
@@ -445,19 +474,120 @@ export default function TerminalContent({
     }
   }, [sendPaste, sessionId]);
 
+  const runSearch = useCallback((forward: boolean) => {
+    const addon = searchAddonRef.current;
+    if (!addon || !searchTerm) return;
+    const opts = { caseSensitive: false, decorations: SEARCH_DECORATIONS };
+    if (forward) addon.findNext(searchTerm, opts);
+    else addon.findPrevious(searchTerm, opts);
+  }, [searchTerm]);
+
+  const closeSearch = useCallback(() => {
+    onSearchOpenChange?.(false);
+  }, [onSearchOpenChange]);
+
+  // Focus the field on open; clear highlights and refocus the terminal on close.
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    } else {
+      searchAddonRef.current?.clearDecorations();
+      if (isActive) termRef.current?.focus();
+    }
+  }, [searchOpen, isActive]);
+
+  // Re-highlight as the query changes while the bar is open.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const addon = searchAddonRef.current;
+    if (!addon) return;
+    if (searchTerm) {
+      addon.findNext(searchTerm, { caseSensitive: false, decorations: SEARCH_DECORATIONS });
+    } else {
+      addon.clearDecorations();
+    }
+  }, [searchTerm, searchOpen]);
+
   return (
-    <div
-      ref={containerRef}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      style={{
-        width: '100%',
-        height: '100%',
-        overflow: 'hidden',
-        outline: dragOver ? '2px solid #7aa2f7' : 'none',
-        outlineOffset: -2,
-      }}
-    />
+    <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
+      {searchOpen && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            zIndex: 5,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 6px',
+            borderRadius: 7,
+            background: 'rgba(26, 27, 38, 0.95)',
+            border: '1px solid rgba(122, 162, 247, 0.25)',
+            boxShadow: '0 4px 14px -4px rgba(0,0,0,0.6)',
+          }}
+        >
+          <input
+            ref={searchInputRef}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="検索"
+            spellCheck={false}
+            style={{
+              width: 130,
+              height: 22,
+              padding: '0 7px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 5,
+              color: 'var(--text-secondary)',
+              fontSize: 11.5,
+              outline: 'none',
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                runSearch(!e.shiftKey);
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeSearch();
+              }
+            }}
+          />
+          <button type="button" title="前へ (Shift+Enter)" onClick={() => runSearch(false)} style={searchBtnStyle}>↑</button>
+          <button type="button" title="次へ (Enter)" onClick={() => runSearch(true)} style={searchBtnStyle}>↓</button>
+          <button type="button" title="閉じる (Esc)" onClick={closeSearch} style={searchBtnStyle}>✕</button>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        style={{
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          outline: dragOver ? '2px solid #7aa2f7' : 'none',
+          outlineOffset: -2,
+        }}
+      />
+    </div>
   );
 }
+
+const searchBtnStyle: React.CSSProperties = {
+  width: 22,
+  height: 22,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'transparent',
+  border: 'none',
+  borderRadius: 5,
+  color: 'var(--text-tertiary)',
+  cursor: 'pointer',
+  fontSize: 12,
+};
