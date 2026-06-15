@@ -3,7 +3,6 @@ import Canvas from './components/Canvas.js';
 import Sidebar from './components/Sidebar.js';
 import ExplorerContent from './components/ExplorerContent.js';
 import EdgeBadges from './components/EdgeBadges.js';
-import Minimap from './components/Minimap.js';
 import { useCanvas } from './hooks/useCanvas.js';
 import { useTerminalStore } from './hooks/useTerminalStore.js';
 import { useSessionPolling } from './hooks/useSessionPolling.js';
@@ -604,7 +603,6 @@ export default function App() {
         onExpandChange={setSessionsExpanded}
       />
       <EdgeBadges controller={canvas} />
-      <Minimap controller={canvas} />
       <div className="noise-overlay" />
     </>
   );
