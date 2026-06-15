@@ -108,7 +108,7 @@ export default function TerminalContent({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', monospace",
       theme: {
         background: '#000000',
         foreground: '#c0caf5',
@@ -210,8 +210,14 @@ export default function TerminalContent({
       );
     }
 
-    // Re-measure after fonts load to ensure correct character dimensions
-    document.fonts.ready.then(() => doFit());
+    // Re-measure after fonts load to ensure correct character dimensions.
+    // Explicitly request the Nerd Font (icons in status lines) so it's fetched
+    // before re-fit — @font-face fonts load lazily and would otherwise render
+    // as tofu (□) on first paint.
+    Promise.all([
+      document.fonts.load("14px 'Symbols Nerd Font Mono'").catch(() => {}),
+      document.fonts.ready,
+    ]).then(() => doFit());
 
     // Right-click: copy selection if any, otherwise paste.
     // OSC 52 already copies to clipboard, so the first right-click after
