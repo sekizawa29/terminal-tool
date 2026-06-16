@@ -115,6 +115,32 @@ export const CopyIcon = () => (
   </svg>
 );
 
+// Pan/move mode — open hand.
+export const HandIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+    <path
+      d="M5.2 7V3.6a1 1 0 0 1 2 0V6.6m0 0V2.7a1 1 0 0 1 2 0V6.6m0 0V3.4a1 1 0 0 1 2 0V7.4m0 -0.6a1 1 0 0 1 2 0v3.1c0 2.2-1.6 3.9-4 3.9-1.5 0-2.4-.5-3.3-1.6L4 9.3a1 1 0 0 1 1.5-1.3l.8.9"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+// Select/copy mode — arrow cursor.
+export const CursorIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+    <path
+      d="M3.5 2.2l8.2 5-3.5.8 2 4-1.7.8-2-4-2.9 2.4z"
+      fill="currentColor"
+      stroke="currentColor"
+      strokeWidth="0.8"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const LogoMark = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
     <rect x="2" y="2" width="20" height="20" rx="5" stroke="var(--accent-blue)" strokeWidth="1.8" />

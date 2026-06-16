@@ -4,7 +4,12 @@ import TerminalWindow from './TerminalWindow.js';
 import LinkLines from './LinkLines.js';
 import ZoomIndicator from './ZoomIndicator.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
+import { useSettings } from '../hooks/useSettings.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
+
+// Distance (px) the pointer must travel before a terminal drag is treated as a
+// board pan rather than a click (which still focuses the terminal).
+const TERMINAL_PAN_THRESHOLD = 4;
 
 interface CanvasProps {
   controller: CanvasController;
@@ -95,6 +100,77 @@ export default function Canvas({ controller, onOpenFile, onSpawnHere }: CanvasPr
     };
     window.addEventListener('wheel', handler, { passive: false });
     return () => window.removeEventListener('wheel', handler);
+  }, [controller]);
+
+  // Pan the board when dragging over a terminal (opt-in via settings).
+  //
+  // macOS three-finger-drag reports a normal left-button drag, which xterm
+  // turns into a text selection. When panOverTerminals is on we hijack that
+  // drag to pan the canvas instead. We listen in the CAPTURE phase on window so
+  // we run before xterm's own document-level mousemove/mouseup selection
+  // listeners; stopImmediatePropagation then prevents them from extending a
+  // selection (or sending mouse-move reports) while we pan.
+  //
+  // mousedown is intentionally NOT swallowed, so a plain click still reaches
+  // xterm (focus + forwarding clicks to TUI apps). Only once the pointer moves
+  // past the threshold do we take over.
+  useEffect(() => {
+    let armed = false; // mousedown landed on a terminal in pan mode
+    let panning = false; // threshold crossed → driving controller pan
+    let startX = 0;
+    let startY = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      if (!useSettings.getState().panOverTerminals) return;
+      // Defer to the existing space-pan / link-drag flows when active.
+      if (controller.getIsSpaceDown()) return;
+      if (useTerminalStore.getState().linkDrag.active) return;
+      const target = e.target;
+      if (!(target instanceof Element) || !target.closest('.xterm')) return;
+      armed = true;
+      panning = false;
+      startX = e.clientX;
+      startY = e.clientY;
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!armed) return;
+      if (!panning) {
+        if (
+          Math.abs(e.clientX - startX) < TERMINAL_PAN_THRESHOLD &&
+          Math.abs(e.clientY - startY) < TERMINAL_PAN_THRESHOLD
+        ) {
+          // Still in the click dead-zone: suppress xterm selection jitter but
+          // don't pan yet, so a tiny wobble on a click doesn't move the board.
+          e.stopImmediatePropagation();
+          return;
+        }
+        panning = true;
+        controller.startPan(startX, startY);
+      }
+      // Take over: block xterm selection / mouse-report and pan instead.
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      controller.updatePan(e.clientX, e.clientY);
+    };
+
+    const onMouseUp = () => {
+      // Let mouseup reach xterm so it tears down its selection listeners; we
+      // only need to end the pan. A no-move click falls through as a real click.
+      if (panning) controller.endPan();
+      armed = false;
+      panning = false;
+    };
+
+    window.addEventListener('mousedown', onMouseDown, true);
+    window.addEventListener('mousemove', onMouseMove, true);
+    window.addEventListener('mouseup', onMouseUp, true);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown, true);
+      window.removeEventListener('mousemove', onMouseMove, true);
+      window.removeEventListener('mouseup', onMouseUp, true);
+    };
   }, [controller]);
 
   // Prevent middle-click autoscroll

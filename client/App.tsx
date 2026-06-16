@@ -5,6 +5,7 @@ import ExplorerContent from './components/ExplorerContent.js';
 import EdgeBadges from './components/EdgeBadges.js';
 import { useCanvas } from './hooks/useCanvas.js';
 import { useTerminalStore } from './hooks/useTerminalStore.js';
+import { useSettings } from './hooks/useSettings.js';
 import { useSessionPolling } from './hooks/useSessionPolling.js';
 import { apiFetch, setApiToken } from './api.js';
 import type { TerminalWindow } from './types.js';
@@ -528,6 +529,22 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [addNewTerminal]);
+
+  // ⌘H / Ctrl+H — toggle move(pan) vs select(copy) mode for terminal drags.
+  // Capture + stop so it never reaches the focused terminal. Note: on macOS
+  // browsers ⌘H is "Hide window" and may be swallowed by the OS before the page
+  // sees it; if so, the toolbar button still toggles and we can rebind the key.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        e.stopPropagation();
+        useSettings.getState().togglePanOverTerminals();
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, []);
 
   // Save layout on unload
   useEffect(() => {

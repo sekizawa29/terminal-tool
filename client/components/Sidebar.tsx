@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
+import { useSettings } from '../hooks/useSettings.js';
 import { getDisplayName } from '../hooks/useSessionPolling.js';
 import { apiFetch } from '../api.js';
 import { isAgentProcess } from '../utils/agents.js';
@@ -16,6 +17,8 @@ import {
   ExplorerIcon,
   MemoIcon,
   StarIcon,
+  HandIcon,
+  CursorIcon,
   LogoMark,
 } from './icons.js';
 import { SectionLabel } from './sidebar/SectionLabel.js';
@@ -166,6 +169,8 @@ export default function Sidebar({
   const attention = useTerminalStore((s) => s.attention);
   const dirsState = useTerminalStore((s) => s.dirsState);
   const setDirsState = useTerminalStore((s) => s.setDirsState);
+  const panOverTerminals = useSettings((s) => s.panOverTerminals);
+  const togglePanOverTerminals = useSettings((s) => s.togglePanOverTerminals);
   const [expanded, setExpanded] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [starMenuOpen, setStarMenuOpen] = useState(false);
@@ -323,7 +328,7 @@ export default function Sidebar({
   const motionMs = 460;
 
   const collapsedWidth = 42;
-  const expandedWidth = 348;
+  const expandedWidth = 392;
   const contentTransition = isOpen
     ? `opacity ${Math.round(motionMs * 0.55)}ms ${ease} ${Math.round(motionMs * 0.4)}ms, transform ${Math.round(motionMs * 0.55)}ms ${ease} ${Math.round(motionMs * 0.4)}ms`
     : `opacity ${Math.round(motionMs * 0.35)}ms ${ease} 0ms, transform ${Math.round(motionMs * 0.45)}ms ${ease} 0ms`;
@@ -660,6 +665,21 @@ export default function Sidebar({
             tone="explorer"
           />
           <ToolbarButton icon={<MemoIcon />} hint="New Memo" onClick={onAddMemo} tone="memo" />
+
+          <Divider />
+
+          {/* Mode toggle — drag over a terminal selects/copies (cursor) or
+              pans the board (hand). Shortcut: ⌘H. */}
+          <ToolbarButton
+            icon={panOverTerminals ? <HandIcon /> : <CursorIcon />}
+            hint={
+              panOverTerminals
+                ? '移動モード: ターミナル上のドラッグでボードを移動 (⌘H)'
+                : '選択モード: ターミナル上のドラッグでコピー (⌘H)'
+            }
+            onClick={togglePanOverTerminals}
+            active={panOverTerminals}
+          />
           </div>
         </div>
 
