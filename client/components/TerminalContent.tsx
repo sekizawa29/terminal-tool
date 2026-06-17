@@ -63,9 +63,23 @@ function fitTerminalTightly(term: Terminal): void {
     parseInt(elementStyle.getPropertyValue('padding-top'), 10) +
     parseInt(elementStyle.getPropertyValue('padding-bottom'), 10);
 
-  // Do not reserve xterm's default scrollbar width. tboard keeps terminal
-  // scrollbars hidden, so subtracting that phantom 14px creates a visible gap.
-  const cols = Math.max(2, Math.floor((parentWidth - paddingX) / cell.width));
+  // The terminal scrollbar is hidden (see index.css), so no scrollbar reserve is
+  // needed. But `cell.width` here is xterm's ROUNDED AVERAGE css cell width
+  // (css.canvas.width / cols); it under-estimates the real per-cell width just
+  // enough that floor() over-counts by ~1 column on a wide terminal. The screen
+  // xterm then actually renders is round(device.cell.width * cols / dpr) px wide
+  // (DomRenderer's css.canvas.width), and when that over-counted column makes it
+  // exceed `available` the right edge spills out of the container's
+  // overflow:hidden and clips (~1 char). So take a first guess from the average,
+  // then trim using the REAL device geometry until the rendered screen provably
+  // fits — no right-edge clip, and no gap (largest cols that still fit).
+  const available = parentWidth - paddingX;
+  let cols = Math.max(2, Math.floor(available / cell.width));
+  const deviceCellW = (term as any)._core?._renderService?.dimensions?.device?.cell?.width;
+  const dpr = (term as any)._core?._coreBrowserService?.dpr || window.devicePixelRatio || 1;
+  if (deviceCellW) {
+    while (cols > 2 && Math.round((deviceCellW * cols) / dpr) > available) cols--;
+  }
   const rows = Math.max(1, Math.floor((parentHeight - paddingY) / cell.height));
   if (term.cols === cols && term.rows === rows) return;
 
