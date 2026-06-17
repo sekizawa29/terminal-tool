@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+  @font-face {
+    font-family: 'Symbols Nerd Font Mono';
+    src: url('/public/fonts/SymbolsNerdFontMono-Regular.ttf') format('truetype');
+  }
+  body { background:#111; color:#ccc; font-family: system-ui; margin:0; padding:12px; }
+  .lab { color:#7aa2f7; font-size:13px; margin:14px 0 4px; font-weight:600; }
+  .term { width: 760px; height: 150px; background:#000; }
+  /* mirror app's .xterm overrides */
+  .xterm { padding: 6px 2px 4px 8px; }
+  .xterm-viewport::-webkit-scrollbar { width: 0; }
+</style>
+<link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css" />
+<script src="/node_modules/@xterm/xterm/lib/xterm.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const PRE_CODEX_FONT = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', monospace";
+const CODEX_FONT = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', 'Noto Sans Mono CJK JP', 'Osaka-Mono', 'Yu Gothic', 'Meiryo', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans CJK JP', 'MS Gothic', monospace";
+
+// Codex width provider
+const WIDEN=[[0x2010,0x2016],[0x2020,0x2027],[0x2030,0x203b],[0x203e,0x203e],[0x2103,0x2103],[0x212b,0x212b],[0x2150,0x218f],[0x2460,0x24ff]];
+const inWiden=cp=>WIDEN.some(([a,b])=>cp>=a&&cp<=b);
+const cpv=(s,w,j)=>((s&0xffffff)<<3)|((w&3)<<1)|(j?1:0);
+const ew=v=>(v>>1)&0x3;
+function makeProvider(base){const wcwidth=n=>{const w=base.wcwidth(n);return w===1&&inWiden(n)?2:w;};
+  return {version:'cjk-ambiguous-wide',wcwidth,charProperties(cp,prec){let w=wcwidth(cp);let j=w===0&&prec!==0;if(j){const o=ew(prec);if(o===0)j=false;else if(o>w)w=o;}return cpv(0,w,j);}};}
+
+const CONTENT = [
+  'ASCII ruler: 0123456789012345678901234567890123456789',
+  'KANA: あいうえお かきくけこ サシスセソ 日本語表示テスト',
+  'AMBIG: ①②③ ※注 — em-dash → arrow ½ Ⅲ ℃ 「全角括弧」',
+  'LINE: Q5 推奨 — 7,387→7,388 は四捨五入差1円なので変更（8,208）',
+  'BOX: ┌───┐ │ab│ └───┘ ├─┤ ██ progress',
+].join('\r\n');
+
+const variants = [
+  { id:'pre', label:'A) pre-Codex font, NO provider', font: PRE_CODEX_FONT, provider:false },
+  { id:'codex', label:'B) CURRENT (Codex): CJK font + provider', font: CODEX_FONT, provider:true },
+  { id:'fixrevert', label:'C) FIX revert: pre-Codex font, no provider (= A)', font: PRE_CODEX_FONT, provider:false },
+  { id:'fixcjk', label:'D) FIX: CJK font chain, NO provider', font: CODEX_FONT, provider:false },
+];
+
+window.__diag = {};
+const root = document.getElementById('root');
+const terms = {};
+
+function build() {
+  for (const v of variants) {
+    const lab = document.createElement('div'); lab.className='lab'; lab.textContent=v.label; root.appendChild(lab);
+    const el = document.createElement('div'); el.className='term'; el.id='t_'+v.id; root.appendChild(el);
+    const term = new Terminal({ cols:62, rows:6, fontSize:14, fontFamily:v.font, cursorBlink:false, allowProposedApi:true,
+      theme:{ background:'#000000', foreground:'#c0caf5' } });
+    if (v.provider) {
+      const us=term._core?.unicodeService; const base=us?._providers?.['6']??us?._activeProvider;
+      if (us&&base) { term.unicode.register(makeProvider(base)); term.unicode.activeVersion='cjk-ambiguous-wide'; }
+    }
+    term.open(el);
+    term.write(CONTENT);
+    terms[v.id]=term;
+  }
+}
+
+async function diag() {
+  await document.fonts.load("14px 'JetBrains Mono'").catch(()=>{});
+  await document.fonts.load("14px 'Symbols Nerd Font Mono'").catch(()=>{});
+  await document.fonts.ready;
+  // re-write after fonts to force remeasure
+  for (const v of variants){ terms[v.id].clear(); terms[v.id].write(CONTENT); }
+  await new Promise(r=>setTimeout(r,400));
+  const out={};
+  for (const v of variants){
+    const elt=document.getElementById('t_'+v.id);
+    const rows=elt.querySelectorAll('.xterm-rows > div');
+    const cell = terms[v.id]._core._renderService.dimensions.css.cell;
+    // collect letterSpacing values across spans
+    const spans=[...elt.querySelectorAll('.xterm-rows span')];
+    const ls = spans.map(s=>({t:s.textContent, ls:s.style.letterSpacing})).filter(x=>x.ls);
+    out[v.id]={ cellWidth:+cell.width.toFixed(2), cellHeight:+cell.height.toFixed(2),
+      cols:terms[v.id].cols, rows:terms[v.id].rows,
+      spacedSpans: ls.slice(0,24) };
+  }
+  window.__diag = out;
+  return out;
+}
+
+build();
+window.__ready = diag();
+</script>
+</body>
+</html>
