@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { apiFetch } from '../api.js';
 import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
+import { CJK_UNICODE_VERSION, makeCjkWideProvider } from '../utils/cjkWidth.js';
 import '@xterm/xterm/css/xterm.css';
 
 // Highlight colors for in-window search (requires allowProposedApi).
@@ -36,6 +36,44 @@ const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
 // Warn at most once if the xterm private-API mouse patch can't be applied.
 let mousePatchWarned = false;
 
+const RIGHT_EDGE_GUTTER_PX = 2;
+
+function applyRightEdgeGutter(term: Terminal): void {
+  const xtermEl = term.element;
+  if (!xtermEl) return;
+
+  xtermEl.style.paddingRight = `${RIGHT_EDGE_GUTTER_PX}px`;
+}
+
+function fitTerminalTightly(term: Terminal): void {
+  applyRightEdgeGutter(term);
+
+  const xtermEl = term.element;
+  const parent = xtermEl?.parentElement;
+  const cell = (term as any)._core?._renderService?.dimensions?.css?.cell;
+  if (!xtermEl || !parent || !cell?.width || !cell?.height) return;
+
+  const parentStyle = window.getComputedStyle(parent);
+  const elementStyle = window.getComputedStyle(xtermEl);
+  const parentWidth = Math.max(0, parseInt(parentStyle.getPropertyValue('width'), 10));
+  const parentHeight = Math.max(0, parseInt(parentStyle.getPropertyValue('height'), 10));
+  const paddingX =
+    parseInt(elementStyle.getPropertyValue('padding-left'), 10) +
+    parseInt(elementStyle.getPropertyValue('padding-right'), 10);
+  const paddingY =
+    parseInt(elementStyle.getPropertyValue('padding-top'), 10) +
+    parseInt(elementStyle.getPropertyValue('padding-bottom'), 10);
+
+  // Do not reserve xterm's default scrollbar width. tboard keeps terminal
+  // scrollbars hidden, so subtracting that phantom 14px creates a visible gap.
+  const cols = Math.max(2, Math.floor((parentWidth - paddingX) / cell.width));
+  const rows = Math.max(1, Math.floor((parentHeight - paddingY) / cell.height));
+  if (term.cols === cols && term.rows === rows) return;
+
+  (term as any)._core?._renderService?.clear?.();
+  term.resize(cols, rows);
+}
+
 export default function TerminalContent({
   sessionId,
   token,
@@ -50,7 +88,6 @@ export default function TerminalContent({
 }: TerminalContentProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -83,10 +120,10 @@ export default function TerminalContent({
 
   // Fit on container resize
   const doFit = useCallback(() => {
-    if (!fitAddonRef.current || !termRef.current) return;
+    if (!termRef.current) return;
     requestAnimationFrame(() => {
       try {
-        fitAddonRef.current!.fit();
+        fitTerminalTightly(termRef.current!);
         const { cols, rows } = termRef.current!;
         if (cols !== prevSizeRef.current.cols || rows !== prevSizeRef.current.rows) {
           prevSizeRef.current = { cols, rows };
@@ -108,7 +145,20 @@ export default function TerminalContent({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', monospace",
+      // Latin glyphs come from the mono fonts; the CJK fonts trailing the chain
+      // only kick in for characters the mono fonts lack (Japanese, full-width
+      // forms), so they render with proper full-width metrics instead of a
+      // cramped proportional system fallback.
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', 'Noto Sans Mono CJK JP', 'Osaka-Mono', 'Yu Gothic', 'Meiryo', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans CJK JP', 'MS Gothic', monospace",
+      // NOTE: do NOT set `letterSpacing`. xterm's DOM renderer computes
+      // cell.width = char.width + Math.round(letterSpacing), so any value >= 0.5
+      // rounds to a 1-device-px gap added to *every* cell. That gap breaks the
+      // continuity of box-drawing chars (─ │ ┌ …) — Claude Code's input-box
+      // borders and separator rules then render as broken/dashed "hyphen" lines.
+      // It also only applies to committed rows, not the IME composition overlay,
+      // so composing Japanese looks cramped relative to the committed text.
+      // CJK width is handled by the font chain above + the Unicode width
+      // provider below, which is the correct mechanism — no tracking needed.
       theme: {
         background: '#000000',
         foreground: '#c0caf5',
@@ -134,15 +184,34 @@ export default function TerminalContent({
       allowProposedApi: true,
     });
 
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);
     termRef.current = term;
-    fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
 
+    // Promote ambiguous-width content chars (①, Ⅲ, ½ …) to 2 cells so their
+    // full-width glyphs stop overlapping the next character. Delegates all other
+    // widths to xterm's built-in UnicodeV6 provider, reached via the same
+    // private-core access pattern as the mouse patch below; if the internal shape
+    // ever changes we simply skip it and fall back to default widths.
+    try {
+      const us = (term as any)._core?.unicodeService;
+      const base = us?._providers?.['6'] ?? us?._activeProvider;
+      if (us && base && typeof base.wcwidth === 'function') {
+        term.unicode.register(makeCjkWideProvider(base));
+        term.unicode.activeVersion = CJK_UNICODE_VERSION;
+      }
+    } catch {
+      // keep default Unicode widths
+    }
+
     term.open(container);
+
+    // Right-edge gutter. The board renders terminals under a CSS transform:
+    // scale() (the zoom feature — see the mouse-coords patch below). Keep only
+    // a tiny paint guard here; fitTerminalTightly computes cols without xterm's
+    // phantom scrollbar reserve, so a large gutter would become visible slack.
+    applyRightEdgeGutter(term);
 
     // Handle OSC 52 — terminal apps (e.g. Claude Code) use this to write to
     // the system clipboard.  Format: \x1b]52;Pc;Pd\x07
@@ -276,7 +345,7 @@ export default function TerminalContent({
 
     // DOM renderer (no WebGL) — crisp subpixel text rendering
 
-    fitAddon.fit();
+    fitTerminalTightly(term);
     prevSizeRef.current = { cols: term.cols, rows: term.rows };
 
     // Wheel event handling: Ctrl+wheel → zoom, normal → scroll
@@ -412,7 +481,6 @@ export default function TerminalContent({
       wsRef.current?.close();
       term.dispose();
       termRef.current = null;
-      fitAddonRef.current = null;
       wsRef.current = null;
     };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps

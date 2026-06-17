@@ -62,6 +62,9 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
   const endLinkDrag = useTerminalStore((s) => s.endLinkDrag);
   const terminalCount = useTerminalStore((s) => s.terminals.size);
   const linkCount = useTerminalStore((s) => s.links.length);
+  // This window is a "sub" (sub-agent) when it is the target of any link — the
+  // server names these sub-N. Subs get a distinct title-bar tint (below).
+  const isSub = useTerminalStore((s) => s.links.some((l) => l.targetId === tw.id));
 
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
@@ -187,6 +190,18 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
     removeTerminal(tw.id);
     saveLayout();
   }, [tw.id, tw.sessionId, tw.dead, isBrowser, isMemo, removeTerminal, saveLayout]);
+
+  // Duplicate this terminal: spawn a fresh PTY in the same working directory,
+  // placed just to the right. cwd comes from the live session status, falling
+  // back to the cwd carried on the window (empty → server uses the home dir).
+  const onDuplicate = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const cwd = status?.cwd || tw.cwd || '';
+      onSpawnHere?.('terminal', cwd, tw.x + tw.width + 24, tw.y);
+    },
+    [status?.cwd, tw.cwd, tw.x, tw.y, tw.width, onSpawnHere]
+  );
 
   // Reopen a dead-session placeholder in place: spawn a fresh PTY (in the saved
   // cwd) and swap the window onto the new sessionId so TerminalContent mounts.
@@ -347,7 +362,13 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
           onMouseDown={onTitleMouseDown}
           style={{
             height: 36,
-            background: isActive
+            // Subs (link targets) get a purple tint to match the app's link/sub
+            // accent (--accent-magenta); regular terminals keep the blue-gray bar.
+            background: isSub
+              ? isActive
+                ? 'linear-gradient(180deg, #2a2440 0%, #211b35 100%)'
+                : 'linear-gradient(180deg, #221d36 0%, #1a1628 100%)'
+              : isActive
               ? 'linear-gradient(180deg, #1f2033 0%, #1a1b2a 100%)'
               : 'linear-gradient(180deg, #1a1b28 0%, #16171f 100%)',
             display: 'flex',
@@ -357,7 +378,9 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
             userSelect: 'none',
             flexShrink: 0,
             gap: 10,
-            borderBottom: '1px solid rgba(0, 0, 0, 0.3)',
+            borderBottom: isSub
+              ? '1px solid rgba(187, 154, 247, 0.28)'
+              : '1px solid rgba(0, 0, 0, 0.3)',
             transition: 'background var(--duration-normal)',
           }}
         >
@@ -504,6 +527,32 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
           {/* Right: link + search + capture buttons for terminal panels, spacer otherwise */}
           {!isBrowser && !isExplorer && !isEditor && !isMemo ? (
             <>
+            <button
+              onClick={onDuplicate}
+              onMouseDown={(e) => e.stopPropagation()}
+              title="同じディレクトリで複製"
+              aria-label="ターミナルを複製"
+              style={{
+                width: 18,
+                height: 18,
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--text-tertiary)',
+                opacity: isActive || isHovered ? 1 : 0.6,
+                transition: 'color var(--duration-fast), opacity var(--duration-fast)',
+                marginRight: 2,
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="1.4" />
+                <path d="M3.2 10.8H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h5.8a2 2 0 0 1 2 2v.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
             <button
               onMouseDown={onStartConnector}
               title="ドラッグして別のターミナルと接続"

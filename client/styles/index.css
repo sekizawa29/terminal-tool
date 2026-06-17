@@ -121,11 +121,11 @@ body.dragging {
 
 /* ── xterm overrides ── */
 .xterm {
-  padding: 6px 4px 4px 8px;
+  padding: 6px 2px 4px 8px;
 }
 
 .xterm-viewport::-webkit-scrollbar {
-  width: 5px;
+  width: 0;
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb {

@@ -28,13 +28,6 @@ import { SessionRow } from './sidebar/SessionRow.js';
 
 const SIDEBAR_PINNED_KEY = 'terminal-board-sidebar-pinned';
 
-interface SearchHit {
-  sessionId: string;
-  name: string;
-  lineText: string;
-  lineIndex: number;
-}
-
 interface SidebarProps {
   controller: CanvasController;
   onAddTerminal: () => void;
@@ -182,45 +175,12 @@ export default function Sidebar({
       return false;
     }
   });
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
   const addMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const starWrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Panel is open while hovered or pinned-open.
   const isOpen = hovered || pinned;
-
-  // Cross-terminal search: 300ms debounce against /api/search.
-  useEffect(() => {
-    const q = searchQuery.trim();
-    if (!q) {
-      setSearchResults([]);
-      return;
-    }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const res = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled) setSearchResults(Array.isArray(data.results) ? data.results : []);
-      } catch {
-        if (!cancelled) setSearchResults([]);
-      }
-    }, 300);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [searchQuery]);
-
-  const jumpToSession = useCallback((sessionId: string) => {
-    const tw = Array.from(useTerminalStore.getState().terminals.values()).find(
-      (w) => w.sessionId === sessionId
-    );
-    if (!tw) return;
-    bringToFront(tw.id);
-    setActive(tw.id);
-    onFocusTerminal(tw.x, tw.y, tw.width, tw.height);
-  }, [bringToFront, setActive, onFocusTerminal]);
 
   useEffect(() => {
     return () => {
@@ -682,80 +642,6 @@ export default function Sidebar({
           />
           </div>
         </div>
-
-        {/* Cross-terminal search */}
-        {isOpen && (
-          <div
-            style={{
-              borderTop: '1px solid var(--border-hair)',
-              padding: '6px 8px',
-            }}
-          >
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ターミナルを検索..."
-              style={{
-                width: '100%',
-                height: 26,
-                padding: '0 8px',
-                background: 'rgba(255, 255, 255, 0.04)',
-                border: '1px solid rgba(255, 255, 255, 0.06)',
-                borderRadius: 6,
-                color: 'var(--text-secondary)',
-                fontSize: 11.5,
-                fontFamily: 'inherit',
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Escape') setSearchQuery('');
-              }}
-            />
-            {searchQuery.trim() && (
-              <div style={{ marginTop: 6, maxHeight: 200, overflowY: 'auto' }}>
-                {searchResults.length === 0 ? (
-                  <div style={{ padding: '6px 4px', fontSize: 10.5, color: 'var(--text-ghost)' }}>
-                    一致なし
-                  </div>
-                ) : (
-                  searchResults.map((hit, i) => (
-                    <button
-                      key={`${hit.sessionId}-${hit.lineIndex}-${i}`}
-                      type="button"
-                      onClick={() => jumpToSession(hit.sessionId)}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 1,
-                        width: '100%',
-                        textAlign: 'left',
-                        padding: '5px 7px',
-                        borderRadius: 6,
-                        border: 'none',
-                        background: 'transparent',
-                        cursor: 'pointer',
-                        color: 'var(--text-secondary)',
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                    >
-                      <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--accent-blue)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {hit.name}
-                      </span>
-                      <span style={{ fontSize: 10, color: 'var(--text-ghost)', fontFamily: "'JetBrains Mono', 'SF Mono', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {hit.lineText}
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Session list */}
         {isOpen && expanded && (

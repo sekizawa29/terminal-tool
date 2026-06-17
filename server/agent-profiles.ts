@@ -59,6 +59,16 @@ function claudeIsNoiseLine(trimmed: string): boolean {
   return false;
 }
 
+function claudeStatusLine(text: string): boolean {
+  if (/image\s+in\s+clipboard\s*[·•]\s*ctrl\+v\s+to\s+paste/i.test(text)) return true;
+  if (/\b(?:Opus|Sonnet|Haiku)\b.*\bcontext\b/i.test(text)) return true;
+  if (/^[¥$]\s*[\d,.]+.*\b(session|today)\b/i.test(text)) return true;
+  if (/\bauto\s*mode\b/i.test(text)) return true;
+  if (/\bfor\s+agents\b/i.test(text)) return true;
+  if (/^[^\s|]+\s+\|\s+(?:main|master|develop|dev|[\w./-]+)\s*$/i.test(text)) return true;
+  return false;
+}
+
 function claudeRewriteLine(trimmed: string): string | null {
   const toolCallMatch = trimmed.match(/^●\s*(\w+)\((.+)\)\s*$/);
   if (toolCallMatch) return `[${toolCallMatch[1]}] ${toolCallMatch[2]}`;
@@ -80,6 +90,7 @@ function claudePromptSkip(text: string): boolean {
   if (/\?\s+(for shortcuts|for help)/i.test(text)) return true;
   if (/^●\s*(high|medium|low)\s*·\s*\//i.test(text)) return true;
   if (/auto\s*mode/i.test(text)) return true;
+  if (claudeStatusLine(text)) return true;
   return false;
 }
 

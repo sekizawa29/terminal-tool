@@ -127,17 +127,50 @@ export class ScreenshotError extends Error {
   }
 }
 
-// macOS region capture via the built-in `screencapture -i` tool. ESC cancels;
-// in that case no file is written and we surface CANCELED. The PNG is read
-// back into a Buffer (to keep the cross-platform contract) and the temp file
-// is removed before resolving.
+function isPngBuffer(buf: Buffer): boolean {
+  return (
+    buf.length >= 8 &&
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+  );
+}
+
+// macOS pasteboard change counter — increments on every write. We sample it
+// around the capture to tell "user grabbed a region" from "user pressed ESC"
+// without clearing or reading the user's existing clipboard contents.
+function pasteboardChangeCount(): number {
+  try {
+    const out = execFileSync(
+      'osascript',
+      ['-l', 'JavaScript', '-e', 'ObjC.import("AppKit"); $.NSPasteboard.generalPasteboard.changeCount'],
+      { encoding: 'utf-8', timeout: 4000 },
+    );
+    const n = parseInt(out.trim(), 10);
+    return Number.isFinite(n) ? n : -1;
+  } catch {
+    return -1;
+  }
+}
+
+// macOS region capture via the built-in `screencapture` tool.
+//
+// We capture to the *clipboard* (-c), NOT to a file. With file output, macOS
+// shows the floating screenshot thumbnail after the selection and defers both
+// writing the file and exiting the process until that thumbnail times out
+// (~5-6s) — which made the capture→paste round-trip feel ~10s slow. Clipboard
+// capture shows no thumbnail and the process exits the instant the selection is
+// made, so the paste is effectively immediate (matching the WSL path). We then
+// pull the PNG off the pasteboard via AppleScript, whose clipboard coercion
+// converts the screenshot's native TIFF data to PNG for us.
+//
+// Cancel (ESC) is detected by the pasteboard changeCount not moving, so we
+// never paste a stale image and never touch the user's clipboard on cancel.
+const APPLESCRIPT_PNG_CLASS = `${String.fromCharCode(0x00ab)}class PNGf${String.fromCharCode(0x00bb)}`; // «class PNGf»
+
 function captureRegionPngDarwin(): Promise<Buffer> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const tmp = join(
-      tmpdir(),
-      `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`,
-    );
-    const child = spawn('screencapture', ['-i', '-x', tmp], {
+    const before = pasteboardChangeCount();
+    const child = spawn('screencapture', ['-i', '-c', '-x'], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     const stderrChunks: Buffer[] = [];
@@ -148,18 +181,42 @@ function captureRegionPngDarwin(): Promise<Buffer> {
     });
 
     child.on('close', (code) => {
-      const cleanup = () => { try { if (existsSync(tmp)) unlinkSync(tmp); } catch {} };
       if (code !== 0) {
-        cleanup();
         const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
         rejectPromise(new ScreenshotError(`screencapture exited ${code}${stderr ? `: ${stderr}` : ''}`, 'FAILED'));
         return;
       }
-      // screencapture returns 0 on ESC-cancel but writes no file.
-      if (!existsSync(tmp)) {
+      // Nothing written to the pasteboard → ESC-cancel, no region grabbed.
+      const after = pasteboardChangeCount();
+      if (before !== -1 && after !== -1 && after === before) {
         rejectPromise(new ScreenshotError('Capture canceled', 'CANCELED'));
         return;
       }
+
+      const tmp = join(
+        tmpdir(),
+        `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`,
+      );
+      const cleanup = () => { try { if (existsSync(tmp)) unlinkSync(tmp); } catch {} };
+      try {
+        execFileSync(
+          'osascript',
+          [
+            '-e', `set f to (open for access POSIX file ${JSON.stringify(tmp)} with write permission)`,
+            '-e', `write (the clipboard as ${APPLESCRIPT_PNG_CLASS}) to f`,
+            '-e', 'close access f',
+          ],
+          { timeout: 8000, stdio: ['ignore', 'ignore', 'pipe'] },
+        );
+      } catch {
+        cleanup();
+        // changeCount moved but the clipboard had no coercible image — e.g. the
+        // user copied non-image content mid-selection. Treat as a cancel rather
+        // than pasting garbage.
+        rejectPromise(new ScreenshotError('No image on clipboard after capture', 'CANCELED'));
+        return;
+      }
+
       let png: Buffer;
       try {
         png = readFileSync(tmp);
@@ -169,15 +226,7 @@ function captureRegionPngDarwin(): Promise<Buffer> {
         return;
       }
       cleanup();
-      if (png.length === 0) {
-        rejectPromise(new ScreenshotError('Capture canceled', 'CANCELED'));
-        return;
-      }
-      const isPng =
-        png.length >= 8 &&
-        png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47 &&
-        png[4] === 0x0d && png[5] === 0x0a && png[6] === 0x1a && png[7] === 0x0a;
-      if (!isPng) {
+      if (!isPngBuffer(png)) {
         rejectPromise(new ScreenshotError('captured payload was not a PNG', 'FAILED'));
         return;
       }
@@ -232,11 +281,7 @@ export function captureRegionPng(): Promise<Buffer> {
         return;
       }
       const png = Buffer.concat(stdoutChunks);
-      const isPng =
-        png.length >= 8 &&
-        png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47 &&
-        png[4] === 0x0d && png[5] === 0x0a && png[6] === 0x1a && png[7] === 0x0a;
-      if (!isPng) {
+      if (!isPngBuffer(png)) {
         rejectPromise(new ScreenshotError('captured payload was not a PNG', 'FAILED'));
         return;
       }
