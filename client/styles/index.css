@@ -124,17 +124,18 @@ body.dragging {
   padding: 6px 2px 4px 8px;
 }
 
-.xterm-viewport::-webkit-scrollbar {
-  width: 0;
-}
-
-.xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--border-default);
-  border-radius: 3px;
-}
-
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
+/* xterm 6 renders its scrollbar with a VS Code SmoothScrollableElement, not a
+   native one, so `::-webkit-scrollbar` does nothing here. The real scrollbar is
+   an overlay (position:absolute; right:0; width = overviewRuler.width || 14px)
+   that paints OVER the rightmost ~14px of text whenever it shows during output —
+   which is the "right edge gets cut off" symptom. Hide that overlay (the app
+   intentionally runs without terminal scrollbars; wheel/keyboard scroll still
+   work). opacity+pointer-events keeps the element in xterm's layout/logic while
+   making it invisible and click-through, so nothing is reserved and nothing is
+   covered — text uses the full width with no gap and no clipping. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* ── Button reset ── */
