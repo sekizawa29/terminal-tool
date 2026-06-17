@@ -13,7 +13,10 @@ import type { TerminalWindow } from './types.js';
 let terminalCounter = 0;
 
 async function fetchToken(): Promise<string> {
-  const res = await fetch('/api/token');
+  // no-store: the server regenerates its token on every restart, so a cached
+  // /api/token (e.g. an app-mode window reopened against a restarted backend)
+  // would return a stale token and every subsequent /api + /ws call would 401.
+  const res = await fetch('/api/token', { cache: 'no-store' });
   const data = await res.json();
   return data.token;
 }

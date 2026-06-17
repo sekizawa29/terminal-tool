@@ -63,6 +63,22 @@ if [[ "$(uname)" != MINGW* && "$(uname)" != MSYS* ]]; then
   find node_modules/node-pty/prebuilds -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
 fi
 
+# Stop any previous tboard instance first. Without this, the old backend keeps
+# holding the ports, the new `npm run dev` fails to bind, and the app window is
+# served by the stale backend — whose token no longer matches what the browser
+# cached, so every /api and /ws call 401s. Free the ports for a clean start.
+if command -v lsof >/dev/null 2>&1; then
+  for p in "$PORT" "$VITE_PORT"; do
+    pids="$(lsof -ti "tcp:$p" 2>/dev/null || true)"
+    if [ -n "$pids" ]; then
+      echo "Stopping previous tboard process(es) on port $p: $pids"
+      # shellcheck disable=SC2086
+      kill $pids 2>/dev/null || true
+    fi
+  done
+  sleep 1
+fi
+
 # Start dev server in background
 npm run dev &
 DEV_PID=$!

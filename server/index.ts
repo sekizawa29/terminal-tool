@@ -302,6 +302,10 @@ app.get('/api/token', (req, res) => {
     res.status(403).json({ error: 'forbidden' });
     return;
   }
+  // Never cache the token. serverToken is regenerated on every server start, so
+  // a cached response (e.g. an app-mode window reopened against a restarted
+  // backend) would hand back a stale token and every /api + /ws call would 401.
+  res.set('Cache-Control', 'no-store');
   res.json({ token: serverToken });
 });
 
