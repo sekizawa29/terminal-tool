@@ -63,24 +63,19 @@ function fitTerminalTightly(term: Terminal): void {
     parseInt(elementStyle.getPropertyValue('padding-top'), 10) +
     parseInt(elementStyle.getPropertyValue('padding-bottom'), 10);
 
-  // The terminal scrollbar is hidden (see index.css), so no scrollbar reserve is
-  // needed. But `cell.width` here is xterm's ROUNDED AVERAGE css cell width
-  // (css.canvas.width / cols); it under-estimates the real per-cell width just
-  // enough that floor() over-counts by ~1 column on a wide terminal. The screen
-  // xterm then actually renders is round(device.cell.width * cols / dpr) px wide
-  // (DomRenderer's css.canvas.width), and when that over-counted column makes it
-  // exceed `available` the right edge spills out of the container's
-  // overflow:hidden and clips (~1 char). So take a first guess from the average,
-  // then trim using the REAL device geometry until the rendered screen provably
-  // fits — no right-edge clip, and no gap (largest cols that still fit).
+  // Largest column count whose rendered screen still fits the available content
+  // width. `cell.width` is xterm's css.cell.width (css.canvas.width / cols); the
+  // screen the DOM renderer actually paints is round(deviceCellWidth*cols/dpr) ≈
+  // cell.width*cols, so floor(available / cell.width) keeps the screen inside the
+  // window (verified empirically: the screen sits ~10px inside the container, it
+  // never overflows). Full-width/CJK glyph-advance drift that used to clip the
+  // last character is handled in index.css (each row is allowed to overflow into
+  // the small right gap) — NOT by shrinking cols here, which would not help: the
+  // clip was a per-row overflow:hidden box, not the screen exceeding the window.
   const available = parentWidth - paddingX;
-  let cols = Math.max(2, Math.floor(available / cell.width));
-  const deviceCellW = (term as any)._core?._renderService?.dimensions?.device?.cell?.width;
-  const dpr = (term as any)._core?._coreBrowserService?.dpr || window.devicePixelRatio || 1;
-  if (deviceCellW) {
-    while (cols > 2 && Math.round((deviceCellW * cols) / dpr) > available) cols--;
-  }
+  const cols = Math.max(2, Math.floor(available / cell.width));
   const rows = Math.max(1, Math.floor((parentHeight - paddingY) / cell.height));
+
   if (term.cols === cols && term.rows === rows) return;
 
   (term as any)._core?._renderService?.clear?.();

@@ -138,6 +138,22 @@ body.dragging {
   pointer-events: none !important;
 }
 
+/* Right-edge clip of full-width (CJK) text — the real cause, distinct from the
+   scrollbar above. The DOM renderer sizes EACH row div to css.canvas.width
+   (= round(deviceCellWidth * cols / dpr)) and sets overflow:hidden on it, while
+   spacing cells with a single row-wide letter-spacing derived from the ROUNDED
+   AVERAGE css.cell.width (canvas.width / cols). For Latin that sums back to the
+   row width, but a line of ~59 full-width glyphs (each padded toward 2x the
+   average) accumulates a few px of advance error past the row box and the right
+   edge of the last char gets clipped — even though the screen as a whole sits
+   ~10px INSIDE the window (measured). cols is correct (matches the PTY); this is
+   a render-box clip, not a fit error. Let the row overflow horizontally so that
+   small drift renders into the empty right gap instead of being cut. !important
+   is required because xterm re-writes the inline overflow on every resize. */
+.xterm .xterm-rows > div {
+  overflow: visible !important;
+}
+
 /* ── Button reset ── */
 button {
   font-family: inherit;
