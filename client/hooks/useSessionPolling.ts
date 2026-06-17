@@ -24,10 +24,16 @@ export function useSessionPolling(controller: CanvasController): void {
   const updateTerminal = useTerminalStore((s) => s.updateTerminal);
   const setSessionStatuses = useTerminalStore((s) => s.setSessionStatuses);
   const setDirsState = useTerminalStore((s) => s.setDirsState);
+  const token = useTerminalStore((s) => s.token);
   const lastCwdBySession = useRef<Map<string, string>>(new Map());
   const prevProcessing = useRef<Map<string, boolean>>(new Map());
 
   useEffect(() => {
+    // Wait until the API token is set in api.ts (App sets it right before the
+    // store token). Polling before then sends header-less /api requests that
+    // 401, and the one-shot fetchDirsState() would leave the recent-dirs menu
+    // un-hydrated. Re-running once token flips truthy is correct and cheap.
+    if (!token) return;
     let active = true;
     // Pull initial persisted dirs so the menu is hydrated before the first cwd-diff.
     fetchDirsState().then((state) => {
@@ -102,5 +108,5 @@ export function useSessionPolling(controller: CanvasController): void {
     poll();
     const interval = setInterval(poll, 2000);
     return () => { active = false; clearInterval(interval); };
-  }, [updateTerminal, setSessionStatuses, setDirsState, controller]);
+  }, [updateTerminal, setSessionStatuses, setDirsState, controller, token]);
 }
