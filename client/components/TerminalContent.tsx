@@ -201,10 +201,53 @@ export default function TerminalContent({
     // unavailable or later lost (e.g. many live terminals exhaust the browser's
     // WebGL context budget), dispose the addon so xterm transparently falls back
     // to the DOM renderer for that window.
+    let zoomPoll: ReturnType<typeof setInterval> | null = null;
+    let dprRebuild: ReturnType<typeof setTimeout> | null = null;
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
+      term.loadAddon(webgl); // throws here if WebGL is unavailable
+
+      // Keep WebGL sharp under the board's CSS zoom. The board scales the whole
+      // canvas with transform: scale(), which stretches WebGL's backing bitmap
+      // and makes text look low-res when zoomed in. Counter it by oversampling:
+      // render at deviceDpr × zoom and let the CSS scale shrink it back to a
+      // crisp 1:1. dpr is layout-neutral here — css cell width = canvas.css
+      // width / cols cancels dpr out — so this raises only bitmap resolution,
+      // never the column count. The factor is capped so GPU memory stays
+      // bounded (past the cap text softens gracefully instead of OOMing).
+      const cbs = (term as any)._core?._coreBrowserService;
+      const OVERSAMPLE_CAP = 2;
+      const zoomFactor = () => Math.min(Math.max(getScaleRef.current() || 1, 1), OVERSAMPLE_CAP);
+      if (cbs && typeof cbs.dpr !== 'undefined') {
+        const baseDpr = cbs.window?.devicePixelRatio || window.devicePixelRatio || 1;
+        try {
+          Object.defineProperty(cbs, 'dpr', {
+            configurable: true,
+            get: () => baseDpr * zoomFactor(),
+          });
+        } catch { /* dpr not configurable — keep native resolution */ }
+
+        // A CSS-scale zoom never changes window.devicePixelRatio, so xterm won't
+        // rebuild on its own. Apply the oversample now, then re-fire the
+        // dpr-change whenever the zoom settles so the atlas re-rasterises at the
+        // new resolution (debounced — one rebuild per zoom gesture, not per tick).
+        const applyDpr = () => {
+          try {
+            cbs._onDprChange?.fire?.(cbs.dpr);
+            webgl.clearTextureAtlas?.();
+          } catch { /* private shape changed — getter still scales future rebuilds */ }
+        };
+        applyDpr();
+        let appliedZoom = zoomFactor();
+        zoomPoll = setInterval(() => {
+          const z = zoomFactor();
+          if (Math.abs(z - appliedZoom) < 0.01) return;
+          appliedZoom = z;
+          if (dprRebuild) clearTimeout(dprRebuild);
+          dprRebuild = setTimeout(applyDpr, 150);
+        }, 120);
+      }
     } catch {
       // WebGL unavailable → DOM renderer (xterm default) stays active.
     }
@@ -475,6 +518,8 @@ export default function TerminalContent({
       unmounted = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (fitTimer) clearTimeout(fitTimer);
+      if (zoomPoll) clearInterval(zoomPoll);
+      if (dprRebuild) clearTimeout(dprRebuild);
       container.removeEventListener('contextmenu', onContextMenu);
       container.removeEventListener('paste', onPaste);
       resizeObserver.disconnect();
