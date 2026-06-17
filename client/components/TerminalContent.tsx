@@ -63,15 +63,12 @@ function fitTerminalTightly(term: Terminal): void {
     parseInt(elementStyle.getPropertyValue('padding-top'), 10) +
     parseInt(elementStyle.getPropertyValue('padding-bottom'), 10);
 
-  // Largest column count whose rendered screen still fits the available content
-  // width. `cell.width` is xterm's css.cell.width (css.canvas.width / cols); the
-  // screen the DOM renderer actually paints is round(deviceCellWidth*cols/dpr) ≈
-  // cell.width*cols, so floor(available / cell.width) keeps the screen inside the
-  // window (verified empirically: the screen sits ~10px inside the container, it
-  // never overflows). Full-width/CJK glyph-advance drift that used to clip the
-  // last character is handled in index.css (each row is allowed to overflow into
-  // the small right gap) — NOT by shrinking cols here, which would not help: the
-  // clip was a per-row overflow:hidden box, not the screen exceeding the window.
+  // Largest column count whose rendered screen fits the available content width.
+  // `cell.width` is xterm's css.cell.width (css.canvas.width / cols); the screen
+  // the DOM renderer paints is round(deviceCellWidth*cols/dpr) ≈ cell.width*cols,
+  // so floor(available / cell.width) keeps the screen inside the window. CJK
+  // full-width glyphs now render at exactly two cells (see the text-spacing-trim
+  // fix in index.css), so a Japanese line no longer overflows this width.
   const available = parentWidth - paddingX;
   const cols = Math.max(2, Math.floor(available / cell.width));
   const rows = Math.max(1, Math.floor((parentHeight - paddingY) / cell.height));

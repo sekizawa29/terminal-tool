@@ -122,6 +122,29 @@ body.dragging {
 /* ── xterm overrides ── */
 .xterm {
   padding: 6px 2px 4px 8px;
+
+  /* Root cause of the CJK right-edge clip. xterm's DOM renderer measures each
+     glyph's advance with WidthCache by rendering it 32x in a row
+     (char.repeat(32)) and dividing offsetWidth/32, then adds per-cell
+     letter-spacing M = 2*cssCellWidth - measured to pad full-width glyphs to two
+     cells. But Chrome's default CJK text-spacing TRIMS the space around adjacent
+     ideographic punctuation: a run like 、、、… measures ~7.4px/char (half), while
+     the SAME 、 sitting between kanji in a real line renders at its full ~14px
+     advance (verified live). So xterm under-measures 、。, over-pads them by ~7px
+     each, and a line with a few punctuation marks overflows the row box by
+     20-35px and the right edge is clipped. `text-spacing-trim: space-all`
+     disables that trimming, so the measurement (run) and the render (mixed)
+     agree at full-width — exactly what a monospace terminal grid wants. Inherited
+     by xterm's measure element and the rows, so both stay consistent. */
+  text-spacing-trim: space-all;
+}
+
+/* Belt-and-suspenders: also pin it on xterm's hidden width-measure element in
+   case a future xterm version mounts it outside .xterm (it lives in .xterm today
+   so it already inherits, but the cache mismeasure is the whole bug). */
+.xterm-width-cache-measure-container,
+.xterm-char-measure-element {
+  text-spacing-trim: space-all;
 }
 
 /* xterm 6 renders its scrollbar with a VS Code SmoothScrollableElement, not a
@@ -138,18 +161,13 @@ body.dragging {
   pointer-events: none !important;
 }
 
-/* Right-edge clip of full-width (CJK) text — the real cause, distinct from the
-   scrollbar above. The DOM renderer sizes EACH row div to css.canvas.width
-   (= round(deviceCellWidth * cols / dpr)) and sets overflow:hidden on it, while
-   spacing cells with a single row-wide letter-spacing derived from the ROUNDED
-   AVERAGE css.cell.width (canvas.width / cols). For Latin that sums back to the
-   row width, but a line of ~59 full-width glyphs (each padded toward 2x the
-   average) accumulates a few px of advance error past the row box and the right
-   edge of the last char gets clipped — even though the screen as a whole sits
-   ~10px INSIDE the window (measured). cols is correct (matches the PTY); this is
-   a render-box clip, not a fit error. Let the row overflow horizontally so that
-   small drift renders into the empty right gap instead of being cut. !important
-   is required because xterm re-writes the inline overflow on every resize. */
+/* Residual safety net for the CJK clip. The root fix is text-spacing-trim above;
+   this only covers sub-pixel paint snapping left over after the punctuation
+   over-pad is gone. Each row div is sized to css.canvas.width with
+   overflow:hidden (re-applied by xterm on every resize), so any residual <1px
+   spill of the last glyph would still be clipped — letting the row overflow
+   horizontally renders it into the small right gap instead. !important is
+   required because xterm rewrites the inline overflow on each resize. */
 .xterm .xterm-rows > div {
   overflow: visible !important;
 }
