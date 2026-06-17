@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { apiFetch } from '../api.js';
 import { Terminal } from '@xterm/xterm';
 import { SearchAddon } from '@xterm/addon-search';
-import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 // Highlight colors for in-window search (requires allowProposedApi).
@@ -147,18 +146,15 @@ export default function TerminalContent({
       fontSize: 14,
       // Latin glyphs come from the mono fonts; the CJK fonts trailing the chain
       // only kick in for characters the mono fonts lack (Japanese, full-width
-      // forms). Box-drawing/block glyphs are drawn as vector geometry by the
-      // WebGL renderer (customGlyphs, on by default), so they don't depend on
-      // the font at all — borders stay continuous regardless of which font wins.
+      // forms), so they render with full-width metrics instead of a cramped
+      // proportional system fallback.
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', 'Noto Sans CJK JP', monospace",
-      // Do NOT set `letterSpacing`: xterm folds it into every cell's width and a
-      // >=0.5px value splits box-drawing rules into dashes. CJK/ambiguous width
-      // is left to xterm's default UnicodeService so it matches the program
-      // running in the pty — a custom "widen ambiguous to 2 cells" provider
-      // desynced the wrap column from the program and fragmented redrawn lines.
-      // Any glyph that still overflows its cell is shrunk to fit by
-      // rescaleOverlappingGlyphs below instead of overlapping the next char.
-      rescaleOverlappingGlyphs: true,
+      // Do NOT set `letterSpacing`: the DOM renderer folds it into every cell's
+      // width and a >=0.5px value splits box-drawing rules into dashes. CJK and
+      // ambiguous-width chars are left to xterm's default UnicodeService so they
+      // match the program running in the pty — a custom "widen ambiguous to 2
+      // cells" provider desynced the wrap column from the program and fragmented
+      // redrawn lines (e.g. 7,388 -> "7,"/"3"/"88"), so it was removed.
       theme: {
         background: '#000000',
         foreground: '#c0caf5',
@@ -190,67 +186,6 @@ export default function TerminalContent({
     searchAddonRef.current = searchAddon;
 
     term.open(container);
-
-    // Hardware-accelerated WebGL renderer. Unlike the DOM renderer it draws
-    // box-drawing/block characters as vector geometry (customGlyphs, on by
-    // default) so Claude Code's borders and separator rules render as
-    // continuous lines instead of breaking into dashes, and it honours
-    // rescaleOverlappingGlyphs so full-width CJK/ambiguous glyphs that the
-    // program counts as one cell are shrunk to fit rather than overlapping the
-    // next character. Must be loaded AFTER term.open(). If the GPU context is
-    // unavailable or later lost (e.g. many live terminals exhaust the browser's
-    // WebGL context budget), dispose the addon so xterm transparently falls back
-    // to the DOM renderer for that window.
-    let zoomPoll: ReturnType<typeof setInterval> | null = null;
-    let dprRebuild: ReturnType<typeof setTimeout> | null = null;
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl); // throws here if WebGL is unavailable
-
-      // Keep WebGL sharp under the board's CSS zoom. The board scales the whole
-      // canvas with transform: scale(), which stretches WebGL's backing bitmap
-      // and makes text look low-res when zoomed in. Counter it by oversampling:
-      // render at deviceDpr × zoom and let the CSS scale shrink it back to a
-      // crisp 1:1. dpr is layout-neutral here — css cell width = canvas.css
-      // width / cols cancels dpr out — so this raises only bitmap resolution,
-      // never the column count. The factor is capped so GPU memory stays
-      // bounded (past the cap text softens gracefully instead of OOMing).
-      const cbs = (term as any)._core?._coreBrowserService;
-      const OVERSAMPLE_CAP = 2;
-      const zoomFactor = () => Math.min(Math.max(getScaleRef.current() || 1, 1), OVERSAMPLE_CAP);
-      if (cbs && typeof cbs.dpr !== 'undefined') {
-        const baseDpr = cbs.window?.devicePixelRatio || window.devicePixelRatio || 1;
-        try {
-          Object.defineProperty(cbs, 'dpr', {
-            configurable: true,
-            get: () => baseDpr * zoomFactor(),
-          });
-        } catch { /* dpr not configurable — keep native resolution */ }
-
-        // A CSS-scale zoom never changes window.devicePixelRatio, so xterm won't
-        // rebuild on its own. Apply the oversample now, then re-fire the
-        // dpr-change whenever the zoom settles so the atlas re-rasterises at the
-        // new resolution (debounced — one rebuild per zoom gesture, not per tick).
-        const applyDpr = () => {
-          try {
-            cbs._onDprChange?.fire?.(cbs.dpr);
-            webgl.clearTextureAtlas?.();
-          } catch { /* private shape changed — getter still scales future rebuilds */ }
-        };
-        applyDpr();
-        let appliedZoom = zoomFactor();
-        zoomPoll = setInterval(() => {
-          const z = zoomFactor();
-          if (Math.abs(z - appliedZoom) < 0.01) return;
-          appliedZoom = z;
-          if (dprRebuild) clearTimeout(dprRebuild);
-          dprRebuild = setTimeout(applyDpr, 150);
-        }, 120);
-      }
-    } catch {
-      // WebGL unavailable → DOM renderer (xterm default) stays active.
-    }
 
     // Right-edge gutter. The board renders terminals under a CSS transform:
     // scale() (the zoom feature — see the mouse-coords patch below). Keep only
@@ -518,8 +453,6 @@ export default function TerminalContent({
       unmounted = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (fitTimer) clearTimeout(fitTimer);
-      if (zoomPoll) clearInterval(zoomPoll);
-      if (dprRebuild) clearTimeout(dprRebuild);
       container.removeEventListener('contextmenu', onContextMenu);
       container.removeEventListener('paste', onPaste);
       resizeObserver.disconnect();
