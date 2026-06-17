@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { apiFetch } from '../api.js';
 import { Terminal } from '@xterm/xterm';
 import { SearchAddon } from '@xterm/addon-search';
-import { CJK_UNICODE_VERSION, makeCjkWideProvider } from '../utils/cjkWidth.js';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 
 // Highlight colors for in-window search (requires allowProposedApi).
@@ -147,18 +147,18 @@ export default function TerminalContent({
       fontSize: 14,
       // Latin glyphs come from the mono fonts; the CJK fonts trailing the chain
       // only kick in for characters the mono fonts lack (Japanese, full-width
-      // forms), so they render with proper full-width metrics instead of a
-      // cramped proportional system fallback.
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', 'Noto Sans Mono CJK JP', 'Osaka-Mono', 'Yu Gothic', 'Meiryo', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans CJK JP', 'MS Gothic', monospace",
-      // NOTE: do NOT set `letterSpacing`. xterm's DOM renderer computes
-      // cell.width = char.width + Math.round(letterSpacing), so any value >= 0.5
-      // rounds to a 1-device-px gap added to *every* cell. That gap breaks the
-      // continuity of box-drawing chars (─ │ ┌ …) — Claude Code's input-box
-      // borders and separator rules then render as broken/dashed "hyphen" lines.
-      // It also only applies to committed rows, not the IME composition overlay,
-      // so composing Japanese looks cramped relative to the committed text.
-      // CJK width is handled by the font chain above + the Unicode width
-      // provider below, which is the correct mechanism — no tracking needed.
+      // forms). Box-drawing/block glyphs are drawn as vector geometry by the
+      // WebGL renderer (customGlyphs, on by default), so they don't depend on
+      // the font at all — borders stay continuous regardless of which font wins.
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, 'Symbols Nerd Font Mono', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', 'Noto Sans CJK JP', monospace",
+      // Do NOT set `letterSpacing`: xterm folds it into every cell's width and a
+      // >=0.5px value splits box-drawing rules into dashes. CJK/ambiguous width
+      // is left to xterm's default UnicodeService so it matches the program
+      // running in the pty — a custom "widen ambiguous to 2 cells" provider
+      // desynced the wrap column from the program and fragmented redrawn lines.
+      // Any glyph that still overflows its cell is shrunk to fit by
+      // rescaleOverlappingGlyphs below instead of overlapping the next char.
+      rescaleOverlappingGlyphs: true,
       theme: {
         background: '#000000',
         foreground: '#c0caf5',
@@ -189,23 +189,25 @@ export default function TerminalContent({
     termRef.current = term;
     searchAddonRef.current = searchAddon;
 
-    // Promote ambiguous-width content chars (①, Ⅲ, ½ …) to 2 cells so their
-    // full-width glyphs stop overlapping the next character. Delegates all other
-    // widths to xterm's built-in UnicodeV6 provider, reached via the same
-    // private-core access pattern as the mouse patch below; if the internal shape
-    // ever changes we simply skip it and fall back to default widths.
-    try {
-      const us = (term as any)._core?.unicodeService;
-      const base = us?._providers?.['6'] ?? us?._activeProvider;
-      if (us && base && typeof base.wcwidth === 'function') {
-        term.unicode.register(makeCjkWideProvider(base));
-        term.unicode.activeVersion = CJK_UNICODE_VERSION;
-      }
-    } catch {
-      // keep default Unicode widths
-    }
-
     term.open(container);
+
+    // Hardware-accelerated WebGL renderer. Unlike the DOM renderer it draws
+    // box-drawing/block characters as vector geometry (customGlyphs, on by
+    // default) so Claude Code's borders and separator rules render as
+    // continuous lines instead of breaking into dashes, and it honours
+    // rescaleOverlappingGlyphs so full-width CJK/ambiguous glyphs that the
+    // program counts as one cell are shrunk to fit rather than overlapping the
+    // next character. Must be loaded AFTER term.open(). If the GPU context is
+    // unavailable or later lost (e.g. many live terminals exhaust the browser's
+    // WebGL context budget), dispose the addon so xterm transparently falls back
+    // to the DOM renderer for that window.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      // WebGL unavailable → DOM renderer (xterm default) stays active.
+    }
 
     // Right-edge gutter. The board renders terminals under a CSS transform:
     // scale() (the zoom feature — see the mouse-coords patch below). Keep only
