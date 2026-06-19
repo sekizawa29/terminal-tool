@@ -1,0 +1,6 @@
+{
+  "deploy": "none",
+  "command": "",
+  "verify_url": "",
+  "notes": "Locally-run tool (start.sh / npm start). No remote deploy target — ship = commit + push to main only."
+}
