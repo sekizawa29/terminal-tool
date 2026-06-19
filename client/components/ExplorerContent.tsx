@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch, withToken, readApiPayload, getApiError } from '../api.js';
-import type { FileEntry } from '../types.js';
+import type { FileEntry, SpawnKind } from '../types.js';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.js';
 import {
   type TreeNode,
@@ -17,7 +17,7 @@ interface ExplorerContentProps {
   isActive: boolean;
   onOpenFile: (filePath: string, fileName: string) => void;
   onNavigate?: (newRoot: string) => void;
-  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string) => void;
+  onSpawnHere?: (kind: SpawnKind, cwd: string) => void;
 }
 
 interface MenuState {
@@ -228,6 +228,8 @@ export default function ExplorerContent({ rootPath, isActive, onOpenFile, onNavi
         items.push({ label: 'ここでターミナルを開く', onClick: () => onSpawnHere('terminal', p) });
         items.push({ label: 'ここで Claude を開く', onClick: () => onSpawnHere('claude', p) });
         items.push({ label: 'ここで Codex を開く', onClick: () => onSpawnHere('codex', p) });
+        items.push({ label: 'ここで Antigravity を開く', onClick: () => onSpawnHere('agy', p) });
+        items.push({ label: 'ここで Grok を開く', onClick: () => onSpawnHere('grok', p) });
       }
       items.push({
         label: '新規ファイル',

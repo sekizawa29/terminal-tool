@@ -6,6 +6,7 @@ import ZoomIndicator from './ZoomIndicator.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { useSettings } from '../hooks/useSettings.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
+import type { SpawnKind } from '../types.js';
 
 // Distance (px) the pointer must travel before a terminal drag is treated as a
 // board pan rather than a click (which still focuses the terminal).
@@ -14,7 +15,7 @@ const TERMINAL_PAN_THRESHOLD = 4;
 interface CanvasProps {
   controller: CanvasController;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
-  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => void;
+  onSpawnHere?: (kind: SpawnKind, cwd: string, nearX: number, nearY: number) => void;
 }
 
 export default function Canvas({ controller, onOpenFile, onSpawnHere }: CanvasProps) {

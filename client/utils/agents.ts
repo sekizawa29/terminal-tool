@@ -2,7 +2,7 @@
 // terminal. Shared by the window glow, the sidebar status dot, and the
 // offscreen-attention detection so the heuristic stays consistent.
 export const AGENT_PROCESSES = new Set([
-  'claude', 'codex', 'aider', 'cursor', 'copilot',
+  'claude', 'codex', 'agy', 'grok', 'aider', 'cursor', 'copilot',
   'cline', 'roo',
 ]);
 

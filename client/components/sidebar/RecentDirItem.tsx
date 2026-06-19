@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { StarIcon, PinIcon, ClaudeIcon, CodexIcon, TerminalIcon } from '../icons.js';
+import { StarIcon, PinIcon, ClaudeIcon, CodexIcon, AgyIcon, GrokIcon, TerminalIcon } from '../icons.js';
 import { RowAction } from './RowAction.js';
 
 interface RecentDirItemProps {
@@ -8,6 +8,8 @@ interface RecentDirItemProps {
   onOpenTerminal: () => void;
   onOpenClaude: () => void;
   onOpenCodex: () => void;
+  onOpenAgy: () => void;
+  onOpenGrok: () => void;
   onTogglePin: () => void;
 }
 
@@ -18,7 +20,7 @@ function shortDirLabel(cwd: string): string {
 
 // A recent or pinned working directory; clicking opens a terminal there, the
 // row actions open Claude/Codex/Terminal or toggle the pin.
-export function RecentDirItem({ cwd, pinned, onOpenTerminal, onOpenClaude, onOpenCodex, onTogglePin }: RecentDirItemProps) {
+export function RecentDirItem({ cwd, pinned, onOpenTerminal, onOpenClaude, onOpenCodex, onOpenAgy, onOpenGrok, onTogglePin }: RecentDirItemProps) {
   const [hover, setHover] = useState(false);
   const name = shortDirLabel(cwd);
   return (
@@ -102,6 +104,8 @@ export function RecentDirItem({ cwd, pinned, onOpenTerminal, onOpenClaude, onOpe
         />
         <RowAction icon={<ClaudeIcon />} hint="このディレクトリで Claude を開く" onClick={onOpenClaude} />
         <RowAction icon={<CodexIcon />} hint="このディレクトリで Codex を開く" onClick={onOpenCodex} />
+        <RowAction icon={<AgyIcon />} hint="このディレクトリで Antigravity を開く" onClick={onOpenAgy} />
+        <RowAction icon={<GrokIcon />} hint="このディレクトリで Grok を開く" onClick={onOpenGrok} />
         <RowAction icon={<TerminalIcon />} hint="このディレクトリで Terminal を開く" onClick={onOpenTerminal} />
       </div>
     </div>

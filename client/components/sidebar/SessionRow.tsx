@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ClaudeIcon, CodexIcon, CopyIcon } from '../icons.js';
+import { ClaudeIcon, CodexIcon, AgyIcon, GrokIcon, CopyIcon } from '../icons.js';
 import { RowAction } from './RowAction.js';
 
 const XIcon = () => (
@@ -38,6 +38,8 @@ interface SessionRowProps {
   onClick: () => void;
   onClaude: () => void;
   onCodex: () => void;
+  onAgy: () => void;
+  onGrok: () => void;
   onCopy: () => void;
   onClose: () => void;
 }
@@ -57,6 +59,8 @@ export function SessionRow({
   onClick,
   onClaude,
   onCodex,
+  onAgy,
+  onGrok,
   onCopy,
   onClose,
 }: SessionRowProps) {
@@ -160,6 +164,8 @@ export function SessionRow({
       >
         <RowAction icon={<ClaudeIcon />} hint="Open Claude here" onClick={onClaude} />
         <RowAction icon={<CodexIcon />} hint="Open Codex here" onClick={onCodex} />
+        <RowAction icon={<AgyIcon />} hint="Open Antigravity here" onClick={onAgy} />
+        <RowAction icon={<GrokIcon />} hint="Open Grok here" onClick={onGrok} />
         <RowAction icon={<CopyIcon />} hint="Duplicate" onClick={onCopy} />
         <RowAction icon={<XIcon />} hint="閉じる" onClick={onClose} activeColor="var(--accent-red)" />
       </div>

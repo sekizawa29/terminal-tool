@@ -19,6 +19,10 @@ export interface TerminalWindow {
   title: string;
 }
 
+// What a "spawn here" action launches in a directory: a plain shell, or one of
+// the agent CLIs (claude / codex / antigravity / grok) auto-injected at the prompt.
+export type SpawnKind = 'terminal' | 'claude' | 'codex' | 'agy' | 'grok';
+
 export interface FileEntry {
   name: string;
   path: string;

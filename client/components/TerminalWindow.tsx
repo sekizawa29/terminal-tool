@@ -5,7 +5,7 @@ import ExplorerContent from './ExplorerContent.js';
 import EditorContent from './EditorContent.js';
 import MemoContent from './MemoContent.js';
 import ResizeHandle from './ResizeHandle.js';
-import type { TerminalWindow as TWType } from '../types.js';
+import type { TerminalWindow as TWType, SpawnKind } from '../types.js';
 import { useTerminalStore } from '../hooks/useTerminalStore.js';
 import { apiFetch } from '../api.js';
 import { AGENT_PROCESSES } from '../utils/agents.js';
@@ -18,7 +18,7 @@ interface TerminalWindowProps {
   getScale: () => number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
-  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => void;
+  onSpawnHere?: (kind: SpawnKind, cwd: string, nearX: number, nearY: number) => void;
 }
 
 const MIN_WIDTH = 300;
@@ -34,7 +34,7 @@ export default function TerminalWindow({ id, token, getScale, onZoom, onOpenFile
   getScale: () => number;
   onZoom: (deltaY: number, clientX: number, clientY: number) => void;
   onOpenFile?: (filePath: string, fileName: string, nearX: number, nearY: number) => void;
-  onSpawnHere?: (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => void;
+  onSpawnHere?: (kind: SpawnKind, cwd: string, nearX: number, nearY: number) => void;
 }) {
   const tw = useTerminalStore((s) => s.terminals.get(id));
   if (!tw) return null;
@@ -577,32 +577,7 @@ const TerminalWindowBody = memo(function TerminalWindowBody({ tw, token, getScal
                 <path d="M6.5 9.5l3-3M6 6.2L4.8 7.4a2.4 2.4 0 003.4 3.4L9.4 9.6M10 9.8l1.2-1.2a2.4 2.4 0 00-3.4-3.4L6.6 6.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); setSearchOpen((v) => !v); }}
-              onMouseDown={(e) => e.stopPropagation()}
-              title="検索 (Cmd/Ctrl+F)"
-              aria-label="このターミナルを検索"
-              style={{
-                width: 18,
-                height: 18,
-                padding: 0,
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: searchOpen ? 'var(--accent-blue)' : 'var(--text-tertiary)',
-                opacity: isActive || isHovered ? 1 : 0.6,
-                transition: 'color var(--duration-fast), opacity var(--duration-fast)',
-                marginRight: 2,
-              }}
-            >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle cx="7" cy="7" r="4.2" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M10.2 10.2L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </button>
+            {/* Search button hidden by request; Cmd/Ctrl+F still opens search. */}
             <button
               onClick={onCaptureClick}
               onMouseDown={(e) => e.stopPropagation()}

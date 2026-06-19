@@ -5,6 +5,7 @@ import { getDisplayName } from '../hooks/useSessionPolling.js';
 import { apiFetch } from '../api.js';
 import { isAgentProcess } from '../utils/agents.js';
 import type { CanvasController } from '../hooks/useCanvas.js';
+import type { SpawnKind } from '../types.js';
 import { pinDir, unpinDir } from '../api/dirsApi.js';
 import {
   PowerShellIcon,
@@ -38,6 +39,8 @@ interface SidebarProps {
   onDuplicateTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onClaudeTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onCodexTerminal: (cwd: string, nearX: number, nearY: number) => void;
+  onAgyTerminal: (cwd: string, nearX: number, nearY: number) => void;
+  onGrokTerminal: (cwd: string, nearX: number, nearY: number) => void;
   onPowershellTerminal: (nearX: number, nearY: number) => void;
   onFocusTerminal: (x: number, y: number, width: number, height: number) => void;
   onZoomToFit: () => void;
@@ -147,6 +150,8 @@ export default function Sidebar({
   onDuplicateTerminal,
   onClaudeTerminal,
   onCodexTerminal,
+  onAgyTerminal,
+  onGrokTerminal,
   onPowershellTerminal,
   onFocusTerminal,
   onZoomToFit,
@@ -267,11 +272,12 @@ export default function Sidebar({
   );
 
   const toggleExpanded = () => {
-    setExpanded((p) => {
-      const next = !p;
-      onExpandChange?.(next);
-      return next;
-    });
+    const next = !expanded;
+    setExpanded(next);
+    onExpandChange?.(next);
+    // Sessions list and the star (dirs) dropdown overlap, so they're mutually
+    // exclusive: opening one closes the other.
+    if (next) setStarMenuOpen(false);
   };
 
   const sessionPillBg = expanded ? 'var(--accent-soft)' : 'rgba(255, 255, 255, 0.03)';
@@ -528,7 +534,7 @@ export default function Sidebar({
               const hintText = hasAny
                 ? 'ピン / 最近のディレクトリ'
                 : 'ピン / 最近のディレクトリ (履歴なし)';
-              const spawn = (dir: string, kind: 'terminal' | 'claude' | 'codex') => {
+              const spawn = (dir: string, kind: SpawnKind) => {
                 setStarMenuOpen(false);
                 const { offsetX, offsetY, scale } = controller.getTransform();
                 const cx = (window.innerWidth / 2 - offsetX) / scale;
@@ -537,6 +543,8 @@ export default function Sidebar({
                 const y = cy - 225;
                 if (kind === 'claude') onClaudeTerminal(dir, x, y);
                 else if (kind === 'codex') onCodexTerminal(dir, x, y);
+                else if (kind === 'agy') onAgyTerminal(dir, x, y);
+                else if (kind === 'grok') onGrokTerminal(dir, x, y);
                 else onDuplicateTerminal(dir, x, y);
               };
               return (
@@ -546,7 +554,13 @@ export default function Sidebar({
                     hint={hintText}
                     onClick={() => {
                       if (!hasAny) return;
-                      setStarMenuOpen((p) => !p);
+                      const next = !starMenuOpen;
+                      setStarMenuOpen(next);
+                      // Mutually exclusive with the sessions list (they overlap).
+                      if (next && expanded) {
+                        setExpanded(false);
+                        onExpandChange?.(false);
+                      }
                     }}
                     active={starMenuOpen}
                     tone="explorer"
@@ -584,6 +598,8 @@ export default function Sidebar({
                                 onOpenTerminal={() => spawn(dir, 'terminal')}
                                 onOpenClaude={() => spawn(dir, 'claude')}
                                 onOpenCodex={() => spawn(dir, 'codex')}
+                                onOpenAgy={() => spawn(dir, 'agy')}
+                                onOpenGrok={() => spawn(dir, 'grok')}
                                 onTogglePin={() => handleTogglePin(dir)}
                               />
                             ))}
@@ -600,6 +616,8 @@ export default function Sidebar({
                                 onOpenTerminal={() => spawn(dir, 'terminal')}
                                 onOpenClaude={() => spawn(dir, 'claude')}
                                 onOpenCodex={() => spawn(dir, 'codex')}
+                                onOpenAgy={() => spawn(dir, 'agy')}
+                                onOpenGrok={() => spawn(dir, 'grok')}
                                 onTogglePin={() => handleTogglePin(dir)}
                               />
                             ))}
@@ -706,6 +724,8 @@ export default function Sidebar({
                   onClick={() => handleClick(tw.id)}
                   onClaude={() => onClaudeTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
                   onCodex={() => onCodexTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
+                  onAgy={() => onAgyTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
+                  onGrok={() => onGrokTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
                   onCopy={() => onDuplicateTerminal(status?.cwd || '', tw.x + 40, tw.y + 40)}
                   onClose={() => handleCloseSession(tw.id)}
                 />

@@ -8,7 +8,7 @@ import { useTerminalStore } from './hooks/useTerminalStore.js';
 import { useSettings } from './hooks/useSettings.js';
 import { useSessionPolling } from './hooks/useSessionPolling.js';
 import { apiFetch, setApiToken } from './api.js';
-import type { TerminalWindow } from './types.js';
+import type { TerminalWindow, SpawnKind } from './types.js';
 
 let terminalCounter = 0;
 
@@ -184,6 +184,54 @@ export default function App() {
     useTerminalStore.getState().saveLayout();
   }, [token, addTerminal]);
 
+  const agyTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
+    if (!token) return;
+
+    // Server-side prompt-aware injection (7.4), as with claudeTerminal.
+    const sessionId = await createTerminalSession(80, 24, cwd || undefined, undefined, 'agy');
+    const width = 700;
+    const height = 450;
+
+    terminalCounter++;
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId,
+      x: nearX,
+      y: nearY,
+      width,
+      height,
+      zIndex: 0,
+      title: `Terminal ${terminalCounter}`,
+    };
+
+    addTerminal(tw);
+    useTerminalStore.getState().saveLayout();
+  }, [token, addTerminal]);
+
+  const grokTerminal = useCallback(async (cwd: string, nearX: number, nearY: number) => {
+    if (!token) return;
+
+    // Server-side prompt-aware injection (7.4), as with claudeTerminal.
+    const sessionId = await createTerminalSession(80, 24, cwd || undefined, undefined, 'grok');
+    const width = 700;
+    const height = 450;
+
+    terminalCounter++;
+    const tw: TerminalWindow = {
+      id: crypto.randomUUID(),
+      sessionId,
+      x: nearX,
+      y: nearY,
+      width,
+      height,
+      zIndex: 0,
+      title: `Terminal ${terminalCounter}`,
+    };
+
+    addTerminal(tw);
+    useTerminalStore.getState().saveLayout();
+  }, [token, addTerminal]);
+
   const powershellTerminal = useCallback(async (nearX: number, nearY: number) => {
     if (!token) return;
 
@@ -207,20 +255,22 @@ export default function App() {
     useTerminalStore.getState().saveLayout();
   }, [token, addTerminal]);
 
-  // Spawn a terminal/claude/codex rooted at cwd at a given world position.
+  // Spawn a terminal/claude/codex/agy/grok rooted at cwd at a given world position.
   const spawnAt = useCallback(
-    (kind: 'terminal' | 'claude' | 'codex', cwd: string, nearX: number, nearY: number) => {
+    (kind: SpawnKind, cwd: string, nearX: number, nearY: number) => {
       if (kind === 'claude') claudeTerminal(cwd, nearX, nearY);
       else if (kind === 'codex') codexTerminal(cwd, nearX, nearY);
+      else if (kind === 'agy') agyTerminal(cwd, nearX, nearY);
+      else if (kind === 'grok') grokTerminal(cwd, nearX, nearY);
       else duplicateTerminal(cwd, nearX, nearY);
     },
-    [claudeTerminal, codexTerminal, duplicateTerminal]
+    [claudeTerminal, codexTerminal, agyTerminal, grokTerminal, duplicateTerminal]
   );
 
   // From the fixed explorer panel (no host window): drop the new window near the
   // current viewport center in world space.
   const spawnHereCentered = useCallback(
-    (kind: 'terminal' | 'claude' | 'codex', cwd: string) => {
+    (kind: SpawnKind, cwd: string) => {
       const t = canvas.getTransform();
       const nx = (window.innerWidth / 2 - t.offsetX) / t.scale - 350;
       const ny = (window.innerHeight / 2 - t.offsetY) / t.scale - 225;
@@ -616,6 +666,8 @@ export default function App() {
         onDuplicateTerminal={duplicateTerminal}
         onClaudeTerminal={claudeTerminal}
         onCodexTerminal={codexTerminal}
+        onAgyTerminal={agyTerminal}
+        onGrokTerminal={grokTerminal}
         onPowershellTerminal={powershellTerminal}
         onFocusTerminal={canvas.focusOn}
         onZoomToFit={handleZoomToFit}
