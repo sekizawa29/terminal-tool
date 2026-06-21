@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "concurrently \"vite\" \"tsx server/index.ts\"",
     "build": "vite build && tsc -p tsconfig.server.json",
-    "start": "node dist/server/index.js"
+    "start": "node dist/server/index.js",
+    "test": "tsx --test server/**/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

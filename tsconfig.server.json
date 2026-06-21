@@ -12,5 +12,6 @@
     "rootDir": "server",
     "declaration": true
   },
-  "include": ["server"]
+  "include": ["server"],
+  "exclude": ["server/**/*.test.ts"]
 }

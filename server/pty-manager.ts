@@ -811,17 +811,39 @@ export class PtyManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    const enterDelayMs = Math.max(0, options?.enterDelayMs ?? 350);
+    // Profile-aware submit strategy. Defaults preserve historical Claude/Codex
+    // behavior (single `\r` at ~350ms, no extra enter); Grok overrides with a
+    // longer settle delay + an unconditional second Enter so the paste actually
+    // submits (see grokProfile comment / the submit-spec investigation).
+    const profile = this.getProfile(sessionId);
+    const submitSequence = profile.submitSequence ?? ['\r'];
+    const submitSequenceGapMs = Math.max(0, profile.submitSequenceGapMs ?? 0);
+    const extraEnterDelayMs = Math.max(0, profile.extraEnterDelayMs ?? 0);
+
+    // enterDelayMs precedence: explicit caller option > profile.submitDelayMs >
+    // the historical 350ms default. Callers never pass enterDelayMs today, so in
+    // practice this is the profile value (or the default).
+    const enterDelayMs = Math.max(0, options?.enterDelayMs ?? profile.submitDelayMs ?? 350);
     const retryDelayMs = Math.max(enterDelayMs + 250, options?.retryDelayMs ?? 1200);
     const retryNeedle = normalizeInlineWhitespace(options?.retryNeedle ?? text).slice(0, 120);
     const onConfirm = options?.onConfirm;
 
     this.write(sessionId, `\x1b[200~${text}\x1b[201~`);
-    setTimeout(() => {
-      if (this.sessions.has(sessionId)) {
-        this.write(sessionId, '\r');
-      }
-    }, enterDelayMs);
+    // First submit attempt: send the submit sequence after the settle delay,
+    // spacing multi-key sequences by submitSequenceGapMs.
+    submitSequence.forEach((key, idx) => {
+      setTimeout(() => {
+        if (this.sessions.has(sessionId)) this.write(sessionId, key);
+      }, enterDelayMs + idx * submitSequenceGapMs);
+    });
+    // Optional unconditional second Enter (Grok double-enter). Independent of the
+    // needle retry below; harmless no-op if the first Enter already submitted.
+    if (extraEnterDelayMs > 0) {
+      const firstSeqEnd = enterDelayMs + Math.max(0, submitSequence.length - 1) * submitSequenceGapMs;
+      setTimeout(() => {
+        if (this.sessions.has(sessionId)) this.write(sessionId, '\r');
+      }, firstSeqEnd + extraEnterDelayMs);
+    }
 
     if (!retryNeedle) {
       // No needle to verify against — report optimistically once Enter is sent.
@@ -1127,14 +1149,14 @@ export class PtyManager {
     return profileForProcess(this.sessions.get(sessionId)?.lastForegroundProcess);
   }
 
-  private getPromptTextAtEnd(sessionId: string): string | null {
+  /** The last up-to-10 non-blank rendered lines (newest last), as the agent
+   *  profile's prompt/busy heuristics consume them. Shared by getPromptTextAtEnd
+   *  and the busy check in canAutoInject so they always read the same screen. */
+  private getTailLines(sessionId: string): string[] {
     const session = this.sessions.get(sessionId);
-    if (!session) return null;
+    if (!session) return [];
     const buf = session.headlessTerm.buffer.active;
     const totalLines = buf.baseY + buf.cursorY + 1;
-
-    // Collect up to the last 10 non-blank lines (newest last), then let the
-    // agent profile decide whether they show an idle prompt / a draft / nothing.
     const scanStart = Math.max(0, totalLines - 10);
     const tail: string[] = [];
     for (let y = scanStart; y <= totalLines - 1; y++) {
@@ -1144,7 +1166,11 @@ export class PtyManager {
       if (!text) continue;
       tail.push(text);
     }
-    return this.getProfile(sessionId).promptText(tail);
+    return tail;
+  }
+
+  private getPromptTextAtEnd(sessionId: string): string | null {
+    return this.getProfile(sessionId).promptText(this.getTailLines(sessionId));
   }
 
   private hasPromptAtEnd(sessionId: string): boolean {
@@ -1798,11 +1824,23 @@ export class PtyManager {
     const isSustainedBurst = session.lastOutputAt - session.outputBurstStart > 800;
     if (hasRecentOutput && isSustainedBurst) return false;
 
+    // Read the screen once and share it between the busy and prompt checks so
+    // they can't disagree about what's on the terminal.
+    const tail = this.getTailLines(sessionId);
+    const profile = this.getProfile(sessionId);
+
+    // Busy gate: if the profile can tell the agent is generating, never inject —
+    // and crucially short-circuit BEFORE the 30s-quiet fallback below, so a TUI
+    // that goes quiet mid-turn (e.g. Grok holding "(still processing...)" with no
+    // new output) is not mistaken for idle. isBusy is advisory-tri-state: only a
+    // hard `true` blocks; `null`/`false` defer to the prompt/quiet heuristics.
+    if (profile.isBusy(tail) === true) return false;
+
     // Check prompt state (3 cases):
     // - null: no prompt detected (agent output, or prompt scrolled off)
     // - '': empty prompt (idle, safe to inject)
     // - 'text': prompt has text (user typing or agent draft, never inject)
-    const promptText = this.getPromptTextAtEnd(sessionId);
+    const promptText = profile.promptText(tail);
 
     if (promptText !== null && promptText.length > 0) {
       // Prompt with text — user or agent is drafting, never inject
@@ -1815,7 +1853,9 @@ export class PtyManager {
     }
 
     // No prompt detected — fallback: only inject if output has been quiet for 30s+
-    // (conservative: covers tool stalls, branched conversations, non-standard prompts)
+    // (conservative: covers tool stalls, branched conversations, non-standard
+    // prompts). Reached only when isBusy didn't return a hard true above, so a
+    // busy agent never trips the quiet fallback.
     const outputAge = now - session.lastOutputAt;
     return session.lastOutputAt > 0 && outputAge > 30_000;
   }
