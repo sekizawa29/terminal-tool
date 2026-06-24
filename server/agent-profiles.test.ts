@@ -299,6 +299,19 @@ test('profileForProcess: "grokish" does NOT match grok (no substring matching)',
   assert.equal(profileForProcess('mygrok').name, 'generic');
 });
 
+// REGRESSION: grok's native binary sets its process title to its version, e.g.
+// `grok-0.2.64` (verified against the installed grok 0.2.64). Exact-name matching
+// stopped selecting grokProfile the moment grok bumped its version, so the box
+// fell back to genericProfile and MAIN→Grok dispatch silently queued forever.
+// A `grok-<version>` foreground name MUST still resolve to grokProfile.
+test('profileForProcess: versioned grok title (grok-0.2.64) → grok', () => {
+  assert.equal(profileForProcess('grok-0.2.64').name, 'grok');
+  assert.equal(profileForProcess('grok-0.2.65').name, 'grok');
+  assert.equal(profileForProcess('grok-1.0.0').name, 'grok');
+  // Case-insensitive, matching the lowercasing in profileForProcess.
+  assert.equal(profileForProcess('GROK-0.2.64').name, 'grok');
+});
+
 test('profileForProcess: claude / codex / zsh unchanged', () => {
   assert.equal(profileForProcess('claude').name, 'claude');
   assert.equal(profileForProcess('claude-code').name, 'claude');

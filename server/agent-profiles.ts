@@ -443,12 +443,37 @@ export const genericProfile: AgentProfile = {
 
 const PROFILES = [claudeProfile, codexProfile, grokProfile];
 
+/**
+ * Does the foreground process name `actual` belong to a profile whose declared
+ * names include `candidate`?
+ *
+ * Exact match OR a `<candidate>-…` / `<candidate>.…` prefix. The prefix arm is
+ * the load-bearing one: grok's native binary sets its process *title* to its
+ * version (e.g. `grok-0.2.64`, verified against grok 0.2.64), and bumps it on
+ * every release. An exact-only match against `['grok', …]` therefore silently
+ * stopped selecting grokProfile the moment grok shipped a new version — the
+ * foreground name became `grok-0.2.64`, fell through to genericProfile, and the
+ * generic prompt heuristic misread grok's idle box (`│ ❯ … │`) as a draft, so
+ * canAutoInject went permanently false and MAIN→Grok task dispatch never
+ * injected (the c2abf80 regression, by a different door).
+ *
+ * The `-`/`.` separator requirement keeps this from over-matching unrelated
+ * commands (`grokking` does NOT match `grok`); only a real variant/version
+ * suffix does. Names arrive already normalized (basename, no leading `-`, no
+ * `.exe`) via normalizeProcessName, so `.` here only ever introduces a version
+ * tail, never a real extension.
+ */
+function processNameMatches(actual: string, candidate: string): boolean {
+  if (actual === candidate) return true;
+  return actual.startsWith(`${candidate}-`) || actual.startsWith(`${candidate}.`);
+}
+
 /** Pick a profile by foreground process name; generic shell fallback otherwise. */
 export function profileForProcess(processName: string | undefined): AgentProfile {
   if (!processName) return genericProfile;
   const lower = processName.toLowerCase();
   for (const p of PROFILES) {
-    if (p.processNames.includes(lower)) return p;
+    if (p.processNames.some((name) => processNameMatches(lower, name))) return p;
   }
   return genericProfile;
 }
