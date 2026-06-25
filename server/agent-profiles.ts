@@ -56,6 +56,20 @@ export interface AgentProfile {
   /** Foreground process names this profile applies to (normalized base names). */
   processNames: string[];
   /**
+   * When true, `canAutoInject` skips all idle/busy/output heuristics and treats
+   * the session as always injectable (after the human-typing guard).
+   *
+   * Grok-only: Grok repaints its TUI continuously (~10fps) even when idle, so an
+   * injectable idle moment is never observable via output-activity or positional-
+   * busy checks. Grok also serializes pushed input on its own side, so immediate
+   * delivery is the most reliable strategy.
+   *
+   * NOTE: the isBusy / promptText / grokIsBusyLine logic on grokProfile is NOT
+   * removed — it remains available for legacy/IPC response extraction. It is
+   * simply no longer consulted for MAIN→Grok dispatch timing.
+   */
+  pushImmediately?: boolean;
+  /**
    * The editable text at the prompt given the bottom-of-screen lines (already
    * trimmed, blanks removed, newest last). Three-valued:
    *   - ''   : an empty prompt is showing — idle, safe to inject
@@ -71,7 +85,9 @@ export interface AgentProfile {
    *             30s-quiet heuristic)
    *  POSITIONAL, not a `some()` scan: see positionalBusy() for why. Wired into
    *  canAutoInject as a hard gate — only a `true` blocks; `false`/`null` defer to
-   *  the prompt/quiet heuristics. */
+   *  the prompt/quiet heuristics.
+   *  NOTE for Grok: isBusy is not consulted for MAIN→Grok dispatch (see
+   *  pushImmediately); it remains available for legacy/IPC response extraction. */
   isBusy(tailLines: string[]): boolean | null;
   /**
    * Submit strategy for pasteAndSubmit, all optional (defaults preserve the
@@ -323,6 +339,11 @@ function grokBoxInner(text: string): string | null {
 export const grokProfile: AgentProfile = {
   name: 'grok',
   processNames: ['grok', 'grok-macos-aarch', 'grok-cli'],
+  // Grok repaints its TUI continuously (~10fps) even when idle, so canAutoInject's
+  // output-activity and positional-busy heuristics can never confirm an injectable
+  // idle moment. Grok also serializes pushed input on its own side, so immediate
+  // delivery is the most reliable strategy for MAIN→Grok dispatch.
+  pushImmediately: true,
   // Submit tuning for Grok's ratatui/crossterm TUI. Grok submits on a plain
   // `Enter` (a bare CR). After a large bracketed paste the very first `\r` can be
   // missed/absorbed (the textarea is still ingesting the multi-line Event::Paste,

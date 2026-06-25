@@ -15,7 +15,7 @@ import { gunzipSync, createGzip } from 'zlib';
 import { pipeline } from 'stream/promises';
 import type { WebSocket } from 'ws';
 import type { ExitMessage, ResizeMessage } from './types.js';
-import { profileForProcess, type AgentProfile } from './agent-profiles.js';
+import { profileForProcess, genericProfile, type AgentProfile } from './agent-profiles.js';
 
 // @xterm/headless is CJS — use createRequire for ESM compat
 const require = createRequire(import.meta.url);
@@ -1144,9 +1144,23 @@ export class PtyManager {
    * Scans from the bottom, skipping blank and status-bar lines.
    */
   /** Select the agent profile for a session from its cached foreground process
-   *  name (updated by getSessionStatus). Defaults to the generic shell profile. */
+   *  name (updated by getSessionStatus). Falls back to a live pty.process read
+   *  when the cache is empty (e.g. first dispatch before any status poll), so
+   *  Grok's pushImmediately flag is never silently missed. */
   private getProfile(sessionId: string): AgentProfile {
-    return profileForProcess(this.sessions.get(sessionId)?.lastForegroundProcess);
+    const session = this.sessions.get(sessionId);
+    if (!session) return genericProfile;
+    // Use the cached value when available (set by getSessionStatus).
+    if (session.lastForegroundProcess) {
+      return profileForProcess(session.lastForegroundProcess);
+    }
+    // Cache miss: read pty.process directly as a best-effort fallback. This is
+    // the same source getSessionStatus uses on macOS/Windows. On Linux it misses
+    // the /proc-based foreground-group check, but for profile selection that is
+    // acceptable — worst case we fall through to genericProfile (same as before
+    // this fix). We do NOT update the cache here; getSessionStatus owns that.
+    const live = normalizeProcessName(session.pty.process || '');
+    return profileForProcess(live || undefined);
   }
 
   /** The last up-to-10 non-blank rendered lines (newest last), as the agent
@@ -1819,6 +1833,15 @@ export class PtyManager {
     // Don't inject during active human typing
     if (now - session.lastInputAt < 3000) return false;
 
+    const profile = this.getProfile(sessionId);
+
+    // Grok renders its TUI continuously even when idle, so the output-activity and
+    // positional-busy heuristics below can never confirm an injectable idle moment —
+    // and Grok serializes pushed input on its own side. So for a pushImmediately
+    // profile (Grok only) treat any non-typing moment as injectable. All other
+    // profiles fall through to the unchanged heuristics below.
+    if (profile.pushImmediately) return true;
+
     // Don't inject while output is actively flowing
     const hasRecentOutput = now - session.lastOutputAt < 2000;
     const isSustainedBurst = session.lastOutputAt - session.outputBurstStart > 800;
@@ -1827,7 +1850,6 @@ export class PtyManager {
     // Read the screen once and share it between the busy and prompt checks so
     // they can't disagree about what's on the terminal.
     const tail = this.getTailLines(sessionId);
-    const profile = this.getProfile(sessionId);
 
     // Busy gate: if the profile can tell the agent is generating, never inject —
     // and crucially short-circuit BEFORE the 30s-quiet fallback below, so a TUI

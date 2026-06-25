@@ -332,3 +332,19 @@ test('generic: shell prompt idle vs draft', () => {
   assert.equal(genericProfile.promptText(['user@host ~ %']), '');
   assert.equal(genericProfile.promptText(['user@host ~ % ls -la']), 'ls -la');
 });
+
+// ── pushImmediately flag: Grok-only, all others falsy ──────────────────────
+
+test('grok: pushImmediately is true (Grok skips idle/busy heuristics in canAutoInject)', () => {
+  // Grok repaints its TUI continuously so an idle moment is never observable.
+  // canAutoInject returns true for any non-typing moment when this flag is set.
+  assert.equal(grokProfile.pushImmediately, true);
+});
+
+test('claude/codex/generic: pushImmediately is falsy (unchanged heuristics apply)', () => {
+  // Zero behavior change for all non-Grok profiles: the pushImmediately early
+  // return in canAutoInject must never fire for these agents.
+  assert.ok(!claudeProfile.pushImmediately, 'claude must not have pushImmediately set');
+  assert.ok(!codexProfile.pushImmediately, 'codex must not have pushImmediately set');
+  assert.ok(!genericProfile.pushImmediately, 'generic must not have pushImmediately set');
+});
