@@ -455,16 +455,41 @@ async function readOutput(target, ...extraArgs) {
   };
 
   // Mode: wait for completion then read.
-  // Polling uses the rendered buffer's `isProcessing` signal (independent of
-  // task lifecycle). After the poll settles, if the caller asked for a
-  // task-scoped view (--since-send or --full), read the authoritative task
-  // capture instead of leaving the last rendered snapshot as the result.
+  // Exit condition is task-lifecycle-first: when a task exists between SELF and
+  // the target, the wait ends as soon as that task reaches a terminal status
+  // (`done`/`failed`). That is the authoritative completion signal and is robust
+  // for continuous-repaint TUIs (e.g. Grok) whose rendered buffer never reads as
+  // "idle" — polling `isProcessing` there pins the loop busy forever and it
+  // never terminates. Only when no task exists between SELF and the target (or
+  // we're not running inside a tboard session) do we fall back to the rendered
+  // buffer's `isProcessing` settle heuristic. After the poll settles, if the
+  // caller asked for a task-scoped view (--since-send or --full), read the
+  // authoritative task capture instead of leaving the last rendered snapshot.
   if (wait) {
     let settled = 0;
     let lastOutput = '';
     const deadline = timeout > 0 ? Date.now() + timeout * 1000 : 0;
     while (true) {
       if (deadline > 0 && Date.now() >= deadline) break;
+
+      // Authoritative path: a task exists between SELF and the target → its
+      // lifecycle status decides when we're done, independent of the buffer's
+      // (unreliable) `isProcessing` signal.
+      if (SELF) {
+        const meta = await tryLatestTaskMeta();
+        if (meta.kind === 'ok') {
+          const st = meta.meta.task && meta.meta.task.status;
+          if (st === 'done' || st === 'failed') break;
+          // Task still pending → keep waiting on the task itself.
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        if (meta.kind === 'error') { console.error(`Error reading task: ${meta.message}`); process.exit(1); }
+        // no-task / no-self → fall through to the rendered-buffer heuristic.
+      }
+
+      // Fallback (no task between SELF and target): poll the rendered buffer's
+      // `isProcessing` and settle after 3 consecutive idle reads.
       const res = await ttFetch(buildRenderedUrl());
       const result = await res.json();
       if (result.error) { console.error(`Error: ${result.error}`); process.exit(1); }
