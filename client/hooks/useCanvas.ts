@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { TerminalWindow } from '../types.js';
+import { useSettings } from './useSettings.js';
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 3.0;
@@ -69,6 +70,11 @@ export function useCanvas(): CanvasController {
   const panOffset = useRef({ x: 0, y: 0 });
   const spaceDown = useRef(false);
 
+  // Accumulated wheel scroll (px) and the time of the last wheel event, used to
+  // turn a noisy stream of wheel events into discrete fixed zoom steps. See zoom().
+  const wheelAccum = useRef(0);
+  const lastWheelTs = useRef(0);
+
   // Build the controller exactly once; every method closes over stable refs.
   const controllerRef = useRef<CanvasController | null>(null);
   if (controllerRef.current === null) {
@@ -130,16 +136,41 @@ export function useCanvas(): CanvasController {
         commit();
       },
       zoom(deltaY, clientX, clientY) {
-        const t = transformRef.current;
-        const factor = deltaY < 0 ? 1.1 : 0.9;
-        const newScale = clampScale(t.scale * factor);
-        const scaleChange = newScale / t.scale;
-        transformRef.current = {
-          offsetX: clientX - (clientX - t.offsetX) * scaleChange,
-          offsetY: clientY - (clientY - t.offsetY) * scaleChange,
-          scale: newScale,
-        };
-        commit();
+        if (deltaY === 0) return;
+        const { zoomStepPercent, zoomNotchSize } = useSettings.getState();
+        const now = performance.now();
+
+        // Decouple the zoom from the OS scroll-speed setting. macOS (especially
+        // with a high system scroll amount + inertia) fires many wheel events
+        // per physical notch, so applying a fixed step per *event* makes zoom
+        // wildly over-sensitive. Instead we accumulate scroll distance and apply
+        // one fixed step every `zoomNotchSize` pixels — independent of how many
+        // events the OS emits. Reset the accumulator when the gesture pauses or
+        // reverses so leftover scroll never bleeds into the next gesture.
+        if (now - lastWheelTs.current > 250) wheelAccum.current = 0;
+        if (wheelAccum.current !== 0 && Math.sign(deltaY) !== Math.sign(wheelAccum.current)) {
+          wheelAccum.current = 0;
+        }
+        lastWheelTs.current = now;
+        wheelAccum.current += deltaY;
+
+        const notch = Math.max(1, zoomNotchSize);
+        while (Math.abs(wheelAccum.current) >= notch) {
+          const sign = wheelAccum.current > 0 ? 1 : -1;
+          wheelAccum.current -= sign * notch;
+          // deltaY > 0 (scroll down / toward the user) zooms out.
+          const dir = -sign;
+          const t = transformRef.current;
+          const newScale = clampScale((t.scale * 100 + dir * zoomStepPercent) / 100);
+          if (newScale === t.scale) continue;
+          const scaleChange = newScale / t.scale;
+          transformRef.current = {
+            offsetX: clientX - (clientX - t.offsetX) * scaleChange,
+            offsetY: clientY - (clientY - t.offsetY) * scaleChange,
+            scale: newScale,
+          };
+          commit();
+        }
       },
       setScale(newScale, anchorX, anchorY) {
         const t = transformRef.current;
